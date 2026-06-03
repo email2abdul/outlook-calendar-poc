@@ -64,9 +64,16 @@ function todayRange(timeZone) {
     day: '2-digit',
   }).format(tomorrow);
 
+  // Convert the offset-tagged local boundaries to UTC instants (…Z). Sending a
+  // "+05:30" offset in the query string breaks — the "+" is read as a space by
+  // the server. UTC has no "+", and the Prefer: outlook.timezone header still
+  // returns event times converted back to the caller's zone.
   return {
-    startDateTime: `${ymd}T00:00:00${offset}`,
-    endDateTime: `${tomorrowYmd}T00:00:00${offsetForTimeZone(timeZone, tomorrow)}`,
+    startDateTime: new Date(`${ymd}T00:00:00${offset}`).toISOString(),
+    endDateTime: new Date(
+      `${tomorrowYmd}T00:00:00${offsetForTimeZone(timeZone, tomorrow)}`
+    ).toISOString(),
+    date: ymd,
     timeZone,
   };
 }
@@ -104,7 +111,7 @@ function normalizeEvent(event) {
  */
 async function getTodaysEvents(accessToken, timeZone) {
   const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const { startDateTime, endDateTime } = todayRange(tz);
+  const { startDateTime, endDateTime, date } = todayRange(tz);
 
   const client = getGraphClient(accessToken);
 
@@ -124,7 +131,7 @@ async function getTodaysEvents(accessToken, timeZone) {
     .sort((a, b) => String(a.start).localeCompare(String(b.start)));
 
   return {
-    date: startDateTime.slice(0, 10),
+    date,
     timeZone: tz,
     events,
   };

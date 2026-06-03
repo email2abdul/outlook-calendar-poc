@@ -46,7 +46,9 @@ const config = {
   },
 
   graph: {
-    baseUrl: 'https://graph.microsoft.com/v1.0',
+    // Host only — the Graph client appends the API version (v1.0) itself.
+    // Including /v1.0 here produces a doubled .../v1.0/v1.0/... path (400).
+    baseUrl: 'https://graph.microsoft.com',
   },
 };
 
