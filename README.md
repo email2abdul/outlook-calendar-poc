@@ -9,6 +9,17 @@ larger AI-agent system later. The auth and Graph layers (`src/auth.js`,
 
 ---
 
+## Screenshots
+
+| Login (logged out) | Today's events |
+| :---: | :---: |
+| ![Login with Outlook screen](docs/screenshot-login.png) | ![Today's calendar events](docs/screenshot-events.png) |
+
+> The events screenshot uses sample data to illustrate the UI (event titles,
+> times, location, description, online-meeting link, and an all-day event).
+
+---
+
 ## How it works
 
 ```

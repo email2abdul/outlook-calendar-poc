@@ -18,6 +18,12 @@
   box-sizing: border-box;
 }
 
+/* The `hidden` attribute must win over element `display` rules below
+   (e.g. .account/.event__join set display, which otherwise overrides it). */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   background: var(--bg);
