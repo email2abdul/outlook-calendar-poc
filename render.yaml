@@ -1,0 +1,31 @@
+# Render Blueprint — one-click deploy of the Outlook Calendar POC.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# After the first deploy Render assigns an HTTPS URL like
+#   https://outlook-calendar-poc.onrender.com
+# You must then:
+#   1. Set REDIRECT_URI = https://<that-url>/auth/callback
+#   2. Add that same redirect URI to your Azure app registration (Web platform).
+services:
+  - type: web
+    name: outlook-calendar-poc
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MS_TENANT_ID
+        value: common
+      # Auto-generated strong secret for signing the session cookie.
+      - key: SESSION_SECRET
+        generateValue: true
+      # Set these in the Render dashboard (sync:false => prompted, not committed).
+      - key: MS_CLIENT_ID
+        sync: false
+      - key: MS_CLIENT_SECRET
+        sync: false
+      - key: REDIRECT_URI
+        sync: false

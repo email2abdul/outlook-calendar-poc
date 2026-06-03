@@ -18,6 +18,10 @@ larger AI-agent system later. The auth and Graph layers (`src/auth.js`,
 > The events screenshot uses sample data to illustrate the UI (event titles,
 > times, location, description, online-meeting link, and an all-day event).
 
+**Live demo:** deploy your own in a few clicks — see [DEPLOY.md](DEPLOY.md).
+(A public hosted instance requires your Azure credentials, so it isn't shared
+here.)
+
 ---
 
 ## How it works
