@@ -1,0 +1,33 @@
+{
+  "name": "outlook-calendar-poc",
+  "version": "1.0.0",
+  "description": "Proof-of-concept: Login with Outlook (Microsoft OAuth) and display today's calendar events via Microsoft Graph.",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [
+    "microsoft-graph",
+    "oauth",
+    "outlook",
+    "calendar",
+    "msal"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@azure/msal-node": "^2.16.2",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "isomorphic-fetch": "^3.0.0"
+  },
+  "comments": {
+    "overrides": "Force the transitive `uuid` dep up to the patched line (GHSA-w5hq-g745-h8pq). msal-node only calls uuid's v4() with no `buf` arg, so the bug is unreachable here, but this keeps `npm audit` clean without a breaking msal-node major bump."
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}

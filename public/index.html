@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Outlook Calendar — Today</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="topbar">
+        <div class="brand">
+          <span class="brand__logo" aria-hidden="true">📅</span>
+          <div>
+            <h1 class="brand__title">Today's Outlook Calendar</h1>
+            <p class="brand__subtitle" id="dateLabel"></p>
+          </div>
+        </div>
+        <div class="account" id="account" hidden>
+          <div class="account__meta">
+            <span class="account__name" id="accountName"></span>
+            <span class="account__email" id="accountEmail"></span>
+          </div>
+          <button class="btn btn--ghost" id="logoutBtn">Sign out</button>
+        </div>
+      </header>
+
+      <main class="content" id="content">
+        <!-- Views are toggled by app.js -->
+
+        <!-- Logged-out -->
+        <section class="view view--login" id="view-login" hidden>
+          <div class="card card--center">
+            <span class="hero-icon" aria-hidden="true">🔐</span>
+            <h2>Connect your Outlook calendar</h2>
+            <p class="muted">
+              Sign in with your Microsoft account to see today's events.
+              We only request read access to your calendar.
+            </p>
+            <a class="btn btn--primary btn--ms" href="/auth/login">
+              <span class="ms-logo" aria-hidden="true"></span>
+              Login with Outlook
+            </a>
+            <p class="error-banner" id="loginError" hidden></p>
+          </div>
+        </section>
+
+        <!-- Loading -->
+        <section class="view view--loading" id="view-loading">
+          <div class="card card--center">
+            <span class="spinner" aria-hidden="true"></span>
+            <p class="muted">Loading…</p>
+          </div>
+        </section>
+
+        <!-- Error -->
+        <section class="view view--error" id="view-error" hidden>
+          <div class="card card--center">
+            <span class="hero-icon" aria-hidden="true">⚠️</span>
+            <h2>Couldn't load your events</h2>
+            <p class="muted" id="errorMessage"></p>
+            <button class="btn btn--primary" id="retryBtn">Try again</button>
+          </div>
+        </section>
+
+        <!-- Empty -->
+        <section class="view view--empty" id="view-empty" hidden>
+          <div class="card card--center">
+            <span class="hero-icon" aria-hidden="true">🎉</span>
+            <h2>No events today</h2>
+            <p class="muted">Your calendar is clear. Enjoy the day!</p>
+          </div>
+        </section>
+
+        <!-- Events -->
+        <section class="view view--events" id="view-events" hidden>
+          <ul class="events" id="eventList"></ul>
+        </section>
+      </main>
+
+      <footer class="footer">
+        <span class="muted">Microsoft Graph · OAuth 2.0 + PKCE · read-only</span>
+      </footer>
+    </div>
+
+    <!-- Template for a single event card -->
+    <template id="event-template">
+      <li class="event">
+        <div class="event__time">
+          <span class="event__start"></span>
+          <span class="event__end muted"></span>
+        </div>
+        <div class="event__body">
+          <h3 class="event__title"></h3>
+          <p class="event__location muted" hidden></p>
+          <p class="event__desc" hidden></p>
+          <a class="event__join" target="_blank" rel="noopener" hidden>Join online meeting →</a>
+        </div>
+      </li>
+    </template>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
