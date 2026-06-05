@@ -288,6 +288,183 @@ body {
   font-weight: 700;
 }
 
+/* ── Physician directory + scheduler ───────────────────────── */
+.physician-panel {
+  margin-top: 24px;
+}
+
+.physician-panel .card {
+  padding: 28px;
+}
+
+.physician-panel h2 {
+  margin: 0 0 4px;
+}
+
+.input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: inherit;
+  margin-top: 4px;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.input:focus {
+  outline: 2px solid var(--primary);
+  outline-offset: -1px;
+}
+
+#physicianSearch {
+  margin-top: 16px;
+}
+
+.physician-results {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 280px;
+  overflow-y: auto;
+  border-radius: 10px;
+}
+
+.physician-result {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.physician-result:first-child {
+  border-radius: 10px 10px 0 0;
+}
+
+.physician-result:last-child {
+  border-bottom: 1px solid var(--border);
+  border-radius: 0 0 10px 10px;
+}
+
+.physician-result:only-child {
+  border-radius: 10px;
+}
+
+.physician-result:hover {
+  background: var(--bg);
+}
+
+.physician-result--noemail {
+  opacity: 0.55;
+}
+
+.physician-result .muted {
+  font-size: 12px;
+}
+
+.physician-profile {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+
+.physician-profile__header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.physician-profile__header h3 {
+  margin: 0;
+}
+
+.physician-profile__photo {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--border);
+}
+
+.physician-profile__details {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 16px;
+  margin: 16px 0 0;
+  font-size: 14px;
+}
+
+.physician-profile__details dt {
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.physician-profile__details dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+/* ── Schedule form ─────────────────────────────────────────── */
+.schedule-form {
+  margin-top: 20px;
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.schedule-form h3 {
+  margin: 0;
+}
+
+.schedule-form label {
+  display: flex;
+  flex-direction: column;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.schedule-form__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 12px;
+}
+
+.schedule-form .btn {
+  align-self: flex-start;
+}
+
+.schedule-form .btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.schedule-status {
+  margin: 0;
+  font-size: 14px;
+}
+
+.schedule-status--ok {
+  color: #15803d;
+}
+
+.schedule-status--error {
+  color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .schedule-form__row {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* ── Footer ────────────────────────────────────────────────── */
 .footer {
   margin-top: 28px;

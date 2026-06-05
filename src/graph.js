@@ -137,6 +137,84 @@ async function getTodaysEvents(accessToken, timeZone) {
   };
 }
 
+/** Escape a string for safe interpolation into the HTML event body. */
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * Build the HTML body of a meeting invite from a physician profile, so the
+ * invitee's details travel with the event itself.
+ * @param {object} physician normalized profile from src/physicians.js
+ * @param {string} [notes] free-text agenda from the organizer
+ */
+function buildPhysicianBody(physician, notes) {
+  const rows = [
+    ['Name', physician.name],
+    ['NPI', physician.npi],
+    ['Specialty', physician.specialty],
+    ['Email', physician.email],
+    ['Phone', physician.phone],
+    ['ESD Procedure', physician.esdProcedure ? 'Yes' : 'No'],
+    ['Facility', physician.facility?.name],
+    [
+      'Facility Address',
+      physician.facility
+        ? [physician.facility.address, physician.facility.city, physician.facility.state, physician.facility.zip]
+            .filter(Boolean)
+            .join(', ')
+        : null,
+    ],
+    ['LinkedIn', physician.linkedinUrl],
+  ].filter(([, v]) => v);
+
+  const table = rows
+    .map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0"><b>${escapeHtml(k)}</b></td><td>${escapeHtml(v)}</td></tr>`)
+    .join('');
+
+  return [
+    notes ? `<p>${escapeHtml(notes)}</p>` : '',
+    '<p><b>Physician details</b></p>',
+    `<table>${table}</table>`,
+  ].join('');
+}
+
+/**
+ * Create a calendar event with the physician as a required attendee. Graph
+ * sends the invite email to the attendee automatically on creation.
+ *
+ * @param {string} accessToken
+ * @param {object} opts
+ * @param {string} opts.subject
+ * @param {string} opts.start ISO local datetime, e.g. "2026-06-10T15:00:00"
+ * @param {string} opts.end   ISO local datetime
+ * @param {string} opts.timeZone IANA time zone for start/end
+ * @param {object} opts.physician normalized profile (must have an email)
+ * @param {string} [opts.notes]
+ */
+async function createMeetingWithPhysician(accessToken, { subject, start, end, timeZone, physician, notes }) {
+  const client = getGraphClient(accessToken);
+
+  const event = await client.api('/me/events').post({
+    subject,
+    start: { dateTime: start, timeZone },
+    end: { dateTime: end, timeZone },
+    body: { contentType: 'HTML', content: buildPhysicianBody(physician, notes) },
+    attendees: [
+      {
+        type: 'required',
+        emailAddress: { address: physician.email, name: physician.name || physician.email },
+      },
+    ],
+  });
+
+  return normalizeEvent(event);
+}
+
 /**
  * Lightweight profile lookup for the signed-in user (for the header UI).
  */
@@ -149,4 +227,4 @@ async function getMe(accessToken) {
   };
 }
 
-module.exports = { getTodaysEvents, getMe, getGraphClient };
+module.exports = { getTodaysEvents, getMe, getGraphClient, createMeetingWithPhysician };

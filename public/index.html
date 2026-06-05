@@ -77,6 +77,74 @@
         <section class="view view--events" id="view-events" hidden>
           <ul class="events" id="eventList"></ul>
         </section>
+
+        <!-- Physician directory + meeting scheduler (visible when signed in) -->
+        <section class="physician-panel" id="physicianPanel" hidden>
+          <div class="card">
+            <h2>Schedule with a physician</h2>
+            <p class="muted">
+              Search the directory (name, NPI, email or specialty), pick a physician,
+              then send them an Outlook meeting invite.
+            </p>
+
+            <input
+              type="search"
+              class="input"
+              id="physicianSearch"
+              placeholder="Search physicians… e.g. “Agha”, “Gastroenterology”, NPI"
+              autocomplete="off"
+            />
+            <ul class="physician-results" id="physicianResults"></ul>
+
+            <!-- Selected physician profile -->
+            <div class="physician-profile" id="physicianProfile" hidden>
+              <div class="physician-profile__header">
+                <img class="physician-profile__photo" id="profilePhoto" alt="" hidden />
+                <div>
+                  <h3 id="profileName"></h3>
+                  <p class="muted" id="profileSpecialty"></p>
+                </div>
+              </div>
+              <dl class="physician-profile__details" id="profileDetails"></dl>
+
+              <!-- Schedule form -->
+              <form class="schedule-form" id="scheduleForm">
+                <h3>Meeting details</h3>
+                <label>
+                  Subject
+                  <input type="text" class="input" id="meetingSubject" required />
+                </label>
+                <div class="schedule-form__row">
+                  <label>
+                    Date
+                    <input type="date" class="input" id="meetingDate" required />
+                  </label>
+                  <label>
+                    Start time
+                    <input type="time" class="input" id="meetingTime" required />
+                  </label>
+                  <label>
+                    Duration
+                    <select class="input" id="meetingDuration">
+                      <option value="15">15 min</option>
+                      <option value="30" selected>30 min</option>
+                      <option value="45">45 min</option>
+                      <option value="60">1 hour</option>
+                    </select>
+                  </label>
+                </div>
+                <label>
+                  Notes / agenda (optional)
+                  <textarea class="input" id="meetingNotes" rows="2"></textarea>
+                </label>
+                <button class="btn btn--primary" type="submit" id="scheduleBtn">
+                  Send invite
+                </button>
+                <p class="schedule-status" id="scheduleStatus" hidden></p>
+              </form>
+            </div>
+          </div>
+        </section>
       </main>
 
       <footer class="footer">
