@@ -147,6 +147,34 @@ today's events appear automatically.
 
 ---
 
+## 4. Ingest the BIS analytics data (optional)
+
+The physician panel's **Procedure analytics** section (volumes by year, payer
+mix, top CPT codes with reimbursement rates, facilities) reads from
+`data/analytics.db` — a local SQLite database that is **not** committed
+(~370MB). Build it once from the BIS CSV exports:
+
+```bash
+npm run ingest                                       # default source path
+npm run ingest -- "/path/to/Final Upload Lumendi CSV"   # custom source path
+```
+
+The source directory must contain:
+
+```
+procedure_volume_output_upload_*.csv   # 2018–2024, ~2.25M rows total
+cpt_reimbursement_output.csv
+```
+
+The script streams the CSVs in batched transactions (the whole ingest takes
+~15s) and indexes by `physician_npi`. Re-running always rebuilds from scratch —
+the CSVs are the system of record.
+
+Without `analytics.db` the app still works fine; the analytics section and
+the briefing-email analytics block are simply omitted.
+
+---
+
 ## API reference
 
 | Method | Route                   | Description                                            |
