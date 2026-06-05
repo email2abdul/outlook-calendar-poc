@@ -39,7 +39,8 @@ const config = {
     // Principle of least privilege: only the delegated permissions we use.
     // `openid`, `profile` and `offline_access` are added automatically by MSAL.
     // ReadWrite (superset of Read) — we now create meetings, not just list them.
-    scopes: ['User.Read', 'Calendars.ReadWrite'],
+    // Mail.Send — emailing the organizer their physician briefing.
+    scopes: ['User.Read', 'Calendars.ReadWrite', 'Mail.Send'],
   },
 
   session: {

@@ -256,10 +256,12 @@ body {
   word-break: break-word;
 }
 
+.event__organizer,
 .event__location,
 .event__desc {
   margin: 2px 0 0;
   font-size: 13px;
+  word-break: break-word;
 }
 
 .event__desc {
@@ -287,11 +289,43 @@ body {
 }
 
 .event__attendee {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 999px;
   padding: 1px 10px;
   white-space: nowrap;
+}
+
+/* Attendee matched in the physician directory — clickable. */
+.event__attendee--physician {
+  border-color: var(--primary);
+  background: #eaf3fb;
+  color: var(--primary-dark);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event__attendee--physician:hover {
+  background: #d8e9f8;
+}
+
+/* "Schedule call" for attendees not found in the directory. */
+.event__schedule-call {
+  border: none;
+  background: var(--primary);
+  color: #fff;
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.event__schedule-call:hover {
+  background: var(--primary-dark);
 }
 
 .event__join {
@@ -337,17 +371,38 @@ body {
   font-size: 13px;
 }
 
-/* ── Physician directory + scheduler ───────────────────────── */
-.physician-panel {
-  margin-top: 24px;
+/* ── Inline physician panel (under an event card) ──────────── */
+.physician-inline {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  padding: 14px;
 }
 
-.physician-panel .card {
-  padding: 28px;
+.physician-inline__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
 }
 
-.physician-panel h2 {
-  margin: 0 0 4px;
+.physician-inline__title {
+  font-size: 14px;
+}
+
+.physician-inline__close {
+  border: none;
+  background: none;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  padding: 2px 6px;
+}
+
+.physician-inline__close:hover {
+  color: var(--text);
 }
 
 .input {
@@ -367,10 +422,6 @@ body {
   outline-offset: -1px;
 }
 
-#physicianSearch {
-  margin-top: 16px;
-}
-
 .physician-results {
   list-style: none;
   margin: 8px 0 0;
@@ -385,6 +436,7 @@ body {
   flex-direction: column;
   gap: 2px;
   padding: 10px 14px;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-bottom: none;
   cursor: pointer;
@@ -405,7 +457,7 @@ body {
 }
 
 .physician-result:hover {
-  background: var(--bg);
+  background: #eef4fa;
 }
 
 .physician-result--noemail {
@@ -458,6 +510,324 @@ body {
   word-break: break-word;
 }
 
+/* ── Procedure analytics ───────────────────────────────────── */
+.physician-analytics {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.physician-analytics h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.physician-analytics h4 {
+  margin: 14px 0 6px;
+  font-size: 13px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.physician-analytics__summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+}
+
+.stat-chip {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.stat-chip strong {
+  font-size: 16px;
+}
+
+.stat-chip .muted {
+  font-size: 11px;
+}
+
+.physician-analytics__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 18px;
+}
+
+.physician-analytics__years,
+.physician-analytics__payers,
+.physician-analytics__facilities {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.bar-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bar-row__label {
+  min-width: 36px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.bar-row__track {
+  flex: 1;
+  height: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.bar-row__fill {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+  border-radius: 999px;
+}
+
+.bar-row__value {
+  min-width: 48px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+}
+
+.payer-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 10px;
+}
+
+.payer-row span:last-child {
+  white-space: nowrap;
+}
+
+.table-scroll {
+  overflow-x: auto;
+}
+
+.physician-analytics__procs {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.physician-analytics__procs th,
+.physician-analytics__procs td {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.physician-analytics__procs th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.physician-analytics__procs tr:last-child td {
+  border-bottom: none;
+}
+
+.physician-analytics__procs td:nth-child(3),
+.physician-analytics__procs td:nth-child(4),
+.physician-analytics__procs td:nth-child(5) {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Call history (MOM) ────────────────────────────────────── */
+.physician-history {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.physician-history h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.physician-history__list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.physician-history__empty {
+  padding: 8px 10px;
+}
+
+.physician-history__item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.physician-history__summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+
+.physician-history__summary::before {
+  content: '▸';
+  color: var(--muted);
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+}
+
+.physician-history__item[open] > .physician-history__summary::before {
+  transform: rotate(90deg);
+}
+
+.physician-history__item[open] > .physician-history__summary {
+  border-bottom: 1px dashed var(--border);
+}
+
+.physician-history__date {
+  font-weight: 700;
+  color: var(--primary-dark);
+  flex-shrink: 0;
+}
+
+.physician-history__ago {
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.physician-history__badge {
+  background: #dcfce7;
+  color: #15803d;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* One-line preview — only while collapsed. */
+.physician-history__snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.physician-history__item[open] .physician-history__snippet {
+  display: none;
+}
+
+.physician-history__notes {
+  padding: 8px 10px 10px 26px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.mom-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mom-form .btn {
+  align-self: flex-start;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+
+.mom-form__status {
+  font-size: 13px;
+}
+
+/* Email-briefing action under the call history */
+.briefing {
+  margin-top: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.briefing .btn {
+  padding: 9px 14px;
+  font-size: 13px;
+}
+
+.briefing__status {
+  font-size: 13px;
+  margin: 0;
+}
+
+/* "Last call" reminder inside the schedule form */
+.schedule-form__lastnote {
+  background: #fff8e6;
+  border: 1px solid #f0d896;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.schedule-form__lastnote p {
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.schedule-form .schedule-form__include {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+}
+
+/* "last call" hint on a physician attendee chip */
+.event__attendee-lastcall {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0 8px;
+}
+
 /* ── Schedule form ─────────────────────────────────────────── */
 .schedule-form {
   margin-top: 20px;
@@ -508,7 +878,7 @@ body {
   color: var(--danger);
 }
 
-@media (max-width: 560px) {
+@media (max-width: 600px) {
   .schedule-form__row {
     grid-template-columns: 1fr;
   }
@@ -519,4 +889,89 @@ body {
   margin-top: 28px;
   text-align: center;
   font-size: 12px;
+}
+
+/* ── Responsive: small devices ─────────────────────────────── */
+@media (max-width: 600px) {
+  .app {
+    padding: 14px 12px 32px;
+  }
+
+  .topbar {
+    margin-bottom: 16px;
+  }
+
+  .brand__title {
+    font-size: 17px;
+  }
+
+  /* Account chip drops below the brand and spans the row. */
+  .account {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .account__meta {
+    text-align: left;
+  }
+
+  .card {
+    padding: 24px 16px;
+  }
+
+  .date-filter {
+    gap: 8px;
+  }
+
+  .date-filter__label {
+    width: 100%;
+  }
+
+  .date-filter__input {
+    flex: 1;
+    min-width: 0;
+  }
+
+  /* Event cards stack: time on top, body below. */
+  .event {
+    flex-direction: column;
+    gap: 8px;
+    padding: 14px;
+  }
+
+  .event__time {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+  }
+
+  /* Long emails must wrap instead of overflowing the chip row. */
+  .event__attendee {
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .physician-inline {
+    padding: 12px 10px;
+  }
+
+  /* Profile details collapse to a single column. */
+  .physician-profile__details {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+
+  /* Analytics: year bars and payer mix stack vertically. */
+  .physician-analytics__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .physician-profile__details dt {
+    margin-top: 8px;
+  }
+
+  .schedule-form .btn {
+    align-self: stretch;
+  }
 }

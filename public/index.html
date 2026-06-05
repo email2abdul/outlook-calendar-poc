@@ -85,73 +85,6 @@
           <ul class="events" id="eventList"></ul>
         </section>
 
-        <!-- Physician directory + meeting scheduler (visible when signed in) -->
-        <section class="physician-panel" id="physicianPanel" hidden>
-          <div class="card">
-            <h2>Schedule with a physician</h2>
-            <p class="muted">
-              Search the directory (name, NPI, email or specialty), pick a physician,
-              then send them an Outlook meeting invite.
-            </p>
-
-            <input
-              type="search"
-              class="input"
-              id="physicianSearch"
-              placeholder="Search physicians… e.g. “Agha”, “Gastroenterology”, NPI"
-              autocomplete="off"
-            />
-            <ul class="physician-results" id="physicianResults"></ul>
-
-            <!-- Selected physician profile -->
-            <div class="physician-profile" id="physicianProfile" hidden>
-              <div class="physician-profile__header">
-                <img class="physician-profile__photo" id="profilePhoto" alt="" hidden />
-                <div>
-                  <h3 id="profileName"></h3>
-                  <p class="muted" id="profileSpecialty"></p>
-                </div>
-              </div>
-              <dl class="physician-profile__details" id="profileDetails"></dl>
-
-              <!-- Schedule form -->
-              <form class="schedule-form" id="scheduleForm">
-                <h3>Meeting details</h3>
-                <label>
-                  Subject
-                  <input type="text" class="input" id="meetingSubject" required />
-                </label>
-                <div class="schedule-form__row">
-                  <label>
-                    Date
-                    <input type="date" class="input" id="meetingDate" required />
-                  </label>
-                  <label>
-                    Start time
-                    <input type="time" class="input" id="meetingTime" required />
-                  </label>
-                  <label>
-                    Duration
-                    <select class="input" id="meetingDuration">
-                      <option value="15">15 min</option>
-                      <option value="30" selected>30 min</option>
-                      <option value="45">45 min</option>
-                      <option value="60">1 hour</option>
-                    </select>
-                  </label>
-                </div>
-                <label>
-                  Notes / agenda (optional)
-                  <textarea class="input" id="meetingNotes" rows="2"></textarea>
-                </label>
-                <button class="btn btn--primary" type="submit" id="scheduleBtn">
-                  Send invite
-                </button>
-                <p class="schedule-status" id="scheduleStatus" hidden></p>
-              </form>
-            </div>
-          </div>
-        </section>
       </main>
 
       <footer class="footer">
@@ -168,6 +101,7 @@
         </div>
         <div class="event__body">
           <h3 class="event__title"></h3>
+          <p class="event__organizer muted" hidden></p>
           <p class="event__location muted" hidden></p>
           <p class="event__desc" hidden></p>
           <div class="event__attendees" hidden>
@@ -177,6 +111,132 @@
           <a class="event__join" target="_blank" rel="noopener" hidden>Join online meeting →</a>
         </div>
       </li>
+    </template>
+
+    <!-- Inline physician panel — a single instance is moved beneath whichever
+         event the user is acting on (attendee chip / Schedule call button). -->
+    <template id="physician-inline-template">
+      <div class="physician-inline">
+        <div class="physician-inline__bar">
+          <strong class="physician-inline__title">Physician directory</strong>
+          <button type="button" class="physician-inline__close" aria-label="Close">✕</button>
+        </div>
+
+        <div class="physician-inline__search-wrap" hidden>
+          <input
+            type="search"
+            class="input physician-inline__search"
+            placeholder="Search physicians… name, NPI, email or specialty"
+            autocomplete="off"
+          />
+          <ul class="physician-results"></ul>
+        </div>
+
+        <div class="physician-profile" hidden>
+          <div class="physician-profile__header">
+            <img class="physician-profile__photo" alt="" hidden />
+            <div>
+              <h3 class="physician-profile__name"></h3>
+              <p class="muted physician-profile__specialty"></p>
+            </div>
+          </div>
+          <dl class="physician-profile__details"></dl>
+
+          <!-- Procedure intelligence from the BIS volume data (2018–2024) -->
+          <div class="physician-analytics" hidden>
+            <h3>Procedure analytics</h3>
+            <div class="physician-analytics__summary"></div>
+            <div class="physician-analytics__grid">
+              <div>
+                <h4>Volume by year</h4>
+                <ul class="physician-analytics__years"></ul>
+              </div>
+              <div>
+                <h4>Payer mix</h4>
+                <ul class="physician-analytics__payers"></ul>
+              </div>
+            </div>
+            <h4>Top procedures</h4>
+            <div class="table-scroll">
+              <table class="physician-analytics__procs">
+                <thead>
+                  <tr><th>CPT</th><th>Procedure</th><th>Volume</th><th>Medicare</th><th>Commercial</th></tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            <h4>Facilities</h4>
+            <ul class="physician-analytics__facilities"></ul>
+          </div>
+
+          <!-- MOM / call-note history with this physician -->
+          <div class="physician-history">
+            <h3>Call history</h3>
+            <ul class="physician-history__list"></ul>
+            <form class="mom-form">
+              <textarea
+                class="input mom-form__text"
+                rows="2"
+                placeholder="MOM / call notes — what was discussed on this call?"
+                required
+              ></textarea>
+              <button class="btn btn--ghost mom-form__save" type="submit">💾 Save note</button>
+              <p class="mom-form__status muted" hidden></p>
+            </form>
+
+            <!-- Email this briefing (details + MOM history) to the organizer -->
+            <div class="briefing">
+              <button type="button" class="btn btn--primary briefing__send">
+                📧 Email me this briefing
+              </button>
+              <p class="briefing__status muted" hidden></p>
+            </div>
+          </div>
+
+          <form class="schedule-form">
+            <h3>Schedule a call</h3>
+
+            <!-- Reminder: what was discussed last time -->
+            <div class="schedule-form__lastnote" hidden>
+              <strong>⏰ Last call (<span class="schedule-form__lastnote-date"></span>):</strong>
+              <p class="schedule-form__lastnote-text"></p>
+            </div>
+            <label>
+              Subject
+              <input type="text" class="input schedule-form__subject" required />
+            </label>
+            <div class="schedule-form__row">
+              <label>
+                Date
+                <input type="date" class="input schedule-form__date" required />
+              </label>
+              <label>
+                Start time
+                <input type="time" class="input schedule-form__time" required />
+              </label>
+              <label>
+                Duration
+                <select class="input schedule-form__duration">
+                  <option value="15">15 min</option>
+                  <option value="30" selected>30 min</option>
+                  <option value="45">45 min</option>
+                  <option value="60">1 hour</option>
+                </select>
+              </label>
+            </div>
+            <label>
+              Notes / agenda (optional)
+              <textarea class="input schedule-form__notes" rows="2"></textarea>
+            </label>
+            <label class="schedule-form__include">
+              <input type="checkbox" class="schedule-form__include-notes" checked />
+              Include previous call summary in the invite
+            </label>
+            <button class="btn btn--primary schedule-form__submit" type="submit">Send invite</button>
+            <p class="schedule-status" hidden></p>
+          </form>
+        </div>
+      </div>
     </template>
 
     <script src="/app.js"></script>

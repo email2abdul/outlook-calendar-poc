@@ -163,13 +163,8 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
-/**
- * Build the HTML body of a meeting invite from a physician profile, so the
- * invitee's details travel with the event itself.
- * @param {object} physician normalized profile from src/physicians.js
- * @param {string} [notes] free-text agenda from the organizer
- */
-function buildPhysicianBody(physician, notes) {
+/** HTML details table for a physician profile (shared by invite + briefing). */
+function physicianDetailsTable(physician) {
   const rows = [
     ['Name', physician.name],
     ['NPI', physician.npi],
@@ -193,11 +188,142 @@ function buildPhysicianBody(physician, notes) {
     .map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0"><b>${escapeHtml(k)}</b></td><td>${escapeHtml(v)}</td></tr>`)
     .join('');
 
+  return `<table>${table}</table>`;
+}
+
+/**
+ * Build the HTML body of a meeting invite from a physician profile, so the
+ * invitee's details travel with the event itself.
+ * @param {object} physician normalized profile from src/physicians.js
+ * @param {string} [notes] free-text agenda from the organizer
+ * @param {object} [previousNote] latest MOM from src/notes.js — appended as a
+ *   "Previous call summary" so both sides get context in the invite.
+ */
+function buildPhysicianBody(physician, notes, previousNote) {
+  const previousSection = previousNote
+    ? [
+        `<p><b>Previous call summary (${escapeHtml(
+          previousNote.meetingDate || (previousNote.createdAt || '').slice(0, 10)
+        )})</b></p>`,
+        `<p>${escapeHtml(previousNote.notes).replace(/\n/g, '<br>')}</p>`,
+      ].join('')
+    : '';
+
   return [
     notes ? `<p>${escapeHtml(notes)}</p>` : '',
+    previousSection,
     '<p><b>Physician details</b></p>',
-    `<table>${table}</table>`,
+    physicianDetailsTable(physician),
   ].join('');
+}
+
+/** HTML "Procedure analytics" section for the briefing email (or '' if none). */
+function analyticsHtml(a) {
+  if (!a) return '';
+
+  const money = (v) => (v == null ? '—' : `$${Number(v).toLocaleString()}`);
+  const num = (v) => Number(v || 0).toLocaleString();
+  const td = 'style="padding:2px 12px 2px 0"';
+
+  const summary =
+    `<p>Total procedures: <b>${num(a.summary.totalVolume)}</b> ` +
+    `(${a.summary.firstYear}–${a.summary.lastYear}) · ` +
+    `${a.summary.distinctProcedures} CPT codes · ` +
+    `snare used ${Math.round(a.summary.snareShare * 100)}%</p>`;
+
+  const years =
+    '<p><b>Volume by year</b></p><table>' +
+    a.byYear.map((y) => `<tr><td ${td}>${y.year}</td><td>${num(y.volume)}</td></tr>`).join('') +
+    '</table>';
+
+  const totalPayer = a.byPayer.reduce((s, p) => s + p.volume, 0) || 1;
+  const payers =
+    '<p><b>Payer mix</b></p><table>' +
+    a.byPayer
+      .map(
+        (p) =>
+          `<tr><td ${td}>${escapeHtml(p.payer || 'Unknown')}</td>` +
+          `<td>${num(p.volume)} (${Math.round((p.volume / totalPayer) * 100)}%)</td></tr>`
+      )
+      .join('') +
+    '</table>';
+
+  const procs =
+    '<p><b>Top procedures</b></p><table>' +
+    '<tr><td style="padding:2px 12px 2px 0"><b>CPT</b></td><td style="padding:2px 12px 2px 0"><b>Procedure</b></td>' +
+    '<td style="padding:2px 12px 2px 0"><b>Volume</b></td><td style="padding:2px 12px 2px 0"><b>Medicare</b></td><td><b>Commercial</b></td></tr>' +
+    a.topProcedures
+      .map(
+        (p) =>
+          `<tr><td ${td}>${escapeHtml(p.cptCode)}</td><td ${td}>${escapeHtml(p.description || '—')}</td>` +
+          `<td ${td}>${num(p.volume)}</td><td ${td}>${money(p.medicarePhysicianRate)}</td><td>${money(p.commercialRate)}</td></tr>`
+      )
+      .join('') +
+    '</table>';
+
+  const facilities =
+    '<p><b>Facilities</b></p><table>' +
+    a.facilities
+      .map((f) => {
+        const where = [f.name, [f.city, f.state].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
+        return `<tr><td ${td}>${escapeHtml(where)}</td><td>${num(f.volume)} procedures</td></tr>`;
+      })
+      .join('') +
+    '</table>';
+
+  return ['<p><b>Procedure analytics</b></p>', summary, years, payers, procs, facilities].join('');
+}
+
+/**
+ * Email the organizer (salesperson) a briefing about a physician: profile
+ * details, procedure analytics, plus their full MOM/call-note history — sent
+ * via Graph sendMail to the signed-in user's own mailbox.
+ *
+ * @param {string} accessToken
+ * @param {object} opts
+ * @param {string} opts.toEmail organizer's address
+ * @param {object} opts.physician normalized profile
+ * @param {object[]} opts.notes MOM history (newest first) from src/notes.js
+ * @param {object} [opts.analytics] from src/analytics.js (facilities labelled)
+ * @param {{title?: string, start?: string}} [opts.event] meeting context
+ */
+async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, analytics, event }) {
+  const client = getGraphClient(accessToken);
+
+  const history = notes.length
+    ? notes
+        .map(
+          (n) =>
+            `<p><b>${escapeHtml(n.meetingDate || (n.createdAt || '').slice(0, 10))}</b><br>` +
+            `${escapeHtml(n.notes).replace(/\n/g, '<br>')}</p>`
+        )
+        .join('')
+    : '<p><i>No call notes recorded yet.</i></p>';
+
+  const meetingLine = event?.title
+    ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${
+        event.start ? ` — ${escapeHtml(event.start)}` : ''
+      }</p>`
+    : '';
+
+  const content = [
+    `<p>Briefing for ${escapeHtml(physician.name || `NPI ${physician.npi}`)}</p>`,
+    meetingLine,
+    '<p><b>Physician details</b></p>',
+    physicianDetailsTable(physician),
+    analyticsHtml(analytics),
+    '<p><b>Call history (MOM)</b></p>',
+    history,
+  ].join('');
+
+  await client.api('/me/sendMail').post({
+    message: {
+      subject: `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
+      body: { contentType: 'HTML', content },
+      toRecipients: [{ emailAddress: { address: toEmail } }],
+    },
+    saveToSentItems: true,
+  });
 }
 
 /**
@@ -212,15 +338,19 @@ function buildPhysicianBody(physician, notes) {
  * @param {string} opts.timeZone IANA time zone for start/end
  * @param {object} opts.physician normalized profile (must have an email)
  * @param {string} [opts.notes]
+ * @param {object} [opts.previousNote] latest MOM to include in the invite
  */
-async function createMeetingWithPhysician(accessToken, { subject, start, end, timeZone, physician, notes }) {
+async function createMeetingWithPhysician(
+  accessToken,
+  { subject, start, end, timeZone, physician, notes, previousNote }
+) {
   const client = getGraphClient(accessToken);
 
   const event = await client.api('/me/events').post({
     subject,
     start: { dateTime: start, timeZone },
     end: { dateTime: end, timeZone },
-    body: { contentType: 'HTML', content: buildPhysicianBody(physician, notes) },
+    body: { contentType: 'HTML', content: buildPhysicianBody(physician, notes, previousNote) },
     attendees: [
       {
         type: 'required',
@@ -244,4 +374,10 @@ async function getMe(accessToken) {
   };
 }
 
-module.exports = { getEventsForDay, getMe, getGraphClient, createMeetingWithPhysician };
+module.exports = {
+  getEventsForDay,
+  getMe,
+  getGraphClient,
+  createMeetingWithPhysician,
+  sendPhysicianBriefing,
+};

@@ -102,6 +102,12 @@ const physicians = parseCsv(fs.readFileSync(PHYSICIAN_CSV, 'utf8')).map((p) => (
 
 const physiciansByNpi = new Map(physicians.map((p) => [p.npi, p]));
 
+// Email → physician, for matching calendar-event attendees to the directory.
+const physiciansByEmail = new Map();
+for (const p of physicians) {
+  if (p.email) physiciansByEmail.set(p.email.toLowerCase(), p);
+}
+
 console.log(
   `[physicians] loaded ${physicians.length} physicians, ${facilitiesById.size} facilities`
 );
@@ -141,4 +147,15 @@ function getByNpi(npi) {
   return physiciansByNpi.get(String(npi)) || null;
 }
 
-module.exports = { search, getByNpi };
+/** Full profile for one physician by email (case-insensitive), or null. */
+function getByEmail(email) {
+  if (!email) return null;
+  return physiciansByEmail.get(String(email).toLowerCase()) || null;
+}
+
+/** Facility record by ID (used to label analytics facility volumes). */
+function getFacilityById(id) {
+  return facilitiesById.get(String(id)) || null;
+}
+
+module.exports = { search, getByNpi, getByEmail, getFacilityById };
