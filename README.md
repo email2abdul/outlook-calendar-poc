@@ -1,7 +1,20 @@
 # Outlook Calendar Integration — Proof of Concept
 
-Login with a Microsoft / Outlook account and see **today's calendar events**,
-fetched from the **Microsoft Graph API**.
+Login with a Microsoft / Outlook account and see your **calendar events for
+any day**, fetched from the **Microsoft Graph API** — plus a physician
+intelligence layer for salespeople:
+
+- **Physician directory** (21k+ NPIs from BIS CSVs): event attendees are
+  matched by email; matched physicians open an inline profile with specialty,
+  contact info and primary facility.
+- **Procedure analytics** (optional SQLite ingest): volume by year, payer mix,
+  top CPT codes with reimbursement rates, facilities.
+- **MOM / call notes**: per-organizer history with each physician, a "last
+  call" reminder when scheduling, and auto-inclusion of the latest note in the
+  next invite.
+- **Scheduling + briefing**: send an Outlook invite to a physician straight
+  from an event, or email yourself a full briefing (details + analytics + MOM
+  history).
 
 Built as a small, modular, production-quality demo intended to drop into a
 larger AI-agent system later. The auth and Graph layers (`src/auth.js`,
@@ -36,10 +49,11 @@ Browser  ──"Login with Outlook"──▶  /auth/login
             │  validate state, exchange code (+PKCE verifier) for tokens
             │  store tokens server-side in the session token cache
             ▼
-Browser  ──GET /api/calendar/today──▶  Graph /me/calendarView  ──▶ today's events
-            │                                                        (sorted, normalized)
-            ▼
-        Clean UI renders events (loading / error / empty / list states)
+Browser  ──GET /api/calendar/day──▶  Graph /me/calendarView  ──▶ that day's events
+            │                          + attendee ↔ physician matching (CSV directory)
+            ▼                          + organizer's latest MOM per physician
+        Clean UI renders events; matched attendees open an inline
+        physician panel (details, analytics, call notes, actions)
 ```
 
 **Security model**
@@ -47,9 +61,11 @@ Browser  ──GET /api/calendar/today──▶  Graph /me/calendarView  ──�
 - OAuth 2.0 **Authorization Code flow with PKCE** (`@azure/msal-node`).
 - Tokens **never reach the browser** — the client only holds a signed,
   `httpOnly`, `SameSite=Lax` session cookie.
-- Access/refresh tokens live in MSAL's serializable token cache, bound to the
-  session; expired access tokens are refreshed **silently**.
-- Least privilege: only `User.Read` and `Calendars.Read` (read-only) are requested.
+- Sessions (and the MSAL token cache inside them) persist in SQLite
+  (`data/sessions.db`), so logins survive server restarts; expired access
+  tokens are refreshed **silently** from the cached refresh token.
+- Least privilege: only `User.Read`, `Calendars.ReadWrite` (create invites)
+  and `Mail.Send` (briefing emails) are requested.
 
 ---
 
@@ -57,14 +73,23 @@ Browser  ──GET /api/calendar/today──▶  Graph /me/calendarView  ──�
 
 ```
 outlook-calendar-poc/
-├── server.js                  # Express app: sessions, routes, static, errors
+├── server.js                  # Express app: SQLite-backed sessions, routes, static, errors
 ├── src/
 │   ├── config.js              # Env loading + validation (single source of truth)
 │   ├── auth.js                # MSAL: auth URL, code exchange, silent token (REUSABLE)
-│   ├── graph.js               # Microsoft Graph calendar fetch + normalization (REUSABLE)
+│   ├── graph.js               # Graph: calendar fetch, create invite, briefing email (REUSABLE)
+│   ├── physicians.js          # Physician + facility directory (CSV → in-memory index)
+│   ├── notes.js               # MOM / call notes store (SQLite, per organizer + NPI)
+│   ├── analytics.js           # Procedure-volume queries over data/analytics.db
 │   └── routes/
 │       ├── auth.routes.js     # /auth/login, /auth/callback, /auth/logout
-│       └── api.routes.js      # /api/me, /api/calendar/today
+│       └── api.routes.js      # /api/* (see API reference)
+├── scripts/
+│   └── ingest.js              # npm run ingest — build data/analytics.db from BIS CSVs
+├── data/
+│   ├── physician_output_upload.csv   # directory source (committed)
+│   ├── facility_output_upload.csv    # directory source (committed)
+│   ├── sessions.db / notes.db / analytics.db   # runtime SQLite (gitignored)
 ├── public/                    # Dependency-free frontend (HTML/CSS/JS)
 │   ├── index.html
 │   ├── styles.css
@@ -96,7 +121,8 @@ You need an **Application (client) ID** and a **client secret**.
 8. Go to **API permissions → Add a permission → Microsoft Graph → Delegated permissions**
    and add:
    - `User.Read`
-   - `Calendars.Read`
+   - `Calendars.ReadWrite`
+   - `Mail.Send`
 
    `openid`, `profile`, and `offline_access` are included automatically by MSAL.
    For personal/individual accounts no admin consent is needed; users consent at
@@ -177,15 +203,22 @@ the briefing-email analytics block are simply omitted.
 
 ## API reference
 
-| Method | Route                   | Description                                            |
-| ------ | ----------------------- | ------------------------------------------------------ |
-| GET    | `/auth/login`           | Redirect to Microsoft sign-in                          |
-| GET    | `/auth/callback`        | OAuth redirect handler (code → tokens)                 |
-| POST   | `/auth/logout`          | Destroy the local session                              |
-| GET    | `/api/me`               | `{ authenticated, user? }`                             |
-| GET    | `/api/calendar/today`   | Today's events. Query: `?timeZone=America/Los_Angeles` |
+| Method | Route                                   | Description                                                            |
+| ------ | --------------------------------------- | ---------------------------------------------------------------------- |
+| GET    | `/auth/login`                            | Redirect to Microsoft sign-in                                          |
+| GET    | `/auth/callback`                         | OAuth redirect handler (code → tokens)                                 |
+| POST   | `/auth/logout`                           | Destroy the local session                                              |
+| GET    | `/api/me`                                | `{ authenticated, user? }`                                             |
+| GET    | `/api/calendar/day`                      | One day's events. Query: `?date=YYYY-MM-DD&timeZone=America/Los_Angeles` (date defaults to today; `/api/calendar/today` is an alias) |
+| POST   | `/api/calendar/schedule`                 | Create an Outlook invite for a physician. Body: `{ npi, subject, start, end, timeZone, notes?, includePreviousNotes? }` |
+| GET    | `/api/physicians/search?q=…`             | Directory search (name / NPI / email / specialty); email-first ranking |
+| GET    | `/api/physicians/:npi`                   | One physician's full profile (incl. primary facility)                  |
+| GET    | `/api/physicians/:npi/analytics`         | Procedure analytics (null when `analytics.db` is absent / no data)     |
+| GET    | `/api/physicians/:npi/notes`             | The signed-in organizer's MOM history with this physician              |
+| POST   | `/api/physicians/:npi/notes`             | Save a MOM note. Body: `{ notes, eventId?, meetingDate? }`             |
+| POST   | `/api/physicians/:npi/send-briefing`     | Email the organizer a briefing (details + analytics + MOM history). Body: `{ eventTitle?, eventStart? }` |
 
-`/api/calendar/today` response shape:
+`/api/calendar/day` response shape:
 
 ```json
 {
@@ -201,13 +234,26 @@ the briefing-email analytics block are simply omitted.
       "isAllDay": false,
       "location": "Teams",
       "description": "Daily sync",
-      "organizer": "Alex Doe",
+      "organizer": { "name": "Alex Doe", "email": "alex@contoso.com" },
+      "attendees": [
+        {
+          "name": "Aamer Agha",
+          "email": "aameragha@hotmail.com",
+          "type": "required",
+          "response": "accepted",
+          "physician": { "npi": "1780876466", "specialty": "Gastroenterology", "facility": { } },
+          "lastNote": { "meetingDate": "2026-06-01", "notes": "Pricing discussed…" }
+        }
+      ],
       "onlineMeetingUrl": "https://teams.microsoft.com/l/meetup-join/...",
       "webLink": "https://outlook.office365.com/..."
     }
   ]
 }
 ```
+
+`attendees[].physician` / `lastNote` are `null` when the attendee's email
+doesn't match the directory or the organizer has no notes yet.
 
 > **Why `calendarView` and not `/events`?** `calendarView` expands recurring
 > series into concrete occurrences within the time window — so a daily standup
@@ -222,12 +268,15 @@ the briefing-email analytics block are simply omitted.
 access token you can call:
 
 ```js
-const { getTodaysEvents } = require('./src/graph');
-const result = await getTodaysEvents(accessToken, 'America/Los_Angeles');
+const { getEventsForDay, createMeetingWithPhysician, sendPhysicianBriefing } = require('./src/graph');
+
+const day = await getEventsForDay(accessToken, 'America/Los_Angeles', '2026-06-03');
 ```
 
 The agent (or a backend job) supplies the token; the module returns normalized,
-sorted event data ready for an LLM context window.
+sorted event data ready for an LLM context window. `src/physicians.js`,
+`src/notes.js` and `src/analytics.js` are likewise plain modules with no
+Express dependency.
 
 ---
 
@@ -235,11 +284,12 @@ sorted event data ready for an LLM context window.
 
 This POC favors clarity. Before shipping:
 
-- [ ] Replace the in-memory session store with a shared store
-      (`connect-redis`) so tokens survive restarts and scale across instances.
+- [x] Sessions persist across restarts (SQLite store). For multi-instance
+      scale-out, move to a shared store (`connect-redis`).
 - [ ] Serve over **HTTPS** and set `NODE_ENV=production` (enables Secure cookies).
 - [ ] Store secrets in a secret manager (Key Vault), not a `.env` file.
 - [ ] Add Microsoft global sign-out (`/common/oauth2/v2.0/logout`) if full SSO
       logout is required.
 - [ ] Add rate limiting and request logging.
-```
+- [ ] The physician CSVs contain real contact details — keep the repo private
+      or move them out of git before sharing.
