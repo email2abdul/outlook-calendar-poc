@@ -19,6 +19,8 @@
   "dependencies": {
     "@azure/msal-node": "^2.16.2",
     "@microsoft/microsoft-graph-client": "^3.0.7",
+    "better-sqlite3": "^12.10.0",
+    "better-sqlite3-session-store": "^0.1.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
