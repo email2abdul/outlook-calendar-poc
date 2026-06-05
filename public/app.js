@@ -74,6 +74,25 @@ function renderEvents(events) {
       desc.hidden = false;
     }
 
+    if (ev.attendees && ev.attendees.length > 0) {
+      const wrap = node.querySelector('.event__attendees');
+      const ul = node.querySelector('.event__attendee-list');
+      const rsvpIcon = {
+        accepted: '✅',
+        declined: '❌',
+        tentativelyAccepted: '🤔',
+      };
+      for (const a of ev.attendees) {
+        const li = document.createElement('li');
+        li.className = 'event__attendee';
+        li.title = `${a.type} · ${a.response}`;
+        const label = a.name && a.email && a.name !== a.email ? `${a.name} <${a.email}>` : a.email || a.name || 'Unknown';
+        li.textContent = `${rsvpIcon[a.response] || ''} ${label}`.trim();
+        ul.appendChild(li);
+      }
+      wrap.hidden = false;
+    }
+
     if (ev.onlineMeetingUrl) {
       const join = node.querySelector('.event__join');
       join.href = ev.onlineMeetingUrl;
@@ -84,13 +103,20 @@ function renderEvents(events) {
   }
 }
 
+/** Today's date as YYYY-MM-DD in the browser's local time zone. */
+function todayYmd() {
+  return new Date().toLocaleDateString('en-CA');
+}
+
 async function loadCalendar() {
   showView('loading');
   try {
     const tz = getBrowserTimeZone();
-    const res = await fetch(`/api/calendar/today?timeZone=${encodeURIComponent(tz)}`, {
-      headers: { Accept: 'application/json' },
-    });
+    const date = document.getElementById('dateInput').value || todayYmd();
+    const res = await fetch(
+      `/api/calendar/day?timeZone=${encodeURIComponent(tz)}&date=${encodeURIComponent(date)}`,
+      { headers: { Accept: 'application/json' } }
+    );
 
     if (res.status === 401) {
       showView('login');
@@ -105,6 +131,8 @@ async function loadCalendar() {
     renderHeaderDate(data.date, data.timeZone);
 
     if (!data.events || data.events.length === 0) {
+      document.getElementById('emptyTitle').textContent =
+        data.date === todayYmd() ? 'No events today' : `No events on ${data.date}`;
       showView('empty');
     } else {
       renderEvents(data.events);
@@ -147,9 +175,11 @@ async function init() {
   document.getElementById('accountEmail').textContent = me.user?.email || '';
   account.hidden = false;
 
-  // Reveal the physician scheduler and default the date picker to today.
+  // Reveal the date filter + physician scheduler; default both pickers to today.
+  document.getElementById('dateFilter').hidden = false;
+  document.getElementById('dateInput').value = todayYmd();
   document.getElementById('physicianPanel').hidden = false;
-  document.getElementById('meetingDate').value = new Date().toLocaleDateString('en-CA');
+  document.getElementById('meetingDate').value = todayYmd();
 
   await loadCalendar();
 }
@@ -326,6 +356,15 @@ document.getElementById('scheduleForm').addEventListener('submit', submitSchedul
 
 // ── Wire up controls
 document.getElementById('retryBtn').addEventListener('click', loadCalendar);
+
+document.getElementById('dateInput').addEventListener('change', () => {
+  if (document.getElementById('dateInput').value) loadCalendar();
+});
+
+document.getElementById('todayBtn').addEventListener('click', () => {
+  document.getElementById('dateInput').value = todayYmd();
+  loadCalendar();
+});
 
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await fetch('/auth/logout', { method: 'POST' });

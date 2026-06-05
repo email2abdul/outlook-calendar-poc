@@ -35,21 +35,34 @@ router.get('/me', async (req, res, next) => {
 });
 
 /**
- * GET /api/calendar/today?timeZone=America/Los_Angeles
- * Returns today's events for the signed-in user, sorted by start time.
+ * GET /api/calendar/day?date=2026-06-05&timeZone=America/Los_Angeles
+ * Returns the signed-in user's events for one day (default: today), sorted
+ * by start time. Kept available at /calendar/today for backward compat.
  */
-router.get('/calendar/today', requireAuth, async (req, res, next) => {
+async function dayHandler(req, res, next) {
   try {
     const token = await auth.getAccessToken(req);
     if (!token) return res.status(401).json({ error: 'unauthenticated' });
 
     const timeZone = typeof req.query.timeZone === 'string' ? req.query.timeZone : undefined;
-    const data = await graph.getTodaysEvents(token, timeZone);
+
+    let date;
+    if (typeof req.query.date === 'string' && req.query.date !== '') {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(req.query.date)) {
+        return res.status(400).json({ error: 'bad_request', message: 'date must be YYYY-MM-DD' });
+      }
+      date = req.query.date;
+    }
+
+    const data = await graph.getEventsForDay(token, timeZone, date);
     res.json(data);
   } catch (err) {
     next(err);
   }
-});
+}
+
+router.get('/calendar/day', requireAuth, dayHandler);
+router.get('/calendar/today', requireAuth, dayHandler);
 
 /**
  * GET /api/physicians/search?q=smith

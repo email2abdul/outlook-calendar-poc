@@ -27,6 +27,13 @@
       </header>
 
       <main class="content" id="content">
+        <!-- Date filter (visible when signed in) -->
+        <div class="date-filter" id="dateFilter" hidden>
+          <label class="date-filter__label" for="dateInput">Show events for</label>
+          <input type="date" class="input date-filter__input" id="dateInput" />
+          <button class="btn btn--ghost date-filter__today" id="todayBtn" type="button">Today</button>
+        </div>
+
         <!-- Views are toggled by app.js -->
 
         <!-- Logged-out -->
@@ -68,8 +75,8 @@
         <section class="view view--empty" id="view-empty" hidden>
           <div class="card card--center">
             <span class="hero-icon" aria-hidden="true">🎉</span>
-            <h2>No events today</h2>
-            <p class="muted">Your calendar is clear. Enjoy the day!</p>
+            <h2 id="emptyTitle">No events today</h2>
+            <p class="muted">Your calendar is clear for this day.</p>
           </div>
         </section>
 
@@ -163,6 +170,10 @@
           <h3 class="event__title"></h3>
           <p class="event__location muted" hidden></p>
           <p class="event__desc" hidden></p>
+          <div class="event__attendees" hidden>
+            <span class="muted">👥</span>
+            <ul class="event__attendee-list"></ul>
+          </div>
           <a class="event__join" target="_blank" rel="noopener" hidden>Join online meeting →</a>
         </div>
       </li>

@@ -37,22 +37,28 @@ function offsetForTimeZone(timeZone, date) {
 }
 
 /**
- * Compute the [start, end) ISO bounds of "today" in the given IANA time zone,
- * each tagged with the correct UTC offset.
+ * Compute the [start, end) ISO bounds of one calendar day in the given IANA
+ * time zone, each tagged with the correct UTC offset.
+ * @param {string} timeZone
+ * @param {string} [dateYmd] "YYYY-MM-DD"; defaults to today in `timeZone`.
  * @returns {{ startDateTime: string, endDateTime: string, timeZone: string }}
  */
-function todayRange(timeZone) {
+function dayRange(timeZone, dateYmd) {
   const now = new Date();
 
-  // YYYY-MM-DD for "today" as seen in the target time zone.
-  const ymd = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).format(now);
+  // YYYY-MM-DD — either the requested day, or "today" as seen in the zone.
+  const ymd =
+    dateYmd ||
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(now);
 
-  const offset = offsetForTimeZone(timeZone, now);
+  // Resolve the zone's offset *on that day* (DST-safe): use noon UTC as the
+  // reference instant so we never land on the wrong side of a transition.
+  const offset = offsetForTimeZone(timeZone, dateYmd ? new Date(`${ymd}T12:00:00Z`) : now);
 
   // Tomorrow's date for the exclusive upper bound.
   const tomorrow = new Date(`${ymd}T00:00:00${offset}`);
@@ -92,26 +98,37 @@ function normalizeEvent(event) {
     location: event.location?.displayName || null,
     // bodyPreview is plain text — safe and concise for a list view.
     description: event.bodyPreview?.trim() || null,
-    organizer: event.organizer?.emailAddress?.name || null,
+    organizer: {
+      name: event.organizer?.emailAddress?.name || null,
+      email: event.organizer?.emailAddress?.address || null,
+    },
+    // Everyone on the invite, with their RSVP status.
+    attendees: (event.attendees || []).map((a) => ({
+      name: a.emailAddress?.name || null,
+      email: a.emailAddress?.address || null,
+      type: a.type || 'required', // required | optional | resource
+      response: a.status?.response || 'none', // accepted | declined | tentativelyAccepted | none…
+    })),
     onlineMeetingUrl: event.onlineMeeting?.joinUrl || null,
     webLink: event.webLink || null,
   };
 }
 
 /**
- * Fetch all of the signed-in user's calendar events for today.
+ * Fetch all of the signed-in user's calendar events for one day.
  *
  * Uses `calendarView`, which (unlike `/events`) expands recurring series into
- * concrete occurrences within the time window — exactly what "today's events"
- * should mean.
+ * concrete occurrences within the time window — exactly what "that day's
+ * events" should mean.
  *
  * @param {string} accessToken
  * @param {string} [timeZone] IANA time zone (defaults to the server's).
+ * @param {string} [dateYmd] "YYYY-MM-DD"; defaults to today in `timeZone`.
  * @returns {Promise<{ date: string, timeZone: string, events: object[] }>}
  */
-async function getTodaysEvents(accessToken, timeZone) {
+async function getEventsForDay(accessToken, timeZone, dateYmd) {
   const tz = timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const { startDateTime, endDateTime, date } = todayRange(tz);
+  const { startDateTime, endDateTime, date } = dayRange(tz, dateYmd);
 
   const client = getGraphClient(accessToken);
 
@@ -120,7 +137,7 @@ async function getTodaysEvents(accessToken, timeZone) {
     .query({ startDateTime, endDateTime })
     // Return start/end times already converted to the user's time zone.
     .header('Prefer', `outlook.timezone="${tz}"`)
-    .select('subject,start,end,location,bodyPreview,isAllDay,organizer,onlineMeeting,webLink')
+    .select('subject,start,end,location,bodyPreview,isAllDay,organizer,attendees,onlineMeeting,webLink')
     .orderby('start/dateTime')
     .top(100)
     .get();
@@ -227,4 +244,4 @@ async function getMe(accessToken) {
   };
 }
 
-module.exports = { getTodaysEvents, getMe, getGraphClient, createMeetingWithPhysician };
+module.exports = { getEventsForDay, getMe, getGraphClient, createMeetingWithPhysician };
