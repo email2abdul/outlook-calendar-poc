@@ -2,7 +2,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
 
 /**
  * Physician procedure analytics — reads data/analytics.db, a one-time SQLite
@@ -17,6 +16,7 @@ const DB_PATH = path.join(__dirname, '..', 'data', 'analytics.db');
 
 let db = null;
 if (fs.existsSync(DB_PATH)) {
+  const Database = require('better-sqlite3'); // lazy: skip native module when no DB
   db = new Database(DB_PATH, { readonly: true });
   console.log('[analytics] procedure-volume DB connected');
 } else {

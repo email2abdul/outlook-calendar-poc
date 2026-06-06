@@ -1,0 +1,5 @@
+# Local SQLite files — never ship these; Vercel uses Redis instead, and
+# analytics.db (366 MB) exceeds the serverless function size limit anyway.
+data/*.db
+data/*.db-journal
+.env

@@ -1,14 +1,51 @@
 # Deploying the live demo
 
 The app is a stateful Node/Express server (it holds the OAuth session/token
-cache), so it needs a host that runs a long-lived process — **Render**,
-**Railway**, **Fly.io**, or **Azure App Service** all work. Below is the
-fastest path, using the included `render.yaml` blueprint.
+cache). Two supported paths:
+
+- **Long-lived process host** (Render, Railway, Fly.io, Azure App Service) —
+  runs the repo unchanged with SQLite-backed sessions/notes. See
+  [Deploy to Render](#deploy-to-render).
+- **Vercel (serverless)** — needs an external Redis for sessions/notes
+  (instances are ephemeral, so local SQLite files don't persist). The repo
+  ships ready for this: `api/index.js` + `vercel.json`, and setting
+  `REDIS_URL` switches the session and notes stores from SQLite to Redis.
+  See [Deploy to Vercel](#deploy-to-vercel).
 
 > ⚠️ OAuth requires secrets only you have. A deploy is **not** functional until
 > you supply your Azure `MS_CLIENT_ID` / `MS_CLIENT_SECRET` and register the
 > deployed redirect URI in Azure. There is no way around this — it's what makes
 > "Login with Outlook" actually log in.
+
+## Deploy to Vercel
+
+Deploys straight from GitHub; every push to `main` redeploys.
+
+1. [vercel.com/new](https://vercel.com/new) → **Import** the
+   `email2abdul/outlook-calendar-poc` repo (sign in with GitHub). Framework
+   preset: **Other** — no build command needed; `vercel.json` routes
+   everything through the `api/index.js` serverless function.
+2. Storage → add **Upstash for Redis** from the Vercel Marketplace (free
+   tier) and connect it to the project. This injects `REDIS_URL`/`KV_URL`,
+   which flips the app's session + notes stores from SQLite to Redis.
+3. Project → Settings → Environment Variables:
+   - `MS_CLIENT_ID` — your Azure Application (client) ID
+   - `MS_CLIENT_SECRET` — your Azure client secret **value**
+   - `SESSION_SECRET` — any long random string (`openssl rand -hex 32`)
+   - `MS_TENANT_ID` — `common` (or your tenant ID)
+   - `REDIRECT_URI` — set after the first deploy (step 4)
+4. Deploy. Vercel assigns a URL, e.g. `https://outlook-calendar-poc.vercel.app`.
+   Set `REDIRECT_URI` to `https://<your-vercel-url>/auth/callback` and redeploy.
+5. In the [Azure Portal](https://portal.azure.com) → your App registration →
+   **Authentication → Add a redirect URI (Web)**, add the exact same value.
+
+Caveats on Vercel:
+- **Analytics is disabled** — `data/analytics.db` (366 MB) exceeds the
+  serverless function size limit; the app degrades gracefully and hides the
+  analytics section. Login, calendar, physician panel, notes, briefing email
+  and scheduling all work.
+- Without `REDIS_URL`, OAuth logins fail intermittently (session state is
+  lost between `/auth/login` and `/auth/callback`) — step 2 is not optional.
 
 ## Deploy to Render (recommended)
 
