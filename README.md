@@ -9,11 +9,11 @@ intelligence layer for salespeople:
   contact info and primary facility.
 - **Procedure analytics** (optional SQLite ingest): volume by year, payer mix,
   top CPT codes with reimbursement rates, facilities.
-- **MOM / call notes**: per-organizer history with each physician, a "last
+- **Call notes**: per-organizer history with each physician, a "last
   call" reminder when scheduling, and auto-inclusion of the latest note in the
   next invite.
 - **Scheduling + briefing**: send an Outlook invite to a physician straight
-  from an event, or email yourself a full briefing (details + analytics + MOM
+  from an event, or email yourself a full briefing (details + analytics + call-note
   history).
 
 Built as a small, modular, production-quality demo intended to drop into a
@@ -51,7 +51,7 @@ Browser  ──"Login with Outlook"──▶  /auth/login
             ▼
 Browser  ──GET /api/calendar/day──▶  Graph /me/calendarView  ──▶ that day's events
             │                          + attendee ↔ physician matching (CSV directory)
-            ▼                          + organizer's latest MOM per physician
+            ▼                          + organizer's latest call note per physician
         Clean UI renders events; matched attendees open an inline
         physician panel (details, analytics, call notes, actions)
 ```
@@ -79,7 +79,7 @@ outlook-calendar-poc/
 │   ├── auth.js                # MSAL: auth URL, code exchange, silent token (REUSABLE)
 │   ├── graph.js               # Graph: calendar fetch, create invite, briefing email (REUSABLE)
 │   ├── physicians.js          # Physician + facility directory (CSV → in-memory index)
-│   ├── notes.js               # MOM / call notes store (SQLite, per organizer + NPI)
+│   ├── notes.js               # Call notes store (SQLite, per organizer + NPI)
 │   ├── analytics.js           # Procedure-volume queries over data/analytics.db
 │   └── routes/
 │       ├── auth.routes.js     # /auth/login, /auth/callback, /auth/logout
@@ -214,9 +214,9 @@ the briefing-email analytics block are simply omitted.
 | GET    | `/api/physicians/search?q=…`             | Directory search (name / NPI / email / specialty); email-first ranking |
 | GET    | `/api/physicians/:npi`                   | One physician's full profile (incl. primary facility)                  |
 | GET    | `/api/physicians/:npi/analytics`         | Procedure analytics (null when `analytics.db` is absent / no data)     |
-| GET    | `/api/physicians/:npi/notes`             | The signed-in organizer's MOM history with this physician              |
-| POST   | `/api/physicians/:npi/notes`             | Save a MOM note. Body: `{ notes, eventId?, meetingDate? }`             |
-| POST   | `/api/physicians/:npi/send-briefing`     | Email the organizer a briefing (details + analytics + MOM history). Body: `{ eventTitle?, eventStart? }` |
+| GET    | `/api/physicians/:npi/notes`             | The signed-in organizer's call-note history with this physician              |
+| POST   | `/api/physicians/:npi/notes`             | Save a call note. Body: `{ notes, eventId?, meetingDate? }`             |
+| POST   | `/api/physicians/:npi/send-briefing`     | Email the organizer a briefing (details + analytics + call-note history). Body: `{ eventTitle?, eventStart? }` |
 
 `/api/calendar/day` response shape:
 

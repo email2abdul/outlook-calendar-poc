@@ -196,7 +196,7 @@ function physicianDetailsTable(physician) {
  * invitee's details travel with the event itself.
  * @param {object} physician normalized profile from src/physicians.js
  * @param {string} [notes] free-text agenda from the organizer
- * @param {object} [previousNote] latest MOM from src/notes.js — appended as a
+ * @param {object} [previousNote] latest call note from src/notes.js — appended as a
  *   "Previous call summary" so both sides get context in the invite.
  */
 function buildPhysicianBody(physician, notes, previousNote) {
@@ -276,14 +276,14 @@ function analyticsHtml(a) {
 
 /**
  * Email the organizer (salesperson) a briefing about a physician: profile
- * details, procedure analytics, plus their full MOM/call-note history — sent
+ * details, procedure analytics, plus their full call-note history — sent
  * via Graph sendMail to the signed-in user's own mailbox.
  *
  * @param {string} accessToken
  * @param {object} opts
  * @param {string} opts.toEmail organizer's address
  * @param {object} opts.physician normalized profile
- * @param {object[]} opts.notes MOM history (newest first) from src/notes.js
+ * @param {object[]} opts.notes call-note history (newest first) from src/notes.js
  * @param {object} [opts.analytics] from src/analytics.js (facilities labelled)
  * @param {{title?: string, start?: string}} [opts.event] meeting context
  */
@@ -312,7 +312,7 @@ async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, a
     '<p><b>Physician details</b></p>',
     physicianDetailsTable(physician),
     analyticsHtml(analytics),
-    '<p><b>Call history (MOM)</b></p>',
+    '<p><b>Call notes</b></p>',
     history,
   ].join('');
 
@@ -338,7 +338,7 @@ async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, a
  * @param {string} opts.timeZone IANA time zone for start/end
  * @param {object} opts.physician normalized profile (must have an email)
  * @param {string} [opts.notes]
- * @param {object} [opts.previousNote] latest MOM to include in the invite
+ * @param {object} [opts.previousNote] latest call note to include in the invite
  */
 async function createMeetingWithPhysician(
   accessToken,
