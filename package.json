@@ -22,12 +22,10 @@
     "@microsoft/microsoft-graph-client": "^3.0.7",
     "better-sqlite3": "^12.10.0",
     "better-sqlite3-session-store": "^0.1.0",
-    "connect-redis": "^9.0.0",
     "dotenv": "^16.4.5",
     "express": "^4.21.2",
     "express-session": "^1.18.1",
-    "isomorphic-fetch": "^3.0.0",
-    "redis": "^6.0.0"
+    "isomorphic-fetch": "^3.0.0"
   },
   "comments": {
     "overrides": "Force the transitive `uuid` dep up to the patched line (GHSA-w5hq-g745-h8pq). msal-node only calls uuid's v4() with no `buf` arg, so the bug is unreachable here, but this keeps `npm audit` clean without a breaking msal-node major bump."

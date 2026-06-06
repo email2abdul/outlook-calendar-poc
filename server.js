@@ -3,9 +3,10 @@
 const path = require('path');
 const express = require('express');
 const session = require('express-session');
+const SqliteStore = require('better-sqlite3-session-store')(session);
+const Database = require('better-sqlite3');
 
 const config = require('./src/config');
-const redisClient = require('./src/redis');
 const authRoutes = require('./src/routes/auth.routes');
 const apiRoutes = require('./src/routes/api.routes');
 
@@ -19,32 +20,20 @@ app.use(express.json());
 
 // ── Session: the only thing the browser holds is a signed, httpOnly cookie.
 //    Access/refresh tokens are kept server-side in the MSAL token cache, which
-//    lives inside the session — persisted so logins survive server restarts.
-//    The MSAL refresh token then keeps the access token fresh silently; users
-//    only re-authenticate when the cookie/session expires or the refresh
-//    token is revoked.
+//    lives inside the session — persisted to SQLite so logins survive server
+//    restarts. The MSAL refresh token then keeps the access token fresh
+//    silently; users only re-authenticate when the cookie/session expires or
+//    the refresh token is revoked.
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30; // 30 days
 
-// SQLite by default; Redis when REDIS_URL/KV_URL is set (serverless hosts
-// like Vercel, where a local file doesn't persist between invocations).
-function createSessionStore() {
-  if (redisClient) {
-    const { RedisStore } = require('connect-redis');
-    return new RedisStore({ client: redisClient, prefix: 'sess:' });
-  }
-  const SqliteStore = require('better-sqlite3-session-store')(session);
-  const Database = require('better-sqlite3');
-  const sessionDb = new Database(path.join(__dirname, 'data', 'sessions.db'));
-  return new SqliteStore({
-    client: sessionDb,
-    expired: { clear: true, intervalMs: 1000 * 60 * 15 }, // purge expired rows
-  });
-}
-
+const sessionDb = new Database(path.join(__dirname, 'data', 'sessions.db'));
 app.use(
   session({
     name: 'connect.sid',
-    store: createSessionStore(),
+    store: new SqliteStore({
+      client: sessionDb,
+      expired: { clear: true, intervalMs: 1000 * 60 * 15 }, // purge expired rows
+    }),
     secret: config.session.secret,
     resave: false,
     saveUninitialized: false,
@@ -76,14 +65,8 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Listen when run directly (`npm start`); on Vercel the app is imported by
-// api/index.js and the platform owns the listening socket.
-if (require.main === module) {
-  app.listen(config.port, () => {
-    console.log(`\n  Outlook Calendar POC running at http://localhost:${config.port}`);
-    console.log(`  Environment: ${config.nodeEnv}`);
-    console.log(`  Sign in:     http://localhost:${config.port}/auth/login\n`);
-  });
-}
-
-module.exports = app;
+app.listen(config.port, () => {
+  console.log(`\n  Outlook Calendar POC running at http://localhost:${config.port}`);
+  console.log(`  Environment: ${config.nodeEnv}`);
+  console.log(`  Sign in:     http://localhost:${config.port}/auth/login\n`);
+});

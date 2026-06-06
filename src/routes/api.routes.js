@@ -67,21 +67,17 @@ async function dayHandler(req, res, next) {
     // the UI can show the physician's full profile inline — plus the
     // organizer's latest call note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
-    data.events = await Promise.all(
-      data.events.map(async (ev) => ({
-        ...ev,
-        attendees: await Promise.all(
-          ev.attendees.map(async (a) => {
-            const physician = physicians.getByEmail(a.email);
-            return {
-              ...a,
-              physician,
-              lastNote: physician ? await callNotes.getLatestNote(physician.npi, organizer) : null,
-            };
-          })
-        ),
-      }))
-    );
+    data.events = data.events.map((ev) => ({
+      ...ev,
+      attendees: ev.attendees.map((a) => {
+        const physician = physicians.getByEmail(a.email);
+        return {
+          ...a,
+          physician,
+          lastNote: physician ? callNotes.getLatestNote(physician.npi, organizer) : null,
+        };
+      }),
+    }));
 
     res.json(data);
   } catch (err) {
@@ -151,14 +147,10 @@ function labelledAnalytics(npi) {
  * The signed-in organizer's call-note (MOM) history with this physician,
  * newest first.
  */
-router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
-  try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
-    res.json({ npi: physician.npi, notes: await callNotes.getNotes(physician.npi, organizerEmail(req)) });
-  } catch (err) {
-    next(err);
-  }
+router.get('/physicians/:npi/notes', requireAuth, (req, res) => {
+  const physician = physicians.getByNpi(req.params.npi);
+  if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+  res.json({ npi: physician.npi, notes: callNotes.getNotes(physician.npi, organizerEmail(req)) });
 });
 
 /**
@@ -166,31 +158,27 @@ router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  * Body: { notes, eventId?, meetingDate? (YYYY-MM-DD) }
  * Save a MOM / call note for this physician.
  */
-router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
-  try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+router.post('/physicians/:npi/notes', requireAuth, (req, res) => {
+  const physician = physicians.getByNpi(req.params.npi);
+  if (!physician) return res.status(404).json({ error: 'physician_not_found' });
 
-    const { notes, eventId, meetingDate } = req.body || {};
-    if (typeof notes !== 'string' || notes.trim() === '') {
-      return res.status(400).json({ error: 'bad_request', message: 'notes is required' });
-    }
-    if (meetingDate && !/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
-      return res.status(400).json({ error: 'bad_request', message: 'meetingDate must be YYYY-MM-DD' });
-    }
-
-    const note = await callNotes.addNote({
-      npi: physician.npi,
-      organizerEmail: organizerEmail(req),
-      eventId: typeof eventId === 'string' ? eventId : null,
-      meetingDate: meetingDate || null,
-      notes: notes.trim(),
-    });
-
-    res.status(201).json({ note });
-  } catch (err) {
-    next(err);
+  const { notes, eventId, meetingDate } = req.body || {};
+  if (typeof notes !== 'string' || notes.trim() === '') {
+    return res.status(400).json({ error: 'bad_request', message: 'notes is required' });
   }
+  if (meetingDate && !/^\d{4}-\d{2}-\d{2}$/.test(meetingDate)) {
+    return res.status(400).json({ error: 'bad_request', message: 'meetingDate must be YYYY-MM-DD' });
+  }
+
+  const note = callNotes.addNote({
+    npi: physician.npi,
+    organizerEmail: organizerEmail(req),
+    eventId: typeof eventId === 'string' ? eventId : null,
+    meetingDate: meetingDate || null,
+    notes: notes.trim(),
+  });
+
+  res.status(201).json({ note });
 });
 
 /**
@@ -215,7 +203,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
     await graph.sendPhysicianBriefing(token, {
       toEmail: to,
       physician,
-      notes: await callNotes.getNotes(physician.npi, to),
+      notes: callNotes.getNotes(physician.npi, to),
       analytics: labelledAnalytics(physician.npi),
       event: {
         title: typeof eventTitle === 'string' ? eventTitle : undefined,
@@ -265,7 +253,7 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
     const previousNote =
       includePreviousNotes === false
         ? null
-        : await callNotes.getLatestNote(physician.npi, organizerEmail(req));
+        : callNotes.getLatestNote(physician.npi, organizerEmail(req));
 
     const event = await graph.createMeetingWithPhysician(token, {
       subject: subject.trim(),
