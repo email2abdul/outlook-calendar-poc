@@ -660,7 +660,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* ── Call notes ────────────────────────────────────────────── */
+/* ── Meeting notes──────────────────────────────────────────── */
 .physician-history {
   margin-top: 16px;
   border-top: 1px solid var(--border);
@@ -776,7 +776,7 @@ body {
   font-size: 13px;
 }
 
-/* Email-briefing action under the call notes */
+/* Email-briefing action under the meeting notes */
 .briefing {
   margin-top: 12px;
   display: flex;

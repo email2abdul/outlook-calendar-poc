@@ -65,7 +65,7 @@ async function dayHandler(req, res, next) {
 
     // Enrich attendees: match each email against the physician directory so
     // the UI can show the physician's full profile inline — plus the
-    // organizer's latest call note for that physician (the "last call" hint).
+    // organizer's latest meeting note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
     data.events = await Promise.all(
       data.events.map(async (ev) => ({
@@ -148,7 +148,7 @@ function labelledAnalytics(npi) {
 
 /**
  * GET /api/physicians/:npi/notes
- * The signed-in organizer's call-note history with this physician,
+ * The signed-in organizer's meeting-note history with this physician,
  * newest first.
  */
 router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
@@ -164,7 +164,7 @@ router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
 /**
  * POST /api/physicians/:npi/notes
  * Body: { notes, eventId?, meetingDate? (YYYY-MM-DD) }
- * Save a call note for this physician.
+ * Save a meeting note for this physician.
  */
 router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
   try {
@@ -197,7 +197,7 @@ router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  * POST /api/physicians/:npi/send-briefing
  * Body: { eventTitle?, eventStart? }
  * Emails the signed-in organizer (salesperson) a briefing: the physician's
- * details plus the organizer's full call-note history with them.
+ * details plus the organizer's full meeting-note history with them.
  */
 router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next) => {
   try {
@@ -234,7 +234,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
  * Body: { npi, subject, start, end, timeZone, notes?, includePreviousNotes? }
  * Creates an Outlook event with the physician as required attendee — Graph
  * emails the invite (with the physician's full details in the body) for us.
- * Unless includePreviousNotes === false, the organizer's latest call note with this
+ * Unless includePreviousNotes === false, the organizer's latest meeting note with this
  * physician is appended to the invite as a "Previous call summary".
  */
 router.post('/calendar/schedule', requireAuth, async (req, res, next) => {

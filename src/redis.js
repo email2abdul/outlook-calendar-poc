@@ -3,7 +3,7 @@
 require('dotenv').config();
 
 /**
- * Shared Redis connection — used by the session store and the call-notes
+ * Shared Redis connection — used by the session store and the meeting-notes
  * store when the app runs on a serverless host (Vercel), where a local
  * SQLite file doesn't survive between invocations.
  *

@@ -4,7 +4,7 @@ const path = require('path');
 const redis = require('./redis');
 
 /**
- * Call notes store — one entry per note, keyed to a physician (NPI) and
+ * Meeting notes store — one entry per note, keyed to a physician (NPI) and
  * the organizer who wrote it, so every salesperson keeps their own history
  * with each physician.
  *

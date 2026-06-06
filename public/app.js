@@ -59,7 +59,7 @@ const $panel = (sel) => inlinePanel.querySelector(sel);
 
 let selectedPhysician = null;
 let searchDebounce = null;
-// The event the panel was opened from — call notes get linked to it.
+// The event the panel was opened from — meeting notes get linked to it.
 let currentEventCtx = null;
 // 'view'    → matched attendee: meeting already exists, show details + notes only.
 // 'schedule'→ from "Schedule call": include the scheduling form.
@@ -97,7 +97,7 @@ function attachInlinePanel(eventLi) {
   if (!dateInput.value) dateInput.value = todayYmd();
 }
 
-/** Matched attendee → details + call notes only (meeting already exists). */
+/** Matched attendee → details + meeting notes only (meeting already exists). */
 function openPhysicianDetails(eventLi, physician, ev) {
   attachInlinePanel(eventLi);
   currentEventCtx = ev || null;
@@ -349,7 +349,7 @@ async function loadAnalytics(npi) {
   }
 }
 
-// ── Call notes ──────────────────────────────────────────────────────────────
+// ── Meeting notes────────────────────────────────────────────────────────────
 
 function renderNotes(notes) {
   const list = $panel('.physician-history__list');
@@ -357,13 +357,13 @@ function renderNotes(notes) {
 
   // Heading carries the count so a long history is obvious at a glance.
   $panel('.physician-history h3').textContent = notes.length
-    ? `Call notes (${notes.length})`
-    : 'Call notes';
+    ? `Meeting notes (${notes.length})`
+    : 'Meeting notes';
 
   if (!notes.length) {
     const li = document.createElement('li');
     li.className = 'physician-history__empty muted';
-    li.textContent = 'No previous call notes yet.';
+    li.textContent = 'No previous meeting notes yet.';
     list.appendChild(li);
   } else {
     notes.forEach((n, i) => {
@@ -542,7 +542,7 @@ async function submitSchedule(evt) {
   }
 }
 
-/** Email the organizer this physician's details + full call-note history. */
+/** Email the organizer this physician's details + full meeting-note history. */
 async function sendBriefing() {
   if (!selectedPhysician) return;
 
