@@ -121,16 +121,20 @@ router.get('/physicians/:npi', requireAuth, (req, res) => {
  * yearly trend, category/payer mix, top CPT codes with reimbursement rates,
  * and where they operate. 204-style null when we have no data for them.
  */
-router.get('/physicians/:npi/analytics', requireAuth, (req, res) => {
-  const physician = physicians.getByNpi(req.params.npi);
-  if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+router.get('/physicians/:npi/analytics', requireAuth, async (req, res, next) => {
+  try {
+    const physician = physicians.getByNpi(req.params.npi);
+    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
 
-  res.json({ npi: physician.npi, analytics: labelledAnalytics(physician.npi) });
+    res.json({ npi: physician.npi, analytics: await labelledAnalytics(physician.npi) });
+  } catch (err) {
+    next(err);
+  }
 });
 
 /** Analytics with facility volumes labelled from the directory, or null. */
-function labelledAnalytics(npi) {
-  const data = analytics.getPhysicianAnalytics(npi);
+async function labelledAnalytics(npi) {
+  const data = await analytics.getPhysicianAnalytics(npi);
   if (!data) return null;
 
   data.facilities = data.facilities.map((f) => {
@@ -216,7 +220,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
       toEmail: to,
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
-      analytics: labelledAnalytics(physician.npi),
+      analytics: await labelledAnalytics(physician.npi),
       event: {
         title: typeof eventTitle === 'string' ? eventTitle : undefined,
         start: typeof eventStart === 'string' ? eventStart : undefined,
