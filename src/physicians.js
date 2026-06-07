@@ -183,22 +183,55 @@ if (supabase) {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Search physicians by free text (matches name, NPI, email or specialty).
- * Results with an email sort first — they're the ones we can actually invite.
+ * Search physicians by free text — matches name, NPI, email, specialty,
+ * facility name or facility city. Best matches first (ranked in Supabase by
+ * the bis_search_physicians function: exact email/NPI > name > email >
+ * facility > city > specialty); physicians with an email sort ahead — they're
+ * the ones we can actually invite. Several physicians matching the same name
+ * all come back, so the user picks who they're actually meeting.
  * @param {string} query
  * @param {number} [limit=20]
  */
-function search(query, limit = 20) {
-  const q = String(query || '').trim().toLowerCase();
+async function search(query, limit = 20) {
+  const q = String(query || '').trim();
   if (!q) return [];
 
+  if (supabase) {
+    const { data, error } = await supabase.rpc('bis_search_physicians', {
+      p_query: q,
+      p_limit: limit,
+    });
+    if (error) throw new Error(`search RPC failed: ${error.message}`);
+    return data.map((p) => ({
+      npi: String(p.npi),
+      name: nullable(p.name),
+      specialty: nullable(p.specialty),
+      email: nullable(p.email),
+      phone: p.phone !== undefined && p.phone !== null && p.phone !== '' ? String(p.phone) : null,
+      esdProcedure: Boolean(p.esdProcedure),
+      photoUrl: nullable(p.photoUrl),
+      linkedinUrl: nullable(p.linkedinUrl),
+      facility: p.facility
+        ? {
+            ...p.facility,
+            id: String(p.facility.id),
+            zip: p.facility.zip !== undefined && p.facility.zip !== null ? String(p.facility.zip) : null,
+          }
+        : null,
+    }));
+  }
+
+  // Local fallback: filter the in-memory index (also matches facility).
+  const ql = q.toLowerCase();
   const matches = [];
   for (const p of physicians) {
     if (
-      (p.name && p.name.toLowerCase().includes(q)) ||
-      p.npi.includes(q) ||
-      (p.email && p.email.toLowerCase().includes(q)) ||
-      (p.specialty && p.specialty.toLowerCase().includes(q))
+      (p.name && p.name.toLowerCase().includes(ql)) ||
+      p.npi.includes(ql) ||
+      (p.email && p.email.toLowerCase().includes(ql)) ||
+      (p.specialty && p.specialty.toLowerCase().includes(ql)) ||
+      (p.facility?.name && p.facility.name.toLowerCase().includes(ql)) ||
+      (p.facility?.city && p.facility.city.toLowerCase().includes(ql))
     ) {
       matches.push(p);
       // Collect more than `limit` so the email-first sort has options.
@@ -208,6 +241,76 @@ function search(query, limit = 20) {
 
   matches.sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)));
   return matches.slice(0, limit);
+}
+
+// Words too generic to identify a facility on their own.
+const FACILITY_STOPWORDS = new Set([
+  'hospital', 'medical', 'center', 'centre', 'clinic', 'health', 'healthcare',
+  'regional', 'community', 'memorial', 'general', 'university', 'institute',
+  'the', 'and', 'for', 'saint',
+]);
+
+/**
+ * Physicians referenced in free text (e.g. a meeting title) — matched against
+ * the Supabase-loaded directory by email, name or facility:
+ *  - email in the text → exact hit (100)
+ *  - all words of a physician's name present (middle initials ignored, so a
+ *    title saying "Adam Smith" matches "Adam J Smith") → 70, or 95 when the
+ *    facility also appears
+ *  - facility name present (≥2 of its words, at least one distinctive) → 40
+ * Returns up to `limit` ranked matches — several physicians sharing a name
+ * all come back, so the user picks who the meeting is actually with.
+ */
+function matchInText(text, limit = 5) {
+  if (!text) return [];
+  const raw = String(text);
+  // Token set, so "Ali" doesn't hit inside "California".
+  const tokens = new Set(raw.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+
+  const scored = new Map(); // npi → { p, score }
+  const add = (p, score) => {
+    const prev = scored.get(p.npi);
+    if (!prev || prev.score < score) scored.set(p.npi, { p, score });
+  };
+
+  // 1. Emails in the text → exact directory hits.
+  for (const e of raw.match(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g) || []) {
+    const p = physiciansByEmail.get(e.toLowerCase());
+    if (p) add(p, 100);
+  }
+
+  // 2. Name / facility mentions.
+  for (const p of physicians) {
+    let nameHit = false;
+    if (p.name) {
+      const words = p.name.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 2);
+      nameHit = words.length >= 2 && words.every((w) => tokens.has(w));
+    }
+
+    let facilityHit = false;
+    if (p.facility?.name) {
+      // De-duplicated, so "Fort Smith Fort Smith" can't double-count a word.
+      const words = [
+        ...new Set(p.facility.name.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3)),
+      ];
+      const present = words.filter((w) => tokens.has(w));
+      facilityHit = present.length >= 2 && present.some((w) => !FACILITY_STOPWORDS.has(w));
+    }
+
+    if (nameHit && facilityHit) add(p, 95);
+    else if (nameHit) add(p, 70);
+    else if (facilityHit) add(p, 40);
+  }
+
+  return [...scored.values()]
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        Number(Boolean(b.p.email)) - Number(Boolean(a.p.email)) ||
+        String(a.p.name).localeCompare(String(b.p.name))
+    )
+    .slice(0, limit)
+    .map((x) => x.p);
 }
 
 /** Full profile for one physician by NPI, or null. */
@@ -226,4 +329,4 @@ function getFacilityById(id) {
   return facilitiesById.get(String(id)) || null;
 }
 
-module.exports = { search, getByNpi, getByEmail, getFacilityById, ready };
+module.exports = { search, getByNpi, getByEmail, getFacilityById, matchInText, ready };

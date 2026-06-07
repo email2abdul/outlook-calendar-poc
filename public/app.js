@@ -138,7 +138,10 @@ function renderPhysicianResults(results) {
 
     const meta = document.createElement('span');
     meta.className = 'muted';
-    meta.textContent = [p.specialty, p.email || 'no email'].filter(Boolean).join(' · ');
+    // Facility distinguishes same-name physicians — "which one am I meeting?"
+    meta.textContent = [p.specialty, p.facility?.name, p.email || 'no email']
+      .filter(Boolean)
+      .join(' · ');
 
     li.append(name, meta);
     if (!p.email) li.classList.add('physician-result--noemail');
@@ -679,6 +682,22 @@ function renderEvents(events) {
           }
         }
 
+        ul.appendChild(chip);
+      }
+      wrap.hidden = false;
+    }
+
+    // Physicians matched from the meeting title (name / facility / email) —
+    // each is a clickable option, so the user picks who the meeting is with.
+    if (ev.titleMatches && ev.titleMatches.length > 0) {
+      const wrap = node.querySelector('.event__attendees');
+      const ul = node.querySelector('.event__attendee-list');
+      for (const p of ev.titleMatches) {
+        const chip = document.createElement('li');
+        chip.className = 'event__attendee event__attendee--physician';
+        chip.title = 'Matched from the meeting title — click to view details';
+        chip.textContent = `🩺 ${[p.name, p.facility?.name].filter(Boolean).join(' · ')}`;
+        chip.addEventListener('click', () => openPhysicianDetails(li, p, ev));
         ul.appendChild(chip);
       }
       wrap.hidden = false;

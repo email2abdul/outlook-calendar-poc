@@ -68,9 +68,8 @@ async function dayHandler(req, res, next) {
     // organizer's latest meeting note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
     data.events = await Promise.all(
-      data.events.map(async (ev) => ({
-        ...ev,
-        attendees: await Promise.all(
+      data.events.map(async (ev) => {
+        const attendees = await Promise.all(
           ev.attendees.map(async (a) => {
             const physician = physicians.getByEmail(a.email);
             return {
@@ -79,8 +78,18 @@ async function dayHandler(req, res, next) {
               lastNote: physician ? await callNotes.getLatestNote(physician.npi, organizer) : null,
             };
           })
-        ),
-      }))
+        );
+
+        // Physicians referenced in the meeting title (name / facility /
+        // email) — shown as options when they aren't on the invite itself,
+        // so the user can pick who the meeting is actually with.
+        const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
+        const titleMatches = physicians
+          .matchInText(ev.title)
+          .filter((p) => !attendeeNpis.has(p.npi));
+
+        return { ...ev, attendees, titleMatches };
+      })
     );
 
     res.json(data);
@@ -95,14 +104,19 @@ router.get('/calendar/today', requireAuth, dayHandler);
 /**
  * GET /api/physicians/search?q=smith
  * Free-text search over the physician directory (name / NPI / email /
- * specialty). Physicians with an email sort first.
+ * specialty / facility name / facility city), ranked best-match-first in
+ * Supabase. Physicians with an email sort first.
  */
-router.get('/physicians/search', requireAuth, (req, res) => {
-  const q = typeof req.query.q === 'string' ? req.query.q : '';
-  if (q.trim().length < 2) {
-    return res.json({ query: q, results: [] });
+router.get('/physicians/search', requireAuth, async (req, res, next) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    if (q.trim().length < 2) {
+      return res.json({ query: q, results: [] });
+    }
+    res.json({ query: q, results: await physicians.search(q) });
+  } catch (err) {
+    next(err);
   }
-  res.json({ query: q, results: physicians.search(q) });
 });
 
 /**
