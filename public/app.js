@@ -107,6 +107,19 @@ function openPhysicianDetails(eventLi, physician, ev) {
   selectPhysician(physician);
 }
 
+/**
+ * Title-match suggestion → full details PLUS the scheduling form, so the
+ * user can book a meeting with whichever suggested physician they pick.
+ */
+function openPhysicianSchedule(eventLi, physician, ev) {
+  attachInlinePanel(eventLi);
+  currentEventCtx = ev || null;
+  panelMode = 'schedule';
+  $panel('.physician-inline__title').textContent = 'Schedule with this physician';
+  $panel('.physician-inline__search-wrap').hidden = true;
+  selectPhysician(physician);
+}
+
 /** Unmatched attendee → empty inline search under the event. */
 function openPhysicianSearch(eventLi, ev) {
   attachInlinePanel(eventLi);
@@ -139,7 +152,8 @@ function renderPhysicianResults(results) {
     const meta = document.createElement('span');
     meta.className = 'muted';
     // Facility distinguishes same-name physicians — "which one am I meeting?"
-    meta.textContent = [p.specialty, p.facility?.name, p.email || 'no email']
+    // matchHint explains fallback results (e.g. "same city as <facility>").
+    meta.textContent = [p.specialty, p.facility?.name, p.email || 'no email', p.matchHint && `📍 ${p.matchHint}`]
       .filter(Boolean)
       .join(' · ');
 
@@ -533,7 +547,9 @@ async function submitSchedule(evt) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.message || `Request failed (${res.status})`);
 
-    status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})`;
+    status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})${
+      data.briefingSent ? ' · 📧 Briefing emailed to you' : ''
+    } · ⏰ Outlook will remind you 90 min before`;
     status.className = 'schedule-status schedule-status--ok';
     // Let the user read the confirmation, then refresh the day's events.
     setTimeout(loadCalendar, 1500);
@@ -695,9 +711,11 @@ function renderEvents(events) {
       for (const p of ev.titleMatches) {
         const chip = document.createElement('li');
         chip.className = 'event__attendee event__attendee--physician';
-        chip.title = 'Matched from the meeting title — click to view details';
-        chip.textContent = `🩺 ${[p.name, p.facility?.name].filter(Boolean).join(' · ')}`;
-        chip.addEventListener('click', () => openPhysicianDetails(li, p, ev));
+        chip.title = p.matchHint
+          ? `${p.matchHint} — click to view details & schedule a meeting`
+          : 'Matched from the meeting title — click to view details & schedule a meeting';
+        chip.textContent = `🩺 ${[p.name, p.facility?.name].filter(Boolean).join(' · ')}${p.matchHint ? ' · 📍 nearby' : ''}`;
+        chip.addEventListener('click', () => openPhysicianSchedule(li, p, ev));
         ul.appendChild(chip);
       }
       wrap.hidden = false;

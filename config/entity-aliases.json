@@ -1,0 +1,18 @@
+{
+  "_comment": "Alias / abbreviation → canonical expansion. Used by the 'alias' matching strategy in src/entity-matcher.js. Add new lines as matching needs evolve — no code change required.",
+  "aiims": "All India Institute of Medical Sciences",
+  "iit": "Indian Institute of Technology",
+  "mamc": "Maulana Azad Medical College",
+  "pgimer": "Postgraduate Institute of Medical Education and Research",
+  "jipmer": "Jawaharlal Institute of Postgraduate Medical Education and Research",
+  "kgmu": "King George's Medical University",
+  "bhu": "Banaras Hindu University",
+  "cmc": "Christian Medical College",
+  "mgh": "Massachusetts General Hospital",
+  "bwh": "Brigham and Women's Hospital",
+  "hss": "Hospital for Special Surgery",
+  "ucla": "University of California Los Angeles",
+  "ucsf": "University of California San Francisco",
+  "nyu": "New York University",
+  "mskcc": "Memorial Sloan Kettering Cancer Center"
+}

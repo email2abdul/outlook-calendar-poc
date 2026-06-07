@@ -287,7 +287,10 @@ function analyticsHtml(a) {
  * @param {object} [opts.analytics] from src/analytics.js (facilities labelled)
  * @param {{title?: string, start?: string}} [opts.event] meeting context
  */
-async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, analytics, event }) {
+async function sendPhysicianBriefing(
+  accessToken,
+  { toEmail, physician, notes, analytics, event, subject, intro }
+) {
   const client = getGraphClient(accessToken);
 
   const history = notes.length
@@ -307,7 +310,7 @@ async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, a
     : '';
 
   const content = [
-    `<p>Briefing for ${escapeHtml(physician.name || `NPI ${physician.npi}`)}</p>`,
+    `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
     meetingLine,
     '<p><b>Physician details</b></p>',
     physicianDetailsTable(physician),
@@ -318,12 +321,36 @@ async function sendPhysicianBriefing(accessToken, { toEmail, physician, notes, a
 
   await client.api('/me/sendMail').post({
     message: {
-      subject: `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
+      subject:
+        subject ||
+        `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
       toRecipients: [{ emailAddress: { address: toEmail } }],
     },
     saveToSentItems: true,
   });
+}
+
+/**
+ * The signed-in user's events starting within the next `withinMinutes` —
+ * times returned in UTC so callers can compute "minutes until start"
+ * reliably. Used by the reminder engine.
+ */
+async function getUpcomingEvents(accessToken, withinMinutes = 180) {
+  const client = getGraphClient(accessToken);
+  const now = new Date();
+  const until = new Date(now.getTime() + withinMinutes * 60000);
+
+  const response = await client
+    .api('/me/calendarView')
+    .query({ startDateTime: now.toISOString(), endDateTime: until.toISOString() })
+    .header('Prefer', 'outlook.timezone="UTC"')
+    .select('subject,start,end,location,bodyPreview,isAllDay,organizer,attendees,onlineMeeting,webLink')
+    .orderby('start/dateTime')
+    .top(50)
+    .get();
+
+  return (response.value || []).map(normalizeEvent);
 }
 
 /**
@@ -357,6 +384,9 @@ async function createMeetingWithPhysician(
         emailAddress: { address: physician.email, name: physician.name || physician.email },
       },
     ],
+    // Native Outlook reminder — fires even if our server is down.
+    isReminderOn: true,
+    reminderMinutesBeforeStart: Number(process.env.REMINDER_LEAD_MINUTES) || 90,
   });
 
   return normalizeEvent(event);
@@ -376,6 +406,7 @@ async function getMe(accessToken) {
 
 module.exports = {
   getEventsForDay,
+  getUpcomingEvents,
   getMe,
   getGraphClient,
   createMeetingWithPhysician,

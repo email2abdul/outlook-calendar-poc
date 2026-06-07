@@ -6,6 +6,7 @@ const graph = require('../graph');
 const physicians = require('../physicians');
 const callNotes = require('../notes');
 const analytics = require('../analytics');
+const entityMatcher = require('../entity-matcher');
 
 const router = express.Router();
 
@@ -80,15 +81,21 @@ async function dayHandler(req, res, next) {
           })
         );
 
-        // Physicians referenced in the meeting title (name / facility /
-        // email) — shown as options when they aren't on the invite itself,
-        // so the user can pick who the meeting is actually with.
+        // Entity analysis over the WHOLE event text (title + description):
+        // people / facilities / organizations / locations are extracted,
+        // classified and matched against the Supabase master data. Matched
+        // physicians (and suggestions, when nothing clears the confidence
+        // threshold) become option chips so the user picks who the meeting
+        // is actually with.
         const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
-        const titleMatches = physicians
-          .matchInText(ev.title)
-          .filter((p) => !attendeeNpis.has(p.npi));
+        const entityAnalysis = await entityMatcher.analyze(
+          [ev.title, ev.description].filter(Boolean).join('. ')
+        );
+        const titleMatches = entityMatcher.physicianProfilesFrom(entityAnalysis, {
+          exclude: attendeeNpis,
+        });
 
-        return { ...ev, attendees, titleMatches };
+        return { ...ev, attendees, titleMatches, entityAnalysis };
       })
     );
 
@@ -100,6 +107,27 @@ async function dayHandler(req, res, next) {
 
 router.get('/calendar/day', requireAuth, dayHandler);
 router.get('/calendar/today', requireAuth, dayHandler);
+
+/**
+ * POST /api/entities/analyze
+ * Body: { text }
+ * Analyze ANY text — meeting title, email subject/body, message — and return
+ * extracted entities (people / facilities / organizations / locations), their
+ * classification (Doctor, Professor, Hospital, Medical College, University,
+ * …), matches against the master data with 0–100 confidence, and top-5
+ * suggestions with reasons when nothing clears the confidence threshold.
+ */
+router.post('/entities/analyze', requireAuth, async (req, res, next) => {
+  try {
+    const { text } = req.body || {};
+    if (typeof text !== 'string' || text.trim() === '') {
+      return res.status(400).json({ error: 'bad_request', message: 'text is required' });
+    }
+    res.json(await entityMatcher.analyze(text));
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /api/physicians/search?q=smith
@@ -140,29 +168,11 @@ router.get('/physicians/:npi/analytics', requireAuth, async (req, res, next) => 
     const physician = physicians.getByNpi(req.params.npi);
     if (!physician) return res.status(404).json({ error: 'physician_not_found' });
 
-    res.json({ npi: physician.npi, analytics: await labelledAnalytics(physician.npi) });
+    res.json({ npi: physician.npi, analytics: await analytics.getLabelledAnalytics(physician.npi) });
   } catch (err) {
     next(err);
   }
 });
-
-/** Analytics with facility volumes labelled from the directory, or null. */
-async function labelledAnalytics(npi) {
-  const data = await analytics.getPhysicianAnalytics(npi);
-  if (!data) return null;
-
-  data.facilities = data.facilities.map((f) => {
-    const fac = physicians.getFacilityById(f.facilityId);
-    return {
-      ...f,
-      name: fac?.name || f.facilityId,
-      city: fac?.city || null,
-      state: fac?.state || null,
-    };
-  });
-
-  return data;
-}
 
 /**
  * GET /api/physicians/:npi/notes
@@ -234,7 +244,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
       toEmail: to,
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
-      analytics: await labelledAnalytics(physician.npi),
+      analytics: await analytics.getLabelledAnalytics(physician.npi),
       event: {
         title: typeof eventTitle === 'string' ? eventTitle : undefined,
         start: typeof eventStart === 'string' ? eventStart : undefined,
@@ -295,7 +305,32 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
       previousNote,
     });
 
-    res.status(201).json({ created: true, event, invitee: { name: physician.name, email: physician.email } });
+    // Auto-brief the salesperson: full physician info (details + analytics +
+    // their note history) lands in their own inbox the moment the meeting is
+    // booked. A mail failure must not fail the booking itself.
+    let briefingSent = false;
+    const to = organizerEmail(req);
+    if (to) {
+      try {
+        await graph.sendPhysicianBriefing(token, {
+          toEmail: to,
+          physician,
+          notes: await callNotes.getNotes(physician.npi, to),
+          analytics: await analytics.getLabelledAnalytics(physician.npi),
+          event: { title: event.title, start: event.start },
+        });
+        briefingSent = true;
+      } catch (err) {
+        console.warn('[schedule] auto-briefing failed:', err.message);
+      }
+    }
+
+    res.status(201).json({
+      created: true,
+      event,
+      briefingSent,
+      invitee: { name: physician.name, email: physician.email },
+    });
   } catch (err) {
     next(err);
   }

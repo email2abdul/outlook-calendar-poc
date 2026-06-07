@@ -202,6 +202,15 @@ async function search(query, limit = 20) {
       p_limit: limit,
     });
     if (error) throw new Error(`search RPC failed: ${error.message}`);
+    // No physician hits, but the query names a facility we know? It's an
+    // unlinked (orphan) facility — offer same-city physicians instead.
+    if (data.length === 0) {
+      const ql = q.toLowerCase();
+      const fac = [...facilitiesById.values()].find(
+        (f) => f.name && f.name.toLowerCase().includes(ql)
+      );
+      if (fac) return getNearbyForFacility(fac, limit);
+    }
     return data.map((p) => ({
       npi: String(p.npi),
       name: nullable(p.name),
@@ -240,6 +249,11 @@ async function search(query, limit = 20) {
   }
 
   matches.sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)));
+  if (matches.length === 0) {
+    // Same orphan-facility fallback as the Supabase path.
+    const fac = [...facilitiesById.values()].find((f) => f.name && f.name.toLowerCase().includes(ql));
+    if (fac) return getNearbyForFacility(fac, limit);
+  }
   return matches.slice(0, limit);
 }
 
@@ -329,4 +343,66 @@ function getFacilityById(id) {
   return facilitiesById.get(String(id)) || null;
 }
 
-module.exports = { search, getByNpi, getByEmail, getFacilityById, matchInText, ready };
+// ── Master-data accessors (entity-matching engine) ───────────────────────────
+
+/** Every physician profile (the in-memory, Supabase-loaded master). */
+function getAllPhysicians() {
+  return physicians;
+}
+
+/** Every facility record. */
+function getAllFacilities() {
+  return [...facilitiesById.values()];
+}
+
+/** Physicians whose primary facility is `facilityId` — email-holders first. */
+function getByFacility(facilityId, limit = 5) {
+  const id = String(facilityId);
+  return physicians
+    .filter((p) => p.facility?.id === id)
+    .sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)))
+    .slice(0, limit);
+}
+
+/** Physicians practicing in a city (and state, if given) — email-holders first. */
+function getByCity(city, state, limit = 5) {
+  if (!city) return [];
+  const c = String(city).toLowerCase();
+  const s = state ? String(state).toLowerCase() : null;
+  return physicians
+    .filter(
+      (p) =>
+        p.facility?.city &&
+        p.facility.city.toLowerCase() === c &&
+        (!s || (p.facility.state || '').toLowerCase() === s)
+    )
+    .sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)))
+    .slice(0, limit);
+}
+
+/**
+ * Same-city fallback for an "orphan" facility — one that exists in the
+ * master (e.g. the ~2.3k ASC records) but has no physician linked to it.
+ * Returns nearby physicians tagged with a matchHint so the UI can say why.
+ */
+function getNearbyForFacility(facility, limit = 5) {
+  if (!facility?.city) return [];
+  return getByCity(facility.city, facility.state, limit).map((p) => ({
+    ...p,
+    matchHint: `same city as ${facility.name} — ${facility.city}${facility.state ? ', ' + facility.state : ''}`,
+  }));
+}
+
+module.exports = {
+  search,
+  getByNpi,
+  getByEmail,
+  getFacilityById,
+  getAllPhysicians,
+  getAllFacilities,
+  getByFacility,
+  getByCity,
+  getNearbyForFacility,
+  matchInText,
+  ready,
+};

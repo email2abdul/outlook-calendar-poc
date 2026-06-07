@@ -121,4 +121,26 @@ if (supabase) {
   console.warn('[analytics] no Supabase config and no data/analytics.db — analytics disabled');
 }
 
-module.exports = { getPhysicianAnalytics };
+/**
+ * Analytics with facility volumes labelled from the directory, or null.
+ * Shared by the API routes and the reminder engine.
+ */
+async function getLabelledAnalytics(npi) {
+  const physiciansDir = require('./physicians'); // lazy: avoids load-order coupling
+  const data = await getPhysicianAnalytics(npi);
+  if (!data) return null;
+
+  data.facilities = data.facilities.map((f) => {
+    const fac = physiciansDir.getFacilityById(f.facilityId);
+    return {
+      ...f,
+      name: fac?.name || f.facilityId,
+      city: fac?.city || null,
+      state: fac?.state || null,
+    };
+  });
+
+  return data;
+}
+
+module.exports = { getPhysicianAnalytics, getLabelledAnalytics };

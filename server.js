@@ -90,6 +90,10 @@ if (require.main === module) {
     console.log(`\n  Outlook Calendar POC running at http://localhost:${config.port}`);
     console.log(`  Environment: ${config.nodeEnv}`);
     console.log(`  Sign in:     http://localhost:${config.port}/auth/login\n`);
+
+    // Pre-meeting reminder engine — needs a long-lived process, so it runs
+    // here (not on serverless; there it would be a cron-triggered endpoint).
+    require('./src/reminders').start();
   });
 }
 

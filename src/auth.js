@@ -2,6 +2,7 @@
 
 const { ConfidentialClientApplication, CryptoProvider, LogLevel } = require('@azure/msal-node');
 const config = require('./config');
+const tokenStore = require('./token-store');
 
 /**
  * Auth module — a thin, reusable wrapper around MSAL Node implementing the
@@ -21,24 +22,8 @@ const config = require('./config');
 
 const cryptoProvider = new CryptoProvider();
 
-/**
- * Build an MSAL client whose token cache is wired to this request's session.
- * @param {import('express').Request} req
- */
-function buildClient(req) {
-  const cachePlugin = {
-    beforeCacheAccess: async (cacheContext) => {
-      if (req.session.msalCache) {
-        cacheContext.tokenCache.deserialize(req.session.msalCache);
-      }
-    },
-    afterCacheAccess: async (cacheContext) => {
-      if (cacheContext.cacheHasChanged) {
-        req.session.msalCache = cacheContext.tokenCache.serialize();
-      }
-    },
-  };
-
+/** Shared MSAL client factory — only the cache plugin differs per use. */
+function newClient(cachePlugin) {
   return new ConfidentialClientApplication({
     auth: {
       clientId: config.auth.clientId,
@@ -54,6 +39,32 @@ function buildClient(req) {
           if (level <= LogLevel.Warning) console.warn('[msal]', message);
         },
       },
+    },
+  });
+}
+
+/**
+ * Build an MSAL client whose token cache is wired to this request's session.
+ * @param {import('express').Request} req
+ */
+function buildClient(req) {
+  return newClient({
+    beforeCacheAccess: async (cacheContext) => {
+      if (req.session.msalCache) {
+        cacheContext.tokenCache.deserialize(req.session.msalCache);
+      }
+    },
+    afterCacheAccess: async (cacheContext) => {
+      if (cacheContext.cacheHasChanged) {
+        req.session.msalCache = cacheContext.tokenCache.serialize();
+        // Mirror to the per-user store so background work (reminder engine)
+        // can refresh tokens for this user outside any request.
+        if (req.session.account?.homeAccountId) {
+          tokenStore
+            .updateCache(req.session.account.homeAccountId, req.session.msalCache)
+            .catch((err) => console.warn('[auth] token-store sync failed:', err.message));
+        }
+      }
     },
   });
 }
@@ -115,7 +126,49 @@ async function handleRedirect(req) {
     name: result.account.name,
   };
 
+  // Register the salesperson in the per-user store (tokens + identity) so
+  // the reminder engine can work for them even when no session is active.
+  tokenStore
+    .saveUser({
+      homeAccountId: result.account.homeAccountId,
+      email: result.account.username,
+      name: result.account.name,
+      msalCache: req.session.msalCache,
+    })
+    .catch((err) => console.warn('[auth] user persist failed:', err.message));
+
   return result;
+}
+
+/**
+ * Background variant of getAccessToken — works from a token-store record
+ * instead of a request/session. Used by the reminder engine. Returns null
+ * when the user's refresh token is gone (revoked / expired): they'll need to
+ * sign in again before reminders resume for them.
+ * @param {{homeAccountId: string, msalCache?: string}} record
+ */
+async function getAccessTokenForUser(record) {
+  const client = newClient({
+    beforeCacheAccess: async (cacheContext) => {
+      if (record.msalCache) cacheContext.tokenCache.deserialize(record.msalCache);
+    },
+    afterCacheAccess: async (cacheContext) => {
+      if (cacheContext.cacheHasChanged) {
+        record.msalCache = cacheContext.tokenCache.serialize();
+        await tokenStore.updateCache(record.homeAccountId, record.msalCache);
+      }
+    },
+  });
+
+  const account = await client.getTokenCache().getAccountByHomeId(record.homeAccountId);
+  if (!account) return null;
+
+  try {
+    const result = await client.acquireTokenSilent({ account, scopes: config.auth.scopes });
+    return result?.accessToken ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -149,5 +202,6 @@ module.exports = {
   getAuthCodeUrl,
   handleRedirect,
   getAccessToken,
+  getAccessTokenForUser,
   isAuthenticated,
 };
