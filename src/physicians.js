@@ -2,11 +2,17 @@
 
 const fs = require('fs');
 const path = require('path');
+const supabase = require('./supabase');
 
 /**
- * Physician directory — loads the physician + facility CSVs into memory once
- * at startup and exposes search/lookup helpers. ~21k physicians ≈ a few MB,
- * which is fine to keep in RAM for this POC (no DB needed).
+ * Physician directory — loads physicians + facilities into memory once at
+ * startup and exposes search/lookup helpers. ~21k physicians ≈ a few MB,
+ * which is fine to keep in RAM for this POC.
+ *
+ * Source of truth: Supabase (bis_physicians / bis_facilities via the
+ * bis_directory() SQL function) when SUPABASE_URL is configured; otherwise
+ * the bundled CSVs. `ready` resolves once the directory is loaded — the
+ * server gates requests on it.
  */
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
@@ -68,49 +74,111 @@ function parseCsv(text) {
   });
 }
 
-/** Normalise empty strings to null so the API shape is predictable. */
+/** Normalise empty values to null so the API shape is predictable. */
 function nullable(value) {
-  return value && value !== '' ? value : null;
+  return value !== undefined && value !== null && value !== '' ? value : null;
 }
 
-// ── Load both CSVs once at module init (startup). ───────────────────────────
+// ── In-memory indexes (filled by one of the loaders below) ──────────────────
 
-const facilitiesById = new Map();
-for (const f of parseCsv(fs.readFileSync(FACILITY_CSV, 'utf8'))) {
-  facilitiesById.set(f.facility_id, {
+let physicians = [];
+let physiciansByNpi = new Map();
+let physiciansByEmail = new Map();
+let facilitiesById = new Map();
+
+/**
+ * Build all indexes from loader-agnostic rows.
+ * physicianRows: { npi, name, specialty, email, phone, esdProcedure,
+ *                  photoUrl, linkedinUrl, primaryFacilityId }
+ * facilityRows:  { id, name, type, address, city, state, zip }
+ */
+function buildIndexes(physicianRows, facilityRows) {
+  facilitiesById = new Map(
+    facilityRows.map((f) => [
+      String(f.id),
+      {
+        id: String(f.id),
+        name: nullable(f.name),
+        type: nullable(f.type),
+        address: nullable(f.address),
+        city: nullable(f.city),
+        state: nullable(f.state),
+        zip: f.zip !== undefined && f.zip !== null && f.zip !== '' ? String(f.zip) : null,
+      },
+    ])
+  );
+
+  physicians = physicianRows.map((p) => ({
+    npi: String(p.npi),
+    name: nullable(p.name),
+    specialty: nullable(p.specialty),
+    email: nullable(p.email),
+    phone: p.phone !== undefined && p.phone !== null && p.phone !== '' ? String(p.phone) : null,
+    esdProcedure: Boolean(p.esdProcedure),
+    photoUrl: nullable(p.photoUrl),
+    linkedinUrl: nullable(p.linkedinUrl),
+    facility: facilitiesById.get(String(p.primaryFacilityId)) || null,
+  }));
+
+  physiciansByNpi = new Map(physicians.map((p) => [p.npi, p]));
+  physiciansByEmail = new Map();
+  for (const p of physicians) {
+    if (p.email) physiciansByEmail.set(p.email.toLowerCase(), p);
+  }
+}
+
+// ── Loaders ──────────────────────────────────────────────────────────────────
+
+async function loadFromSupabase() {
+  const { data, error } = await supabase.rpc('bis_directory');
+  if (error) throw new Error(error.message);
+
+  buildIndexes(data.physicians, data.facilities);
+  console.log(
+    `[physicians] loaded ${physicians.length} physicians, ${facilitiesById.size} facilities from Supabase`
+  );
+}
+
+function loadFromCsv() {
+  const facilityRows = parseCsv(fs.readFileSync(FACILITY_CSV, 'utf8')).map((f) => ({
     id: f.facility_id,
-    name: nullable(f.facility_name),
-    type: nullable(f.facility_type),
-    address: nullable(f.address),
-    city: nullable(f.city),
-    state: nullable(f.state),
-    zip: nullable(f.zip),
+    name: f.facility_name,
+    type: f.facility_type,
+    address: f.address,
+    city: f.city,
+    state: f.state,
+    zip: f.zip,
+  }));
+
+  const physicianRows = parseCsv(fs.readFileSync(PHYSICIAN_CSV, 'utf8')).map((p) => ({
+    npi: p.physician_npi,
+    name: p.physician_name,
+    specialty: p.specialty,
+    email: p.email,
+    phone: p.phone,
+    esdProcedure: p.esd_procedure === 'Yes',
+    photoUrl: p.photo_url,
+    linkedinUrl: p.linkedin_url,
+    primaryFacilityId: p.primary_facility_id,
+  }));
+
+  buildIndexes(physicianRows, facilityRows);
+  console.log(
+    `[physicians] loaded ${physicians.length} physicians, ${facilitiesById.size} facilities from CSV`
+  );
+}
+
+/** Resolves when the directory is loaded; the server gates requests on this. */
+let ready;
+if (supabase) {
+  ready = loadFromSupabase().catch((err) => {
+    console.error(`[physicians] Supabase load failed (${err.message}) — falling back to CSV`);
+    loadFromCsv();
   });
+} else {
+  loadFromCsv();
+  ready = Promise.resolve();
 }
-
-const physicians = parseCsv(fs.readFileSync(PHYSICIAN_CSV, 'utf8')).map((p) => ({
-  npi: p.physician_npi,
-  name: nullable(p.physician_name),
-  specialty: nullable(p.specialty),
-  email: nullable(p.email),
-  phone: nullable(p.phone),
-  esdProcedure: p.esd_procedure === 'Yes',
-  photoUrl: nullable(p.photo_url),
-  linkedinUrl: nullable(p.linkedin_url),
-  facility: facilitiesById.get(p.primary_facility_id) || null,
-}));
-
-const physiciansByNpi = new Map(physicians.map((p) => [p.npi, p]));
-
-// Email → physician, for matching calendar-event attendees to the directory.
-const physiciansByEmail = new Map();
-for (const p of physicians) {
-  if (p.email) physiciansByEmail.set(p.email.toLowerCase(), p);
-}
-
-console.log(
-  `[physicians] loaded ${physicians.length} physicians, ${facilitiesById.size} facilities`
-);
 
 // ── Public API ───────────────────────────────────────────────────────────────
 
@@ -158,4 +226,4 @@ function getFacilityById(id) {
   return facilitiesById.get(String(id)) || null;
 }
 
-module.exports = { search, getByNpi, getByEmail, getFacilityById };
+module.exports = { search, getByNpi, getByEmail, getFacilityById, ready };

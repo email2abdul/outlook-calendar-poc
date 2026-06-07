@@ -6,6 +6,7 @@ const session = require('express-session');
 
 const config = require('./src/config');
 const redisClient = require('./src/redis');
+const physicians = require('./src/physicians');
 const authRoutes = require('./src/routes/auth.routes');
 const apiRoutes = require('./src/routes/api.routes');
 
@@ -16,6 +17,12 @@ const app = express();
 if (config.isProduction) app.set('trust proxy', 1);
 
 app.use(express.json());
+
+// Hold requests until the physician directory finishes loading (it may be
+// fetched from Supabase at startup — a moment on a cold start).
+app.use((req, res, next) => {
+  physicians.ready.then(() => next(), next);
+});
 
 // ── Session: the only thing the browser holds is a signed, httpOnly cookie.
 //    Access/refresh tokens are kept server-side in the MSAL token cache, which

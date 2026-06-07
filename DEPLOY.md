@@ -33,9 +33,9 @@ Deploys straight from GitHub; every push to `main` redeploys.
    - `MS_CLIENT_SECRET` — your Azure client secret **value**
    - `SESSION_SECRET` — any long random string (`openssl rand -hex 32`)
    - `MS_TENANT_ID` — `common` (or your tenant ID)
-   - `DATABASE_URL` — Supabase *Transaction pooler* string (port 6543) from
-     the dashboard's Connect dialog — enables procedure analytics from the
-     `bis_*` tables
+   - `SUPABASE_URL` + `SUPABASE_ANON_KEY` — from the Supabase dashboard
+     (Project Settings → API) — physician directory + procedure analytics
+     read from the `bis_*` tables
    - `REDIRECT_URI` — set after the first deploy (step 4)
 4. Deploy. Vercel assigns a URL, e.g. `https://outlook-calendar-poc.vercel.app`.
    Set `REDIRECT_URI` to `https://<your-vercel-url>/auth/callback` and redeploy.
@@ -43,9 +43,9 @@ Deploys straight from GitHub; every push to `main` redeploys.
    **Authentication → Add a redirect URI (Web)**, add the exact same value.
 
 Caveats on Vercel:
-- **Analytics needs `DATABASE_URL`** — the local `data/analytics.db` (366 MB)
-  can't ship in a serverless function, so analytics reads the Supabase
-  `bis_*` tables instead. Without `DATABASE_URL` the app degrades gracefully
+- **Analytics needs the Supabase vars** — the local `data/analytics.db`
+  (366 MB) can't ship in a serverless function, so analytics reads the
+  Supabase `bis_*` tables instead. Without them the app degrades gracefully
   and hides the analytics section; everything else works.
 - Without `REDIS_URL`, OAuth logins fail intermittently (session state is
   lost between `/auth/login` and `/auth/callback`) — step 2 is not optional.
