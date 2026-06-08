@@ -70,6 +70,42 @@ Caveats on Vercel:
 
 Open the URL and click **Login with Outlook**. Done.
 
+## Deploy via PM2 + nginx (current live host: agentpoc.insightmonk.com)
+
+The live demo runs as a long-lived PM2 process on the host, with nginx
+reverse-proxying HTTPS to the Express server (`PORT` in `.env`).
+
+```bash
+# from the repo root, after pulling new code:
+npm install                                      # NOT optional — see gotcha 1
+pm2 restart agentpoc.insightmonk.com --update-env  # --update-env re-reads .env
+```
+
+Env vars live in the host's `.env` (gitignored, never committed). For the
+physician directory + procedure analytics to appear, set:
+
+```
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_ANON_KEY=<anon/publishable key>   # Supabase dashboard → Project Settings → API
+```
+
+Two gotchas that silently disable **Procedure analytics** / **Top procedures**
+(the section just doesn't render — no error in the UI):
+
+1. **`@supabase/supabase-js` must be installed.** It's in `package.json`, but a
+   deploy that skipped `npm install`/`npm ci` will crash on boot with
+   `Cannot find module '@supabase/supabase-js'`. Always run install after a pull.
+2. **The Supabase env vars must be set**, then restart with `--update-env`.
+   Without them, `src/analytics.js` falls back to `data/analytics.db` — which
+   isn't present on the host (it's 366 MB and gitignored) — so analytics is
+   disabled. Confirm it worked in the logs:
+
+   ```bash
+   pm2 logs agentpoc.insightmonk.com --lines 30 --nostream | grep -iE 'supabase|analytics'
+   # want:  [supabase] client created
+   #        [analytics] using Supabase (bis_physician_analytics RPC)
+   ```
+
 ## Notes / caveats
 
 - **HTTPS is required** for OAuth and for the Secure session cookie. Render
