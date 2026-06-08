@@ -140,6 +140,16 @@ async function loadFromSupabase() {
 }
 
 function loadFromCsv() {
+  // The bundled CSVs were removed once Supabase became the source of truth;
+  // this fallback now only fires if Supabase is unconfigured/unreachable AND
+  // the CSVs happen to be present. Degrade to an empty directory otherwise so
+  // the server still boots.
+  if (!fs.existsSync(PHYSICIAN_CSV) || !fs.existsSync(FACILITY_CSV)) {
+    buildIndexes([], []);
+    console.warn('[physicians] no Supabase and no CSV files — directory empty');
+    return;
+  }
+
   const facilityRows = parseCsv(fs.readFileSync(FACILITY_CSV, 'utf8')).map((f) => ({
     id: f.facility_id,
     name: f.facility_name,

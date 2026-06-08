@@ -40,7 +40,8 @@ const config = {
     // `openid`, `profile` and `offline_access` are added automatically by MSAL.
     // ReadWrite (superset of Read) — we now create meetings, not just list them.
     // Mail.Send — emailing the organizer their physician briefing.
-    scopes: ['User.Read', 'Calendars.ReadWrite', 'Mail.Send'],
+    // Mail.Read — ingesting email replies for the intelligence platform.
+    scopes: ['User.Read', 'Calendars.ReadWrite', 'Mail.Send', 'Mail.Read'],
   },
 
   session: {

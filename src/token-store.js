@@ -27,6 +27,7 @@ function createSqliteStore() {
       email TEXT,
       name TEXT,
       msal_cache TEXT,
+      mail_delta_link TEXT,
       updated_at TEXT NOT NULL
     );
     CREATE TABLE IF NOT EXISTS reminders_sent (
@@ -36,6 +37,12 @@ function createSqliteStore() {
       PRIMARY KEY (user_id, event_id)
     );
   `);
+  // Add the delta column to pre-existing DBs (ignore "duplicate column").
+  try {
+    db.exec('ALTER TABLE users ADD COLUMN mail_delta_link TEXT');
+  } catch {
+    /* column already exists */
+  }
 
   const upsert = db.prepare(`
     INSERT INTO users (home_account_id, email, name, msal_cache, updated_at)
@@ -57,8 +64,16 @@ function createSqliteStore() {
     'INSERT OR IGNORE INTO reminders_sent (user_id, event_id, sent_at) VALUES (?, ?, ?)'
   );
   const remPurge = db.prepare('DELETE FROM reminders_sent WHERE sent_at < ?');
+  const getDelta = db.prepare('SELECT mail_delta_link AS link FROM users WHERE home_account_id = ?');
+  const setDelta = db.prepare('UPDATE users SET mail_delta_link = ? WHERE home_account_id = ?');
 
   return {
+    async getMailDelta(homeAccountId) {
+      return getDelta.get(homeAccountId)?.link || null;
+    },
+    async setMailDelta(homeAccountId, link) {
+      setDelta.run(link || null, homeAccountId);
+    },
     async saveUser({ homeAccountId, email, name, msalCache }) {
       upsert.run({
         homeAccountId,
@@ -115,6 +130,12 @@ function createRedisStore(client) {
     },
     async markReminderSent(userId, eventId) {
       await client.set(rkey(userId, eventId), '1', { EX: REMINDER_LOG_TTL_DAYS * 86400 });
+    },
+    async getMailDelta(homeAccountId) {
+      return (await client.hGet(ukey(homeAccountId), 'mailDelta')) || null;
+    },
+    async setMailDelta(homeAccountId, link) {
+      await client.hSet(ukey(homeAccountId), { mailDelta: link || '' });
     },
   };
 }

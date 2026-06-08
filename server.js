@@ -94,6 +94,10 @@ if (require.main === module) {
     // Pre-meeting reminder engine — needs a long-lived process, so it runs
     // here (not on serverless; there it would be a cron-triggered endpoint).
     require('./src/reminders').start();
+
+    // Email-intelligence ingestion — syncs calendar→CRM activities and pulls
+    // Outlook reply emails (webhook on deploy, poll on localhost).
+    require('./src/email-ingest').start();
   });
 }
 

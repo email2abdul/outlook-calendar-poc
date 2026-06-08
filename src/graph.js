@@ -392,6 +392,60 @@ async function createMeetingWithPhysician(
   return normalizeEvent(event);
 }
 
+/** Map a raw Graph message to the lean shape app_emails stores. */
+function normalizeMessage(msg) {
+  return {
+    providerMsgId: msg.id,
+    internetMsgId: msg.internetMessageId || null,
+    threadId: msg.conversationId || null,
+    fromEmail: msg.from?.emailAddress?.address || null,
+    fromName: msg.from?.emailAddress?.name || null,
+    toEmails: (msg.toRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean),
+    ccEmails: (msg.ccRecipients || []).map((r) => r.emailAddress?.address).filter(Boolean),
+    subject: msg.subject || null,
+    bodyText: (msg.body?.contentType === 'html'
+      ? (msg.bodyPreview || '')
+      : (msg.body?.content || msg.bodyPreview || '')),
+    bodyHtml: msg.body?.contentType === 'html' ? msg.body.content : null,
+    bodyPreview: msg.bodyPreview || null,
+    receivedAt: msg.receivedDateTime || null,
+  };
+}
+
+/**
+ * Inbox delta — incremental sync of received messages. Pass the previous
+ * deltaLink (null on first run) and get back new/changed messages plus the
+ * next deltaLink to persist. Paginates internally via @odata.nextLink.
+ * @returns {Promise<{ messages: object[], deltaLink: string|null }>}
+ */
+async function getInboxDelta(accessToken, deltaLink) {
+  const client = getGraphClient(accessToken);
+  const select = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,receivedDateTime';
+
+  let req = deltaLink
+    ? client.api(deltaLink)
+    : client.api('/me/mailFolders/inbox/messages/delta').query({ $select: select }).top(50);
+
+  const messages = [];
+  let nextDelta = null;
+
+  // Walk nextLink pages until we reach the deltaLink page.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const page = await req.get();
+    if (Array.isArray(page.value)) messages.push(...page.value);
+
+    if (page['@odata.nextLink']) {
+      req = client.api(page['@odata.nextLink']);
+    } else {
+      nextDelta = page['@odata.deltaLink'] || null;
+      break;
+    }
+  }
+
+  return { messages: messages.map(normalizeMessage), deltaLink: nextDelta };
+}
+
 /**
  * Lightweight profile lookup for the signed-in user (for the header UI).
  */
@@ -407,6 +461,7 @@ async function getMe(accessToken) {
 module.exports = {
   getEventsForDay,
   getUpcomingEvents,
+  getInboxDelta,
   getMe,
   getGraphClient,
   createMeetingWithPhysician,

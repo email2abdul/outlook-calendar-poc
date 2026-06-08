@@ -4,10 +4,11 @@ Login with a Microsoft / Outlook account and see your **calendar events for
 any day**, fetched from the **Microsoft Graph API** — plus a physician
 intelligence layer for salespeople:
 
-- **Physician directory** (21k+ NPIs from BIS CSVs): event attendees are
-  matched by email; matched physicians open an inline profile with specialty,
-  contact info and primary facility.
-- **Procedure analytics** (optional SQLite ingest): volume by year, payer mix,
+- **Physician directory** (21k+ NPIs, from the Supabase `bis_*` tables): event
+  attendees, meeting titles and search are matched against it; matched
+  physicians open an inline profile with specialty, contact info and primary
+  facility.
+- **Procedure analytics** (Supabase, per-NPI): volume by year, payer mix,
   top CPT codes with reimbursement rates, facilities.
 - **Meeting notes**: per-organizer history with each physician, a "last
   call" reminder when scheduling, and auto-inclusion of the latest note in the
@@ -50,7 +51,7 @@ Browser  ──"Login with Outlook"──▶  /auth/login
             │  store tokens server-side in the session token cache
             ▼
 Browser  ──GET /api/calendar/day──▶  Graph /me/calendarView  ──▶ that day's events
-            │                          + attendee ↔ physician matching (CSV directory)
+            │                          + attendee ↔ physician matching (Supabase directory)
             ▼                          + organizer's latest meeting note per physician
         Clean UI renders events; matched attendees open an inline
         physician panel (details, analytics, meeting notes, actions)
@@ -77,19 +78,23 @@ outlook-calendar-poc/
 ├── src/
 │   ├── config.js              # Env loading + validation (single source of truth)
 │   ├── auth.js                # MSAL: auth URL, code exchange, silent token (REUSABLE)
-│   ├── graph.js               # Graph: calendar fetch, create invite, briefing email (REUSABLE)
-│   ├── physicians.js          # Physician + facility directory (CSV → in-memory index)
-│   ├── notes.js               # Meeting notes store (SQLite, per organizer + NPI)
-│   ├── analytics.js           # Procedure-volume queries over data/analytics.db
+│   ├── graph.js               # Graph: calendar fetch, mail delta, invite, briefing (REUSABLE)
+│   ├── supabase.js            # Supabase Data API client (bis_* master data)
+│   ├── physicians.js          # Physician + facility directory (Supabase → in-memory; CSV fallback)
+│   ├── analytics.js           # Procedure/CPT analytics (Supabase RPC; SQLite fallback)
+│   ├── entity-matcher.js      # Extract + classify + match entities from any text
+│   ├── notes.js               # Meeting notes store (SQLite/Redis, per organizer + NPI)
+│   ├── token-store.js         # Per-user MSAL tokens + reminder log (background work)
+│   ├── reminders.js           # 90-min pre-meeting briefing-reminder engine
+│   ├── crm-store.js           # app_activities / app_emails / app_audit_log (Supabase)
+│   ├── email-ingest.js        # Calendar→CRM sync + Outlook reply ingestion
 │   └── routes/
-│       ├── auth.routes.js     # /auth/login, /auth/callback, /auth/logout
+│       ├── auth.routes.js     # /auth/login, /auth/callback, /auth/logout, /auth/webhooks/outlook
 │       └── api.routes.js      # /api/* (see API reference)
 ├── scripts/
-│   └── ingest.js              # npm run ingest — build data/analytics.db from BIS CSVs
+│   └── ingest.js              # npm run ingest — (optional) build local analytics.db from BIS CSVs
 ├── data/
-│   ├── physician_output_upload.csv   # directory source (committed)
-│   ├── facility_output_upload.csv    # directory source (committed)
-│   ├── sessions.db / notes.db / analytics.db   # runtime SQLite (gitignored)
+│   ├── sessions.db / notes.db / users.db   # runtime SQLite (gitignored)
 ├── public/                    # Dependency-free frontend (HTML/CSS/JS)
 │   ├── index.html
 │   ├── styles.css
@@ -173,12 +178,16 @@ today's events appear automatically.
 
 ---
 
-## 4. Ingest the BIS analytics data (optional)
+## 4. Data source: Supabase (default) — local ingest is an offline fallback
 
-The physician panel's **Procedure analytics** section (volumes by year, payer
-mix, top CPT codes with reimbursement rates, facilities) reads from
-`data/analytics.db` — a local SQLite database that is **not** committed
-(~370MB). Build it once from the BIS CSV exports:
+By default the physician directory and **Procedure analytics** (volumes by
+year, payer mix, top CPT codes with reimbursement rates, facilities) read from
+the Supabase `bis_*` tables — set `SUPABASE_URL` + `SUPABASE_ANON_KEY` in
+`.env` (see §2). Nothing else is needed; the CSVs and local SQLite are gone.
+
+The steps below are **only** for running fully offline (no Supabase): build a
+local `data/analytics.db` (~370MB, gitignored) from the BIS CSV exports. With
+Supabase configured you can skip this entirely.
 
 ```bash
 npm run ingest                                       # default source path
@@ -291,5 +300,6 @@ This POC favors clarity. Before shipping:
 - [ ] Add Microsoft global sign-out (`/common/oauth2/v2.0/logout`) if full SSO
       logout is required.
 - [ ] Add rate limiting and request logging.
-- [ ] The physician CSVs contain real contact details — keep the repo private
+- [ ] Physician contact details live in Supabase (`bis_*`) — tighten the
+      table RLS (currently public) before any production use
       or move them out of git before sharing.

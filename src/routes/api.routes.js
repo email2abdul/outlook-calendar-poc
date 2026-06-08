@@ -7,6 +7,8 @@ const physicians = require('../physicians');
 const callNotes = require('../notes');
 const analytics = require('../analytics');
 const entityMatcher = require('../entity-matcher');
+const crm = require('../crm-store');
+const emailIngest = require('../email-ingest');
 
 const router = express.Router();
 
@@ -22,6 +24,58 @@ function requireAuth(req, res, next) {
 function organizerEmail(req) {
   return req.session.account?.username?.toLowerCase() || null;
 }
+
+/** The signed-in user's stable id (owner key for CRM rows). */
+function ownerId(req) {
+  return req.session.account?.homeAccountId || null;
+}
+
+// ── Email-intelligence platform: CRM activities + ingested emails ───────────
+
+/**
+ * GET /api/activities — the signed-in salesperson's synced CRM activities
+ * (calendar meetings), newest first, each with its matched physician name.
+ */
+router.get('/activities', requireAuth, async (req, res, next) => {
+  try {
+    const activities = await crm.listActivities(ownerId(req));
+    const withPhysician = activities.map((a) => ({
+      ...a,
+      physician: a.physician_npi ? physicians.getByNpi(a.physician_npi) : null,
+    }));
+    res.json({ activities: withPhysician });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/activities/:id/emails — the ingested email thread for one activity.
+ */
+router.get('/activities/:id/emails', requireAuth, async (req, res, next) => {
+  try {
+    const activities = await crm.listActivities(ownerId(req));
+    const activity = activities.find((a) => a.id === req.params.id);
+    if (!activity) return res.status(404).json({ error: 'activity_not_found' });
+    const emails = await crm.listEmailsForThread(ownerId(req), activity.thread_id);
+    res.json({ activity, emails });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/ingest/run — trigger an ingestion pass now (sync activities +
+ * pull new email replies) instead of waiting for the poll. Handy for demos.
+ */
+router.post('/ingest/run', requireAuth, async (req, res, next) => {
+  try {
+    await emailIngest.tick();
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
 
 /**
  * GET /api/me
