@@ -182,8 +182,40 @@ today's events appear automatically.
 
 By default the physician directory and **Procedure analytics** (volumes by
 year, payer mix, top CPT codes with reimbursement rates, facilities) read from
-the Supabase `bis_*` tables — set `SUPABASE_URL` + `SUPABASE_ANON_KEY` in
-`.env` (see §2). Nothing else is needed; the CSVs and local SQLite are gone.
+the Supabase `bis_*` tables. Nothing else is needed; the CSVs and local SQLite
+are gone.
+
+### Switching between development and production databases
+
+Two Supabase targets live side by side in `.env`. A single switch,
+`SUPABASE_ENV`, picks which one the **whole app** uses — flip it and restart;
+no code changes:
+
+```bash
+SUPABASE_ENV=development   # -> dev/testing database
+# SUPABASE_ENV=production  # -> live production database
+
+# Production (live)
+SUPABASE_PROD_URL=https://<prod-ref>.supabase.co
+SUPABASE_PROD_ANON_KEY=<prod anon key>
+
+# Development (testing)
+SUPABASE_DEV_URL=https://<dev-ref>.supabase.co
+SUPABASE_DEV_ANON_KEY=<dev anon key>
+# Used only by admin/seed scripts (bypasses RLS), never by the running app:
+SUPABASE_DEV_SERVICE_ROLE_KEY=<dev service-role key>
+```
+
+`SUPABASE_ENV` defaults to `production` when unset. The legacy flat
+`SUPABASE_URL` / `SUPABASE_ANON_KEY` still work as a fallback when the per-env
+vars are missing. The app always uses the **anon** key.
+
+A fresh dev project needs the SQL functions the app calls. Run
+[`supabase/dev-setup.sql`](supabase/dev-setup.sql) **once** in the dev
+project's SQL Editor — it installs the 3 read-only functions (`bis_directory`,
+`bis_physician_analytics`, `bis_search_physicians`), the `app_*` platform
+tables, and anon-read RLS policies on the `bis_*` tables. It makes **no data
+changes** — the dev project's existing `bis_*` data is used as-is.
 
 The steps below are **only** for running fully offline (no Supabase): build a
 local `data/analytics.db` (~370MB, gitignored) from the BIS CSV exports. With
