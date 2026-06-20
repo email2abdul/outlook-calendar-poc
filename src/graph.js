@@ -294,6 +294,45 @@ function commercialSignalsHtml(signals, summary) {
   return '<p><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
 }
 
+/**
+ * HTML "Account Opportunity" section (Lumendi spec) — other physicians at the
+ * facility and the procedures they perform, so the rep knows who else to engage.
+ * Returns '' when there are no peers.
+ * @param {object} opp from analytics.accountOpportunity
+ */
+function accountOpportunityHtml(opp) {
+  if (!opp || !opp.peers?.length) return '';
+  const num = (v) => Number(v || 0).toLocaleString();
+  const td = 'style="padding:2px 12px 2px 0"';
+
+  const where = opp.facility?.name ? ` at <b>${escapeHtml(opp.facility.name)}</b>` : ' at this facility';
+  const n = opp.performingCount;
+  const summary =
+    `<p>${n} other physician${n === 1 ? '' : 's'}${where} perform relevant procedures` +
+    `${opp.truncated ? ' (top by volume)' : ''}.</p>`;
+
+  const rows = opp.peers
+    .map((p) => {
+      const fams = p.families?.length
+        ? ` <span style="color:#888">(${escapeHtml(p.families.join(', '))})</span>`
+        : '';
+      const activity = p.volume ? `${num(p.volume)} proc${fams}` : '—';
+      const contact = [p.email, p.phone].filter(Boolean).map(escapeHtml).join(' · ') || '—';
+      return (
+        `<tr><td ${td}><b>${escapeHtml(p.name || p.npi)}</b></td>` +
+        `<td ${td}>${escapeHtml(p.specialty || '—')}</td>` +
+        `<td ${td}>${activity}</td><td>${contact}</td></tr>`
+      );
+    })
+    .join('');
+
+  return (
+    '<p><b>Account Opportunity</b></p>' +
+    summary +
+    `<table>${rows}</table>`
+  );
+}
+
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
 function analyticsHtml(a) {
   if (!a) return '';
@@ -401,6 +440,7 @@ async function sendPhysicianBriefing(
     '<p><b>Physician details</b></p>',
     physicianDetailsTable(physician),
     analyticsHtml(analytics),
+    accountOpportunityHtml(analytics?.accountOpportunity),
     '<p><b>Meeting notes</b></p>',
     history,
   ].join('');
@@ -553,4 +593,5 @@ module.exports = {
   createMeetingWithPhysician,
   sendPhysicianBriefing,
   analyticsHtml, // exported for brief-rendering tests
+  accountOpportunityHtml, // exported for brief-rendering tests
 };

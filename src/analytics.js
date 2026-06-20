@@ -245,6 +245,92 @@ async function getCommercialSignals(npi) {
 }
 
 /**
+ * Account opportunity (Lumendi spec) — the OTHER physicians at the meeting
+ * physician's facility and the procedures they perform, so the rep knows who
+ * else to engage and where the expansion is. Answers "Who else in this facility
+ * should I engage?".
+ *
+ * Candidates = directory peers whose primary facility matches ∪ anyone with
+ * procedure volume recorded at the facility (a physician may operate there
+ * without it being their home base), minus the meeting physician. Ranked by
+ * volume. One facility-scoped read; capped, with a `truncated` flag for very
+ * large facilities. (The "N using Dilumen" account-status figure needs a
+ * separate Lumendi data source — not derivable here.)
+ */
+async function getAccountOpportunity(npi, { maxPeers = 6 } = {}) {
+  if (!supabase) return null;
+  const physiciansDir = require('./physicians');
+  const me = physiciansDir.getByNpi(npi);
+  const facility = me?.facility;
+  if (!facility?.id) return null;
+
+  const { classifyCpt } = require('./procedure-families');
+  const LIMIT = 5000;
+  let rows = [];
+  let truncated = false;
+  try {
+    const { data, error } = await supabase
+      .from('bis_procedure_volumes')
+      .select('physician_npi, cpt_code, procedure_description, total_volume')
+      .eq('facility_id', String(facility.id))
+      .limit(LIMIT);
+    if (error) return null;
+    rows = data || [];
+    truncated = rows.length === LIMIT;
+  } catch (err) {
+    console.warn('[analytics] account-opportunity read failed:', err.message);
+    return null;
+  }
+
+  // Volume + procedure families per physician active at this facility.
+  const agg = {}; // npi -> { volume, families:Set }
+  for (const r of rows) {
+    const vol = Number(r.total_volume) || 0;
+    if (!vol) continue;
+    const id = String(r.physician_npi);
+    (agg[id] = agg[id] || { volume: 0, families: new Set() });
+    agg[id].volume += vol;
+    agg[id].families.add(classifyCpt(r.cpt_code, r.procedure_description));
+  }
+
+  const selfId = String(npi);
+  const ids = new Set([
+    ...physiciansDir.getByFacility(facility.id, 100).map((p) => String(p.npi)),
+    ...Object.keys(agg),
+  ]);
+  ids.delete(selfId);
+
+  const peers = [...ids]
+    .map((id) => {
+      const p = physiciansDir.getByNpi(id);
+      const a = agg[id];
+      return {
+        npi: id,
+        name: p?.name || null,
+        specialty: p?.specialty || null,
+        email: p?.email || null,
+        phone: p?.phone || null,
+        esdProcedure: Boolean(p?.esdProcedure),
+        volume: a?.volume || 0,
+        families: a ? [...a.families].filter((f) => f !== 'Other') : [],
+      };
+    })
+    .filter((p) => p.name || p.volume) // skip ghosts we can't name and have no activity
+    .sort(
+      (a, b) =>
+        b.volume - a.volume || Number(Boolean(b.email)) - Number(Boolean(a.email))
+    );
+
+  return {
+    facility: { id: facility.id, name: facility.name, city: facility.city, state: facility.state },
+    peerCount: peers.length,
+    performingCount: peers.filter((p) => p.volume > 0).length,
+    truncated,
+    peers: peers.slice(0, maxPeers),
+  };
+}
+
+/**
  * Analytics with facility volumes labelled from the directory, or null.
  * Shared by the API routes and the reminder engine. Also attaches `byFamily`
  * (procedure-family rollup) and `commercialSignals` (growth/emerging/adoption)
@@ -268,6 +354,7 @@ async function getLabelledAnalytics(npi) {
   const rows = await readProcedureRows(npi); // one read, two derivations
   data.byFamily = computeFamilies(rows);
   data.commercialSignals = computeCommercialSignals(rows);
+  data.accountOpportunity = await getAccountOpportunity(npi);
 
   return data;
 }
@@ -276,5 +363,6 @@ module.exports = {
   getPhysicianAnalytics,
   getProcedureFamilies,
   getCommercialSignals,
+  getAccountOpportunity,
   getLabelledAnalytics,
 };
