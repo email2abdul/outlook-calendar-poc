@@ -98,15 +98,19 @@ async function extractFromReply({ bodyText, physicianName, meetingTitle, fromNam
  * Notes (rendered with white-space:pre-wrap, so newlines + bullets display).
  * Only non-empty sections are included.
  */
-function formatNote(insight, { receivedAt } = {}) {
+function formatNote(insight, { receivedAt, meetingTitle } = {}) {
   if (!insight) return '';
   const lines = [];
 
-  // Day + date + time stamp at the top, so every reply note is distinguishable
-  // (multiple replies to the same meeting each get their own timestamped note),
-  // and the stamp shows even in the collapsed one-line preview.
+  // Header line = reply day/date/time stamp + which meeting it belongs to, so
+  // every reply note is self-describing and distinguishable (multiple replies to
+  // the same meeting each get their own timestamped note), and it all shows even
+  // in the collapsed one-line preview.
   const stamp = formatStamp(receivedAt);
-  const head = stamp ? `🕒 ${stamp}` : '';
+  const parts = [];
+  if (stamp) parts.push(`🕒 ${stamp}`);
+  if (meetingTitle) parts.push(`📅 ${String(meetingTitle).trim()}`);
+  const head = parts.join(' · ');
   if (head && insight.summary) lines.push(`${head} — ${insight.summary}`);
   else if (head) lines.push(head);
   else if (insight.summary) lines.push(insight.summary);

@@ -292,7 +292,10 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
       organizerEmail: user.email,
       eventId: meeting?.calendar_event_id || null,
       meetingDate: meeting?.meeting_date || null,
-      notes: aiExtractor.formatNote(insight, { receivedAt: msg.receivedAt }),
+      notes: aiExtractor.formatNote(insight, {
+        receivedAt: msg.receivedAt,
+        meetingTitle: meeting?.title,
+      }),
       source: 'ai',
     });
     await crm.audit({
