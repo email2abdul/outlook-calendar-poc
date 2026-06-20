@@ -355,6 +355,9 @@ async function getLabelledAnalytics(npi) {
   data.byFamily = computeFamilies(rows);
   data.commercialSignals = computeCommercialSignals(rows);
   data.accountOpportunity = await getAccountOpportunity(npi);
+  // "What to discuss?" — product talking points matched to this physician's
+  // procedure families (deterministic; null until brochures are ingested).
+  data.productContext = require('./product-context').getTalkingPoints(data.byFamily);
 
   return data;
 }

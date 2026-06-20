@@ -333,6 +333,41 @@ function accountOpportunityHtml(opp) {
   );
 }
 
+/**
+ * HTML "What to Discuss" section (Lumendi spec, Product Context Layer) —
+ * product talking points matched to the physician's procedure families.
+ * Returns '' when there's no matched product context.
+ * @param {object} ctx from analytics.productContext
+ */
+function productContextHtml(ctx) {
+  if (!ctx?.products?.length) return '';
+
+  const blocks = ctx.products
+    .map((p) => {
+      const fams = p.matchedFamilies?.length
+        ? ` <span style="color:#888">(${escapeHtml(p.matchedFamilies.join(', '))})</span>`
+        : '';
+      const bullets = (list, label) =>
+        list?.length
+          ? `<p style="margin:2px 0 0"><i>${escapeHtml(label)}:</i></p><ul style="margin:0 0 4px">` +
+            list.map((t) => `<li>${escapeHtml(t)}</li>`).join('') +
+            '</ul>'
+          : '';
+      return (
+        `<p style="margin:6px 0 0"><b>${escapeHtml(p.productName)}</b>${fams}` +
+        (p.summary ? ` — ${escapeHtml(p.summary)}` : '') +
+        '</p>' +
+        bullets(p.talkingPoints, 'Talking points') +
+        bullets(p.valueProps, 'Value') +
+        bullets(p.differentiation, 'Differentiation') +
+        bullets(p.reimbursement, 'Reimbursement')
+      );
+    })
+    .join('');
+
+  return '<p><b>What to Discuss</b></p>' + blocks;
+}
+
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
 function analyticsHtml(a) {
   if (!a) return '';
@@ -441,6 +476,7 @@ async function sendPhysicianBriefing(
     physicianDetailsTable(physician),
     analyticsHtml(analytics),
     accountOpportunityHtml(analytics?.accountOpportunity),
+    productContextHtml(analytics?.productContext),
     '<p><b>Meeting notes</b></p>',
     history,
   ].join('');
@@ -594,4 +630,5 @@ module.exports = {
   sendPhysicianBriefing,
   analyticsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests
+  productContextHtml, // exported for brief-rendering tests
 };
