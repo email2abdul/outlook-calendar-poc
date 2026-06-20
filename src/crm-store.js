@@ -118,13 +118,20 @@ async function emailExists(provider, providerMsgId) {
   return Boolean(data?.[0]);
 }
 
-/** Insert a normalized email; returns the row (or existing one on conflict). */
+/**
+ * Insert a normalized email and RETURN the new row (callers extract from it on a
+ * fresh insert). Callers dedup via emailExists() first, so this is a plain
+ * insert; a concurrent duplicate trips the unique constraint (23505) and we
+ * return null so the loser skips re-processing. (Was an upsert with
+ * ignoreDuplicates, which silently returned null even for new rows — so
+ * downstream extraction never ran.)
+ */
 async function insertEmail(email) {
-  const { data, error } = await ensure()
-    .from('app_emails')
-    .upsert(email, { onConflict: 'provider,provider_msg_id', ignoreDuplicates: true })
-    .select();
-  if (error) throw new Error(`insertEmail failed: ${error.message}`);
+  const { data, error } = await ensure().from('app_emails').insert(email).select();
+  if (error) {
+    if (error.code === '23505') return null; // already ingested (race)
+    throw new Error(`insertEmail failed: ${error.message}`);
+  }
   return data?.[0] || null;
 }
 

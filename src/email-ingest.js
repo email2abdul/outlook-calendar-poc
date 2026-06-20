@@ -170,6 +170,63 @@ function isReplySubject(subject) {
 }
 
 /**
+ * Ingest the rep's OWN replies from Sent Items. When the rep replies to a
+ * briefing/meeting thread, that reply lands in Sent (not the Inbox), so the
+ * inbox delta never sees it. We fetch recent Sent Items, keep only replies
+ * ("RE: …" — skipping the briefings/invites the app itself sent), and run the
+ * same AI-MOM extraction. Dedup is on (provider, provider_msg_id); extraction
+ * runs once per reply (only on a fresh insert). No delta — a bounded recent
+ * fetch each tick is enough.
+ */
+async function ingestSentReplies(token, user) {
+  let messages;
+  try {
+    messages = await graph.getRecentSent(token, 25);
+  } catch (err) {
+    console.warn('[ingest] sent-items fetch failed:', err.message);
+    return 0;
+  }
+
+  let n = 0;
+  for (const msg of messages) {
+    if (!msg.providerMsgId || !isReplySubject(msg.subject)) continue; // replies only
+    if (await crm.emailExists('outlook', msg.providerMsgId)) continue;
+
+    const activity = await crm.findActivityByThread(user.homeAccountId, msg.threadId);
+    const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
+    const row = await crm.insertEmail({
+      provider: 'outlook',
+      provider_msg_id: msg.providerMsgId,
+      internet_msg_id: msg.internetMsgId,
+      thread_id: msg.threadId,
+      owner_user_id: user.homeAccountId,
+      activity_id: activity?.id || null,
+      from_email: msg.fromEmail,
+      from_name: msg.fromName,
+      to_emails: msg.toEmails,
+      cc_emails: msg.ccEmails,
+      subject: msg.subject,
+      body_text: cleanedBody,
+      body_raw: msg.bodyHtml || msg.bodyText || msg.bodyPreview,
+      received_at: msg.receivedAt,
+    });
+    if (row) {
+      n++;
+      await crm.audit({
+        actor: 'system',
+        action: 'email.ingested',
+        entityType: 'email',
+        entityId: row.id,
+        sourceEmailId: row.id,
+        details: { subject: msg.subject, folder: 'sentitems' },
+      });
+      await extractToNote({ activity, cleanedBody, msg, user });
+    }
+  }
+  return n;
+}
+
+/**
  * Resolve which physician an incoming email concerns, most reliable first:
  *  1) the linked activity's physician,
  *  2) the sender (a physician replying from their own address),
@@ -259,8 +316,9 @@ async function tick() {
 
       const activities = await syncActivities(token, user);
       const emails = await ingestEmails(token, user);
-      if (activities || emails) {
-        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} new emails`);
+      const sent = await ingestSentReplies(token, user);
+      if (activities || emails || sent) {
+        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} inbox + ${sent} sent replies`);
       }
     } catch (err) {
       console.warn(`[ingest] ${user.email || user.homeAccountId}:`, err.message);
@@ -287,6 +345,6 @@ function start() {
 }
 
 module.exports = {
-  start, tick, cleanBody, syncActivities, ingestEmails,
+  start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
   extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
 };

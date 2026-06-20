@@ -662,6 +662,23 @@ async function getInboxDelta(accessToken, deltaLink) {
 }
 
 /**
+ * Most recent Sent Items, newest first (normalized). Used to capture the rep's
+ * own replies in a meeting thread — those land in Sent, not the Inbox — so the
+ * AI MOM picks them up. No delta; the caller dedups on (provider, msg id).
+ */
+async function getRecentSent(accessToken, limit = 25) {
+  const client = getGraphClient(accessToken);
+  const select = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,receivedDateTime';
+  const res = await client
+    .api("/me/mailFolders('sentitems')/messages")
+    .top(limit)
+    .select(select)
+    .orderby('receivedDateTime desc')
+    .get();
+  return (res.value || []).map(normalizeMessage);
+}
+
+/**
  * Lightweight profile lookup for the signed-in user (for the header UI).
  */
 async function getMe(accessToken) {
@@ -677,6 +694,7 @@ module.exports = {
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,
+  getRecentSent,
   getMe,
   getGraphClient,
   createMeetingWithPhysician,
