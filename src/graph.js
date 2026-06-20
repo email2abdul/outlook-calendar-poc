@@ -181,6 +181,11 @@ function physicianDetailsTable(physician) {
             .join(', ')
         : null,
     ],
+    // Identified from the facility (see src/territory.js): health system from the
+    // facility-name brand ("Independent" when none is detected), territory from
+    // the state.
+    ['Health System', physician.facility ? physician.facility.healthSystem || 'Independent / unaffiliated' : null],
+    ['Territory', physician.facility?.territory],
     ['LinkedIn', physician.linkedinUrl],
   ].filter(([, v]) => v);
 

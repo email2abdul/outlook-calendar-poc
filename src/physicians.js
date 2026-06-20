@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const supabase = require('./supabase');
+const territory = require('./territory');
 
 /**
  * Physician directory — loads physicians + facilities into memory once at
@@ -104,6 +105,10 @@ function buildIndexes(physicianRows, facilityRows) {
         city: nullable(f.city),
         state: nullable(f.state),
         zip: f.zip !== undefined && f.zip !== null && f.zip !== '' ? String(f.zip) : null,
+        // Derived (no master column exists): health system from the facility
+        // name brand, territory from the state. See src/territory.js.
+        healthSystem: territory.resolveHealthSystem(f.name),
+        territory: territory.resolveTerritory(f.state),
       },
     ])
   );
