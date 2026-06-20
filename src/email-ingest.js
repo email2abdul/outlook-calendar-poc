@@ -164,29 +164,68 @@ async function ingestEmails(token, user) {
   return ingested;
 }
 
+/** True for actual replies ("RE: ...") — used to skip the original briefing/invite. */
+function isReplySubject(subject) {
+  return /^\s*re\s*:/i.test(subject || '');
+}
+
+/**
+ * Resolve which physician an incoming email concerns, most reliable first:
+ *  1) the linked activity's physician,
+ *  2) the sender (a physician replying from their own address),
+ *  3) an entity match on the SUBJECT — briefing/meeting replies carry the
+ *     physician name (e.g. "RE: Briefing: Aaron P Baas — …"), so a reply links
+ *     even when the sender is the rep themselves.
+ * Returns an npi or null.
+ */
+async function physicianNpiForEmail({ activity, senderPhysician, msg }) {
+  if (activity?.physician_npi) return activity.physician_npi;
+  if (senderPhysician?.npi) return senderPhysician.npi;
+  if (msg.subject) {
+    try {
+      const analysis = await entityMatcher.analyze(msg.subject);
+      const m = analysis.matched_entities.find((x) => x.entity_type === 'person');
+      if (m) return m.master_id;
+    } catch {
+      /* matcher failure → no subject match */
+    }
+  }
+  return null;
+}
+
 /**
  * Read one reply with AI and save the extracted points as an AI Meeting Note,
- * so the rep sees the MOM in the UI. No-op unless the reply is linked to a
- * physician activity and ANTHROPIC_API_KEY is configured. Best-effort: a
- * failure here never breaks ingestion.
+ * so the rep sees the MOM in the UI. Resolves the physician from the activity /
+ * sender / subject, and only summarizes REPLIES (or physician-sent mail) so the
+ * original briefing/invite self-email isn't summarized. Best-effort: a failure
+ * here never breaks ingestion.
  */
 async function extractToNote({ activity, cleanedBody, msg, user }) {
-  if (!activity?.physician_npi || !aiExtractor.enabled || !cleanedBody) return;
+  if (!aiExtractor.enabled || !cleanedBody) return;
+
+  const senderPhysician = msg.fromEmail ? physiciansDir.getByEmail(msg.fromEmail) : null;
+  // Skip non-replies from the rep (the briefing/invite itself); keep replies and
+  // anything a physician sent directly.
+  if (!isReplySubject(msg.subject) && !senderPhysician) return;
+
+  const npi = await physicianNpiForEmail({ activity, senderPhysician, msg });
+  if (!npi) return;
+
   try {
-    const physician = physiciansDir.getByNpi(activity.physician_npi);
+    const physician = physiciansDir.getByNpi(npi);
     const insight = await aiExtractor.extractFromReply({
       bodyText: cleanedBody,
       physicianName: physician?.name,
-      meetingTitle: activity.title,
+      meetingTitle: activity?.title || msg.subject,
       fromName: msg.fromName,
     });
     if (!insight) return;
 
     await callNotes.addNote({
-      npi: activity.physician_npi,
+      npi,
       organizerEmail: user.email,
-      eventId: activity.calendar_event_id,
-      meetingDate: activity.meeting_date,
+      eventId: activity?.calendar_event_id || null,
+      meetingDate: activity?.meeting_date || null,
       notes: aiExtractor.formatNote(insight, { receivedAt: msg.receivedAt }),
       source: 'ai',
     });
@@ -195,7 +234,7 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
       action: 'insight.extracted',
       entityType: 'email',
       entityId: msg.providerMsgId,
-      details: { npi: activity.physician_npi, subject: msg.subject },
+      details: { npi, subject: msg.subject },
     });
   } catch (err) {
     console.warn('[ingest] AI extraction failed:', err.message);
@@ -247,4 +286,7 @@ function start() {
   console.log(`[ingest] engine on — syncing activities + ingesting Outlook replies (poll: ${POLL_SECONDS}s)`);
 }
 
-module.exports = { start, tick, cleanBody, syncActivities, ingestEmails };
+module.exports = {
+  start, tick, cleanBody, syncActivities, ingestEmails,
+  extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
+};
