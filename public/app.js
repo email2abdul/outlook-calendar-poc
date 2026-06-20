@@ -454,7 +454,17 @@ async function loadNotes(npi) {
     if (!res.ok) return;
     const data = await res.json();
     // Guard against a stale response after switching physicians.
-    if (selectedPhysician?.npi === npi) renderNotes(data.notes || []);
+    if (selectedPhysician?.npi !== npi) return;
+
+    let notes = data.notes || [];
+    // When opened from a specific meeting, show only that meeting's notes
+    // (its eventId) plus general notes with no meeting — so a reply's MOM
+    // appears only under the meeting it belongs to, not every meeting with
+    // the same physician.
+    if (currentEventCtx?.id) {
+      notes = notes.filter((n) => !n.eventId || n.eventId === currentEventCtx.id);
+    }
+    renderNotes(notes);
   } catch {
     /* history is best-effort */
   }

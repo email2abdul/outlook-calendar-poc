@@ -93,6 +93,34 @@ async function findActivityByPhysician(ownerUserId, npi) {
   return data?.[0] || null;
 }
 
+/**
+ * The specific meeting a reply is about, matched by SUBJECT. A reply subject
+ * embeds the original meeting/briefing title ("RE: ⏰ In 64 min: Meeting with
+ * md sufiyan — …"), so we pick the activity whose title is a substring of the
+ * subject — the LONGEST match wins, so "Meeting with md sufiyan" beats a shorter
+ * coincidental title. This ties the AI note to the exact meeting (eventId),
+ * instead of any meeting that happens to share the physician.
+ */
+async function findActivityBySubject(ownerUserId, subject) {
+  const subj = (subject || '').toLowerCase();
+  if (!subj) return null;
+  const { data } = await ensure()
+    .from('app_activities')
+    .select('*')
+    .eq('owner_user_id', ownerUserId)
+    .not('title', 'is', null)
+    .limit(300);
+  let best = null, bestLen = 0;
+  for (const a of data || []) {
+    const t = (a.title || '').trim().toLowerCase();
+    if (t && subj.includes(t) && t.length > bestLen) {
+      best = a;
+      bestLen = t.length;
+    }
+  }
+  return best;
+}
+
 /** List a user's activities, newest meeting first. */
 async function listActivities(ownerUserId, limit = 50) {
   const { data, error } = await ensure()
@@ -153,6 +181,7 @@ module.exports = {
   upsertActivityFromEvent,
   findActivityByThread,
   findActivityByPhysician,
+  findActivityBySubject,
   listActivities,
   emailExists,
   insertEmail,

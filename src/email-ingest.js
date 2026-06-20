@@ -265,7 +265,16 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
   // anything a physician sent directly.
   if (!isReplySubject(msg.subject) && !senderPhysician) return;
 
-  const npi = await physicianNpiForEmail({ activity, senderPhysician, msg });
+  // Tie the note to the SPECIFIC meeting this reply is about (so its eventId is
+  // set and the UI can scope it to that meeting) — already-linked activity,
+  // else the activity whose title the reply subject embeds.
+  const meeting = activity || (await crm.findActivityBySubject(user.homeAccountId, msg.subject));
+
+  // Physician: the meeting's, else the sender, else a subject entity-match.
+  const npi =
+    meeting?.physician_npi ||
+    senderPhysician?.npi ||
+    (await physicianNpiForEmail({ activity: null, senderPhysician: null, msg }));
   if (!npi) return;
 
   try {
@@ -273,7 +282,7 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
     const insight = await aiExtractor.extractFromReply({
       bodyText: cleanedBody,
       physicianName: physician?.name,
-      meetingTitle: activity?.title || msg.subject,
+      meetingTitle: meeting?.title || msg.subject,
       fromName: msg.fromName,
     });
     if (!insight) return;
@@ -281,8 +290,8 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
     await callNotes.addNote({
       npi,
       organizerEmail: user.email,
-      eventId: activity?.calendar_event_id || null,
-      meetingDate: activity?.meeting_date || null,
+      eventId: meeting?.calendar_event_id || null,
+      meetingDate: meeting?.meeting_date || null,
       notes: aiExtractor.formatNote(insight, { receivedAt: msg.receivedAt }),
       source: 'ai',
     });
@@ -291,7 +300,7 @@ async function extractToNote({ activity, cleanedBody, msg, user }) {
       action: 'insight.extracted',
       entityType: 'email',
       entityId: msg.providerMsgId,
-      details: { npi, subject: msg.subject },
+      details: { npi, eventId: meeting?.calendar_event_id || null, subject: msg.subject },
     });
   } catch (err) {
     console.warn('[ingest] AI extraction failed:', err.message);
