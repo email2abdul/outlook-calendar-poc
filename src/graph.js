@@ -244,6 +244,56 @@ function procedureIntelligenceHtml(byFamily) {
   );
 }
 
+/**
+ * HTML "Commercial Signals" section (Lumendi spec) — volume growth trend,
+ * emerging advanced techniques (ESD/EMR/EUS), and therapeutic adoption.
+ * Returns '' when no signals are available.
+ * @param {object} signals from analytics.commercialSignals
+ * @param {object} [summary] analytics.summary (for snare share)
+ */
+function commercialSignalsHtml(signals, summary) {
+  if (!signals) return '';
+  const pct = (v) => `${v >= 0 ? '+' : ''}${v}%`;
+  const items = [];
+
+  const g = signals.growthTrend;
+  if (g && g.yoyPct != null) {
+    const arrow = g.direction === 'up' ? '▲' : g.direction === 'down' ? '▼' : '▬';
+    const color = g.direction === 'up' ? '#0a0' : g.direction === 'down' ? '#c00' : '#888';
+    const overall =
+      g.overallPct != null && g.firstYear !== g.latestYear
+        ? ` · ${pct(g.overallPct)} since ${g.firstYear}`
+        : '';
+    // Year range, not "YoY" — the physician's populated years may be non-consecutive.
+    items.push(
+      `<li><b>Growth trend:</b> <span style="color:${color}">${arrow} ${pct(g.yoyPct)}</span> ` +
+        `(${g.prevYear}→${g.latestYear})${overall}</li>`
+    );
+  }
+
+  const advanced = (signals.emerging || []).filter((e) => e.isRecent);
+  if (advanced.length) {
+    const parts = advanced.map((e) => {
+      const tag = e.isNew ? ' <span style="color:#0a0">🟢 new</span>' : '';
+      return `${escapeHtml(e.family)} (${Number(e.recentVolume).toLocaleString()})${tag}`;
+    });
+    items.push(`<li><b>Advanced techniques (ESD/EMR/EUS):</b> ${parts.join(', ')}</li>`);
+  }
+
+  if (signals.therapeuticShare != null) {
+    const snare =
+      summary && summary.snareShare != null
+        ? ` · snare used ${Math.round(summary.snareShare * 100)}%`
+        : '';
+    items.push(
+      `<li><b>Therapeutic adoption:</b> ${Math.round(signals.therapeuticShare * 100)}% of categorized volume${snare}</li>`
+    );
+  }
+
+  if (!items.length) return '';
+  return '<p><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
+}
+
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
 function analyticsHtml(a) {
   if (!a) return '';
@@ -300,6 +350,7 @@ function analyticsHtml(a) {
 
   return [
     procedureIntelligenceHtml(a.byFamily),
+    commercialSignalsHtml(a.commercialSignals, a.summary),
     '<p><b>Procedure analytics</b></p>',
     summary,
     years,
@@ -501,4 +552,5 @@ module.exports = {
   getGraphClient,
   createMeetingWithPhysician,
   sendPhysicianBriefing,
+  analyticsHtml, // exported for brief-rendering tests
 };

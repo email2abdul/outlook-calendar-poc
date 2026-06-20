@@ -122,43 +122,133 @@ if (supabase) {
 }
 
 /**
- * Procedure-family volumes (Colonoscopy / ESD / EMR / EUS) for one physician —
- * the brief's "Procedure Intelligence" headline (Lumendi spec).
- *
- * The analytics RPC caps top procedures at a handful by volume, which would
- * truncate exactly the low-volume ESD/EUS signals Lumendi cares about, so this
- * reads the physician's FULL per-CPT volumes straight from bis_procedure_volumes
- * (bounded to one physician's rows) and buckets them. Supabase-only; returns
- * null when unconfigured or on any read error, so the brief just omits the
- * section rather than failing.
+ * The physician's FULL per-CPT volume rows (with year + category) straight from
+ * bis_procedure_volumes — the basis for both the procedure-family rollup and
+ * the commercial signals. We read the raw rows rather than the analytics RPC
+ * because the RPC caps top procedures by volume, which truncates exactly the
+ * low-volume ESD/EUS signals Lumendi cares about. Bounded to one physician's
+ * rows. Supabase-only; null when unconfigured or on any read error.
  */
-async function getProcedureFamilies(npi) {
+async function readProcedureRows(npi) {
   if (!supabase) return null;
-  const { bucketVolumes } = require('./procedure-families');
   try {
     const { data, error } = await supabase
       .from('bis_procedure_volumes')
-      .select('cpt_code, procedure_description, total_volume')
+      .select('cpt_code, procedure_description, total_volume, year, procedure_category')
       .eq('physician_npi', String(npi));
     if (error || !data?.length) return null;
-
-    const rows = data.map((r) => ({
+    return data.map((r) => ({
       cptCode: r.cpt_code,
       description: r.procedure_description,
-      volume: r.total_volume, // arrives as text; bucketVolumes coerces
+      volume: Number(r.total_volume) || 0, // arrives as text
+      year: Number(r.year) || null,
+      category: r.procedure_category || null,
     }));
-    const { families, total } = bucketVolumes(rows);
-    return total ? { families, total } : null;
   } catch (err) {
-    console.warn('[analytics] procedure-family read failed:', err.message);
+    console.warn('[analytics] procedure rows read failed:', err.message);
     return null;
   }
+}
+
+/** Procedure-family rollup (Colonoscopy / ESD / EMR / EUS) from raw rows. */
+function computeFamilies(rows) {
+  if (!rows?.length) return null;
+  const { bucketVolumes } = require('./procedure-families');
+  const { families, total } = bucketVolumes(rows);
+  return total ? { families, total } : null;
+}
+
+/**
+ * Commercial signals (Lumendi spec) derived from the raw rows:
+ *  - growthTrend: latest-year YoY + first→last direction (volume trajectory)
+ *  - emerging: ESD/EMR/EUS presence & recency (the advanced-technique signal)
+ *  - therapeuticShare: therapeutic vs all categorized volume (adoption proxy)
+ * (Lumendi *account* status is a separate data source — not derivable here.)
+ */
+function computeCommercialSignals(rows) {
+  if (!rows?.length) return null;
+  const { classifyCpt } = require('./procedure-families');
+
+  const yearVol = {};         // year -> volume
+  const famYear = {};         // family -> { year -> volume }
+  let therapeuticVol = 0, categorizedVol = 0;
+
+  for (const r of rows) {
+    if (!r.volume) continue;
+    if (r.year) yearVol[r.year] = (yearVol[r.year] || 0) + r.volume;
+    const fam = classifyCpt(r.cptCode, r.description);
+    if (r.year) {
+      (famYear[fam] = famYear[fam] || {})[r.year] =
+        (famYear[fam]?.[r.year] || 0) + r.volume;
+    }
+    if (r.category) {
+      categorizedVol += r.volume;
+      if (/therapeut/i.test(r.category)) therapeuticVol += r.volume;
+    }
+  }
+
+  const years = Object.keys(yearVol).map(Number).sort((a, b) => a - b);
+  if (!years.length) return null;
+
+  const latest = years[years.length - 1];
+  const prev = years.length > 1 ? years[years.length - 2] : null;
+  const latestVol = yearVol[latest];
+  const prevVol = prev != null ? yearVol[prev] : null;
+  const firstVol = yearVol[years[0]];
+
+  const yoyPct = prevVol ? Math.round(((latestVol - prevVol) / prevVol) * 100) : null;
+  const overallPct = firstVol ? Math.round(((latestVol - firstVol) / firstVol) * 100) : null;
+  const direction = yoyPct == null ? 'flat' : yoyPct > 5 ? 'up' : yoyPct < -5 ? 'down' : 'flat';
+
+  const growthTrend = {
+    direction, yoyPct, overallPct,
+    firstYear: years[0], latestYear: latest, latestVolume: latestVol,
+    prevYear: prev, prevVolume: prevVol,
+  };
+
+  // Advanced techniques Lumendi sells into — flag those present, and whether
+  // the activity is recent (last 2 yrs) or brand-new (first seen in last 2 yrs).
+  const recentYears = years.slice(-2);
+  const emerging = [];
+  for (const fam of ['ESD', 'EMR', 'EUS']) {
+    const fy = famYear[fam];
+    if (!fy) continue;
+    const total = Object.values(fy).reduce((s, v) => s + v, 0);
+    if (!total) continue;
+    const recentVolume = recentYears.reduce((s, y) => s + (fy[y] || 0), 0);
+    const firstSeen = Object.keys(fy).map(Number).sort((a, b) => a - b)[0];
+    emerging.push({
+      family: fam,
+      total,
+      recentVolume,
+      firstSeen,
+      isRecent: recentVolume > 0,
+      isNew: firstSeen >= latest - 1, // first appeared in the last ~2 years
+    });
+  }
+
+  return {
+    growthTrend,
+    emerging,
+    therapeuticShare: categorizedVol ? therapeuticVol / categorizedVol : null,
+  };
+}
+
+/** Procedure-family rollup for one physician (reads + computes). */
+async function getProcedureFamilies(npi) {
+  return computeFamilies(await readProcedureRows(npi));
+}
+
+/** Commercial signals for one physician (reads + computes). */
+async function getCommercialSignals(npi) {
+  return computeCommercialSignals(await readProcedureRows(npi));
 }
 
 /**
  * Analytics with facility volumes labelled from the directory, or null.
  * Shared by the API routes and the reminder engine. Also attaches `byFamily`
- * (procedure-family rollup) when available.
+ * (procedure-family rollup) and `commercialSignals` (growth/emerging/adoption)
+ * when available — both derived from a single raw-rows read.
  */
 async function getLabelledAnalytics(npi) {
   const physiciansDir = require('./physicians'); // lazy: avoids load-order coupling
@@ -175,9 +265,16 @@ async function getLabelledAnalytics(npi) {
     };
   });
 
-  data.byFamily = await getProcedureFamilies(npi);
+  const rows = await readProcedureRows(npi); // one read, two derivations
+  data.byFamily = computeFamilies(rows);
+  data.commercialSignals = computeCommercialSignals(rows);
 
   return data;
 }
 
-module.exports = { getPhysicianAnalytics, getProcedureFamilies, getLabelledAnalytics };
+module.exports = {
+  getPhysicianAnalytics,
+  getProcedureFamilies,
+  getCommercialSignals,
+  getLabelledAnalytics,
+};
