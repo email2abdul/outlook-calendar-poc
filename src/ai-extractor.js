@@ -101,7 +101,15 @@ async function extractFromReply({ bodyText, physicianName, meetingTitle, fromNam
 function formatNote(insight, { receivedAt } = {}) {
   if (!insight) return '';
   const lines = [];
-  if (insight.summary) lines.push(insight.summary);
+
+  // Day + date + time stamp at the top, so every reply note is distinguishable
+  // (multiple replies to the same meeting each get their own timestamped note),
+  // and the stamp shows even in the collapsed one-line preview.
+  const stamp = formatStamp(receivedAt);
+  const head = stamp ? `🕒 ${stamp}` : '';
+  if (head && insight.summary) lines.push(`${head} — ${insight.summary}`);
+  else if (head) lines.push(head);
+  else if (insight.summary) lines.push(insight.summary);
 
   const section = (title, items) => {
     if (!items?.length) return;
@@ -115,8 +123,18 @@ function formatNote(insight, { receivedAt } = {}) {
   section('Risks / objections', insight.risks_or_objections);
   section('Key points', insight.key_points);
 
-  if (receivedAt) lines.push('', `— from reply ${String(receivedAt).slice(0, 10)}`);
   return lines.join('\n').trim();
+}
+
+/** "Fri, Jun 20, 2026, 9:18 AM" from an ISO timestamp, or '' if unparseable. */
+function formatStamp(receivedAt) {
+  if (!receivedAt) return '';
+  const d = new Date(receivedAt);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleString('en-US', {
+    weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', hour12: true,
+  });
 }
 
 module.exports = {
