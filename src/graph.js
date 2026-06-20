@@ -251,12 +251,12 @@ function procedureIntelligenceHtml(byFamily) {
  * @param {object} signals from analytics.commercialSignals
  * @param {object} [summary] analytics.summary (for snare share)
  */
-function commercialSignalsHtml(signals, summary) {
-  if (!signals) return '';
+function commercialSignalsHtml(signals, summary, lumendiAccount) {
+  if (!signals && !lumendiAccount) return '';
   const pct = (v) => `${v >= 0 ? '+' : ''}${v}%`;
   const items = [];
 
-  const g = signals.growthTrend;
+  const g = signals?.growthTrend;
   if (g && g.yoyPct != null) {
     const arrow = g.direction === 'up' ? '▲' : g.direction === 'down' ? '▼' : '▬';
     const color = g.direction === 'up' ? '#0a0' : g.direction === 'down' ? '#c00' : '#888';
@@ -271,7 +271,7 @@ function commercialSignalsHtml(signals, summary) {
     );
   }
 
-  const advanced = (signals.emerging || []).filter((e) => e.isRecent);
+  const advanced = (signals?.emerging || []).filter((e) => e.isRecent);
   if (advanced.length) {
     const parts = advanced.map((e) => {
       const tag = e.isNew ? ' <span style="color:#0a0">🟢 new</span>' : '';
@@ -280,7 +280,7 @@ function commercialSignalsHtml(signals, summary) {
     items.push(`<li><b>Advanced techniques (ESD/EMR/EUS):</b> ${parts.join(', ')}</li>`);
   }
 
-  if (signals.therapeuticShare != null) {
+  if (signals?.therapeuticShare != null) {
     const snare =
       summary && summary.snareShare != null
         ? ` · snare used ${Math.round(summary.snareShare * 100)}%`
@@ -288,6 +288,15 @@ function commercialSignalsHtml(signals, summary) {
     items.push(
       `<li><b>Therapeutic adoption:</b> ${Math.round(signals.therapeuticShare * 100)}% of categorized volume${snare}</li>`
     );
+  }
+
+  // Existing Lumendi account status (P5).
+  if (lumendiAccount) {
+    const label = lumendiAccount.isActiveUser ? 'Lumendi account' : 'Lumendi status';
+    const product = lumendiAccount.product ? ` — ${escapeHtml(lumendiAccount.product)}` : '';
+    const status = lumendiAccount.status ? escapeHtml(lumendiAccount.status) : 'unknown';
+    const since = lumendiAccount.sinceDate ? ` since ${escapeHtml(lumendiAccount.sinceDate)}` : '';
+    items.push(`<li><b>${label}:</b> ${status}${product}${since}</li>`);
   }
 
   if (!items.length) return '';
@@ -307,9 +316,13 @@ function accountOpportunityHtml(opp) {
 
   const where = opp.facility?.name ? ` at <b>${escapeHtml(opp.facility.name)}</b>` : ' at this facility';
   const n = opp.performingCount;
-  const summary =
-    `<p>${n} other physician${n === 1 ? '' : 's'}${where} perform relevant procedures` +
-    `${opp.truncated ? ' (top by volume)' : ''}.</p>`;
+  // Lumendi usage at the facility (P5) — e.g. "1 physician currently using a Lumendi product."
+  const u = opp.lumendiUserCount || 0;
+  const lumendiLine = u
+    ? `<p>${u} physician${u === 1 ? '' : 's'}${where} currently use${u === 1 ? 's' : ''} a Lumendi product. ` +
+      `${n} other${n === 1 ? '' : 's'} perform relevant procedures.</p>`
+    : `<p>${n} other physician${n === 1 ? '' : 's'}${where} perform relevant procedures` +
+      `${opp.truncated ? ' (top by volume)' : ''}.</p>`;
 
   const rows = opp.peers
     .map((p) => {
@@ -317,9 +330,12 @@ function accountOpportunityHtml(opp) {
         ? ` <span style="color:#888">(${escapeHtml(p.families.join(', '))})</span>`
         : '';
       const activity = p.volume ? `${num(p.volume)} proc${fams}` : '—';
+      const lumendi = p.lumendiProduct
+        ? ` <span style="color:#0a0">● ${escapeHtml(p.lumendiProduct)}</span>`
+        : '';
       const contact = [p.email, p.phone].filter(Boolean).map(escapeHtml).join(' · ') || '—';
       return (
-        `<tr><td ${td}><b>${escapeHtml(p.name || p.npi)}</b></td>` +
+        `<tr><td ${td}><b>${escapeHtml(p.name || p.npi)}</b>${lumendi}</td>` +
         `<td ${td}>${escapeHtml(p.specialty || '—')}</td>` +
         `<td ${td}>${activity}</td><td>${contact}</td></tr>`
       );
@@ -328,7 +344,7 @@ function accountOpportunityHtml(opp) {
 
   return (
     '<p><b>Account Opportunity</b></p>' +
-    summary +
+    lumendiLine +
     `<table>${rows}</table>`
   );
 }
@@ -460,7 +476,7 @@ function analyticsHtml(a) {
 
   return [
     procedureIntelligenceHtml(a.byFamily),
-    commercialSignalsHtml(a.commercialSignals, a.summary),
+    commercialSignalsHtml(a.commercialSignals, a.summary, a.lumendiAccount),
     '<p><b>Procedure analytics</b></p>',
     summary,
     years,
@@ -666,6 +682,7 @@ module.exports = {
   createMeetingWithPhysician,
   sendPhysicianBriefing,
   analyticsHtml, // exported for brief-rendering tests
+  commercialSignalsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests
   productContextHtml, // exported for brief-rendering tests
   contactIntelligenceHtml, // exported for brief-rendering tests

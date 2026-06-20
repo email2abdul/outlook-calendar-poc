@@ -300,7 +300,7 @@ async function getAccountOpportunity(npi, { maxPeers = 6 } = {}) {
   ]);
   ids.delete(selfId);
 
-  const peers = [...ids]
+  let peers = [...ids]
     .map((id) => {
       const p = physiciansDir.getByNpi(id);
       const a = agg[id];
@@ -321,10 +321,22 @@ async function getAccountOpportunity(npi, { maxPeers = 6 } = {}) {
         b.volume - a.volume || Number(Boolean(b.email)) - Number(Boolean(a.email))
     );
 
+  // Lumendi account overlay (P5): who at this facility actually uses a product.
+  // One read covering the meeting physician + every peer.
+  const accounts = await require('./accounts-store').getAccounts([selfId, ...peers.map((p) => p.npi)]);
+  peers = peers.map((p) => {
+    const acct = accounts[p.npi];
+    return { ...p, lumendiProduct: acct?.isActiveUser ? acct.product || 'Lumendi product' : null };
+  });
+  const lumendiUserCount = [selfId, ...peers.map((p) => p.npi)].filter(
+    (id) => accounts[id]?.isActiveUser
+  ).length;
+
   return {
     facility: { id: facility.id, name: facility.name, city: facility.city, state: facility.state },
     peerCount: peers.length,
     performingCount: peers.filter((p) => p.volume > 0).length,
+    lumendiUserCount,
     truncated,
     peers: peers.slice(0, maxPeers),
   };
@@ -358,6 +370,8 @@ async function getLabelledAnalytics(npi) {
   // "What to discuss?" — product talking points matched to this physician's
   // procedure families (deterministic; null until brochures are ingested).
   data.productContext = require('./product-context').getTalkingPoints(data.byFamily);
+  // This physician's own Lumendi account status (Commercial Signals, P5).
+  data.lumendiAccount = await require('./accounts-store').getAccount(npi);
 
   return data;
 }
