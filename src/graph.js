@@ -504,6 +504,23 @@ function analyticsHtml(a) {
  * @param {object} [opts.analytics] from src/analytics.js (facilities labelled)
  * @param {{title?: string, start?: string}} [opts.event] meeting context
  */
+/**
+ * The brief body (details + contact + procedure/commercial analytics + account
+ * opportunity + what-to-discuss) shared by BOTH the email and the in-app brief,
+ * so they always match. Each section returns '' when that physician has no data
+ * for it, so nothing irrelevant is shown. Notes/intro are added by the caller.
+ */
+function physicianBriefHtml({ physician, analytics, contact }) {
+  return [
+    '<p><b>Physician details</b></p>',
+    physicianDetailsTable(physician),
+    contactIntelligenceHtml(physician, contact),
+    analyticsHtml(analytics),
+    accountOpportunityHtml(analytics?.accountOpportunity),
+    productContextHtml(analytics?.productContext),
+  ].join('');
+}
+
 async function sendPhysicianBriefing(
   accessToken,
   { toEmail, physician, notes, analytics, event, subject, intro, contact }
@@ -529,12 +546,7 @@ async function sendPhysicianBriefing(
   const content = [
     `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
     meetingLine,
-    '<p><b>Physician details</b></p>',
-    physicianDetailsTable(physician),
-    contactIntelligenceHtml(physician, contact),
-    analyticsHtml(analytics),
-    accountOpportunityHtml(analytics?.accountOpportunity),
-    productContextHtml(analytics?.productContext),
+    physicianBriefHtml({ physician, analytics, contact }),
     '<p><b>Meeting notes</b></p>',
     history,
   ].join('');
@@ -704,6 +716,7 @@ module.exports = {
   getGraphClient,
   createMeetingWithPhysician,
   sendPhysicianBriefing,
+  physicianBriefHtml,
   analyticsHtml, // exported for brief-rendering tests
   commercialSignalsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests

@@ -25,7 +25,14 @@ function load() {
   try {
     const raw = fs.readFileSync(CONFIG_PATH, 'utf8');
     const parsed = JSON.parse(raw);
-    cache = Array.isArray(parsed.products) ? parsed.products : null;
+    // Ignore the shipped placeholder seed — we don't want fake talking points
+    // shown for real physicians. "What to Discuss" stays hidden until real
+    // brochures are ingested (npm run ingest:products) and overwrite this file.
+    if (String(parsed.generatedBy || '').toUpperCase().startsWith('PLACEHOLDER')) {
+      cache = null;
+    } else {
+      cache = Array.isArray(parsed.products) ? parsed.products : null;
+    }
   } catch {
     cache = null; // not generated yet
   }

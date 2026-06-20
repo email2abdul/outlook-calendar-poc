@@ -230,6 +230,30 @@ router.get('/physicians/:npi/analytics', requireAuth, async (req, res, next) => 
 });
 
 /**
+ * GET /api/physicians/:npi/brief
+ * The pre-meeting brief HTML — the SAME body the email briefing uses
+ * (graph.physicianBriefHtml), so the in-app brief and the emailed brief match
+ * exactly. Sections with no data for this physician render empty (omitted).
+ */
+router.get('/physicians/:npi/brief', requireAuth, async (req, res, next) => {
+  try {
+    const physician = physicians.getByNpi(req.params.npi);
+    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+
+    const [analyticsData, contact] = await Promise.all([
+      analytics.getLabelledAnalytics(physician.npi),
+      contactsStore.getContact(physician.npi),
+    ]);
+    res.json({
+      npi: physician.npi,
+      html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/physicians/:npi/notes
  * The signed-in organizer's meeting-note history with this physician,
  * newest first.
