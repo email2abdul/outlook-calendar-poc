@@ -217,6 +217,33 @@ function buildPhysicianBody(physician, notes, previousNote) {
   ].join('');
 }
 
+/**
+ * HTML "Procedure Intelligence" section — procedure-family volumes
+ * (Colonoscopy / ESD / EMR / EUS) the rep needs at a glance (Lumendi spec).
+ * Returns '' when no family data is available.
+ */
+function procedureIntelligenceHtml(byFamily) {
+  if (!byFamily?.families?.length) return '';
+  const num = (v) => Number(v || 0).toLocaleString();
+  const td = 'style="padding:2px 12px 2px 0"';
+
+  const rows = byFamily.families
+    .map((f) => {
+      const share = byFamily.total ? Math.round((f.volume / byFamily.total) * 100) : 0;
+      const codes = f.cptCodes.length ? ` <span style="color:#888">(CPT ${escapeHtml(f.cptCodes.join(', '))})</span>` : '';
+      return (
+        `<tr><td ${td}><b>${escapeHtml(f.label)}</b></td>` +
+        `<td ${td}>${num(f.volume)} (${share}%)</td><td>${codes}</td></tr>`
+      );
+    })
+    .join('');
+
+  return (
+    '<p><b>Procedure Intelligence</b></p>' +
+    `<table>${rows}</table>`
+  );
+}
+
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
 function analyticsHtml(a) {
   if (!a) return '';
@@ -271,7 +298,15 @@ function analyticsHtml(a) {
       .join('') +
     '</table>';
 
-  return ['<p><b>Procedure analytics</b></p>', summary, years, payers, procs, facilities].join('');
+  return [
+    procedureIntelligenceHtml(a.byFamily),
+    '<p><b>Procedure analytics</b></p>',
+    summary,
+    years,
+    payers,
+    procs,
+    facilities,
+  ].join('');
 }
 
 /**

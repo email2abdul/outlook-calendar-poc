@@ -122,8 +122,43 @@ if (supabase) {
 }
 
 /**
+ * Procedure-family volumes (Colonoscopy / ESD / EMR / EUS) for one physician —
+ * the brief's "Procedure Intelligence" headline (Lumendi spec).
+ *
+ * The analytics RPC caps top procedures at a handful by volume, which would
+ * truncate exactly the low-volume ESD/EUS signals Lumendi cares about, so this
+ * reads the physician's FULL per-CPT volumes straight from bis_procedure_volumes
+ * (bounded to one physician's rows) and buckets them. Supabase-only; returns
+ * null when unconfigured or on any read error, so the brief just omits the
+ * section rather than failing.
+ */
+async function getProcedureFamilies(npi) {
+  if (!supabase) return null;
+  const { bucketVolumes } = require('./procedure-families');
+  try {
+    const { data, error } = await supabase
+      .from('bis_procedure_volumes')
+      .select('cpt_code, procedure_description, total_volume')
+      .eq('physician_npi', String(npi));
+    if (error || !data?.length) return null;
+
+    const rows = data.map((r) => ({
+      cptCode: r.cpt_code,
+      description: r.procedure_description,
+      volume: r.total_volume, // arrives as text; bucketVolumes coerces
+    }));
+    const { families, total } = bucketVolumes(rows);
+    return total ? { families, total } : null;
+  } catch (err) {
+    console.warn('[analytics] procedure-family read failed:', err.message);
+    return null;
+  }
+}
+
+/**
  * Analytics with facility volumes labelled from the directory, or null.
- * Shared by the API routes and the reminder engine.
+ * Shared by the API routes and the reminder engine. Also attaches `byFamily`
+ * (procedure-family rollup) when available.
  */
 async function getLabelledAnalytics(npi) {
   const physiciansDir = require('./physicians'); // lazy: avoids load-order coupling
@@ -140,7 +175,9 @@ async function getLabelledAnalytics(npi) {
     };
   });
 
+  data.byFamily = await getProcedureFamilies(npi);
+
   return data;
 }
 
-module.exports = { getPhysicianAnalytics, getLabelledAnalytics };
+module.exports = { getPhysicianAnalytics, getProcedureFamilies, getLabelledAnalytics };
