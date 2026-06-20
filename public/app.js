@@ -404,6 +404,14 @@ function renderNotes(notes) {
 
       summary.append(date, ago);
 
+      // AI-extracted Meeting Notes (from an email reply) get a distinct badge.
+      if (n.source === 'ai') {
+        const ai = document.createElement('span');
+        ai.className = 'physician-history__badge physician-history__badge--ai';
+        ai.textContent = '🤖 AI from reply';
+        summary.appendChild(ai);
+      }
+
       if (i === 0) {
         const badge = document.createElement('span');
         badge.className = 'physician-history__badge';

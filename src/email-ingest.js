@@ -6,6 +6,8 @@ const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
+const callNotes = require('./notes');
+const aiExtractor = require('./ai-extractor');
 
 /**
  * Phase 0 + 1: foundation + Outlook ingestion.
@@ -125,6 +127,7 @@ async function ingestEmails(token, user) {
         activity = await crm.findActivityByPhysician(user.homeAccountId, physician.npi);
       }
     }
+    const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
     const row = await crm.insertEmail({
       provider: 'outlook',
       provider_msg_id: msg.providerMsgId,
@@ -137,7 +140,7 @@ async function ingestEmails(token, user) {
       to_emails: msg.toEmails,
       cc_emails: msg.ccEmails,
       subject: msg.subject,
-      body_text: cleanBody(msg.bodyText || msg.bodyPreview),
+      body_text: cleanedBody,
       body_raw: msg.bodyHtml || msg.bodyText || msg.bodyPreview,
       received_at: msg.receivedAt,
     });
@@ -151,11 +154,52 @@ async function ingestEmails(token, user) {
         sourceEmailId: row.id,
         details: { subject: msg.subject, linkedActivity: activity?.id || null },
       });
+      // Per-reply AI MOM → Meeting Notes. Runs once per email (only on a fresh
+      // insert), so each reply is summarized exactly once. Best-effort.
+      await extractToNote({ activity, cleanedBody, msg, user });
     }
   }
 
   if (deltaLink) await tokenStore.setMailDelta(user.homeAccountId, deltaLink);
   return ingested;
+}
+
+/**
+ * Read one reply with AI and save the extracted points as an AI Meeting Note,
+ * so the rep sees the MOM in the UI. No-op unless the reply is linked to a
+ * physician activity and ANTHROPIC_API_KEY is configured. Best-effort: a
+ * failure here never breaks ingestion.
+ */
+async function extractToNote({ activity, cleanedBody, msg, user }) {
+  if (!activity?.physician_npi || !aiExtractor.enabled || !cleanedBody) return;
+  try {
+    const physician = physiciansDir.getByNpi(activity.physician_npi);
+    const insight = await aiExtractor.extractFromReply({
+      bodyText: cleanedBody,
+      physicianName: physician?.name,
+      meetingTitle: activity.title,
+      fromName: msg.fromName,
+    });
+    if (!insight) return;
+
+    await callNotes.addNote({
+      npi: activity.physician_npi,
+      organizerEmail: user.email,
+      eventId: activity.calendar_event_id,
+      meetingDate: activity.meeting_date,
+      notes: aiExtractor.formatNote(insight, { receivedAt: msg.receivedAt }),
+      source: 'ai',
+    });
+    await crm.audit({
+      actor: 'ai',
+      action: 'insight.extracted',
+      entityType: 'email',
+      entityId: msg.providerMsgId,
+      details: { npi: activity.physician_npi, subject: msg.subject },
+    });
+  } catch (err) {
+    console.warn('[ingest] AI extraction failed:', err.message);
+  }
 }
 
 /** One pass over all signed-in salespeople. Exported for manual runs/tests. */
