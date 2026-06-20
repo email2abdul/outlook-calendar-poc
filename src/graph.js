@@ -334,6 +334,42 @@ function accountOpportunityHtml(opp) {
 }
 
 /**
+ * HTML "Contact Intelligence" section (Lumendi spec, P4) — verified mobile /
+ * LinkedIn / email plus the trust metadata (confidence, last verified, last
+ * refresh) from the app_contacts overlay. Returns '' when no overlay exists
+ * (the base email/phone/linkedin already appear in the physician details).
+ * @param {object} physician normalized directory profile
+ * @param {object} contact from contacts-store.getContact (or null)
+ */
+function contactIntelligenceHtml(physician, contact) {
+  if (!contact) return '';
+  const td = 'style="padding:2px 12px 2px 0"';
+  const rows = [
+    ['Verified email', contact.email],
+    ['Verified mobile', contact.mobile],
+    ['Verified LinkedIn', contact.linkedinUrl],
+  ].filter(([, v]) => v);
+
+  const meta = [];
+  if (contact.confidenceScore != null) meta.push(`Confidence ${contact.confidenceScore}%`);
+  if (contact.lastVerified) meta.push(`Verified ${escapeHtml(contact.lastVerified)}`);
+  if (contact.lastRefresh) meta.push(`Refreshed ${escapeHtml(contact.lastRefresh)}`);
+
+  if (!rows.length && !meta.length) return '';
+
+  const table = rows.length
+    ? '<table>' +
+      rows
+        .map(([k, v]) => `<tr><td ${td}><b>${escapeHtml(k)}</b></td><td>${escapeHtml(v)}</td></tr>`)
+        .join('') +
+      '</table>'
+    : '';
+  const metaLine = meta.length ? `<p style="color:#555">${meta.join(' · ')}</p>` : '';
+
+  return '<p><b>Contact Intelligence</b></p>' + table + metaLine;
+}
+
+/**
  * HTML "What to Discuss" section (Lumendi spec, Product Context Layer) —
  * product talking points matched to the physician's procedure families.
  * Returns '' when there's no matched product context.
@@ -449,7 +485,7 @@ function analyticsHtml(a) {
  */
 async function sendPhysicianBriefing(
   accessToken,
-  { toEmail, physician, notes, analytics, event, subject, intro }
+  { toEmail, physician, notes, analytics, event, subject, intro, contact }
 ) {
   const client = getGraphClient(accessToken);
 
@@ -474,6 +510,7 @@ async function sendPhysicianBriefing(
     meetingLine,
     '<p><b>Physician details</b></p>',
     physicianDetailsTable(physician),
+    contactIntelligenceHtml(physician, contact),
     analyticsHtml(analytics),
     accountOpportunityHtml(analytics?.accountOpportunity),
     productContextHtml(analytics?.productContext),
@@ -631,4 +668,5 @@ module.exports = {
   analyticsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests
   productContextHtml, // exported for brief-rendering tests
+  contactIntelligenceHtml, // exported for brief-rendering tests
 };

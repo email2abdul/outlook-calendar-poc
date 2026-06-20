@@ -6,6 +6,7 @@ const graph = require('../graph');
 const physicians = require('../physicians');
 const callNotes = require('../notes');
 const analytics = require('../analytics');
+const contactsStore = require('../contacts-store');
 const entityMatcher = require('../entity-matcher');
 const crm = require('../crm-store');
 const emailIngest = require('../email-ingest');
@@ -299,6 +300,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
+      contact: await contactsStore.getContact(physician.npi),
       event: {
         title: typeof eventTitle === 'string' ? eventTitle : undefined,
         start: typeof eventStart === 'string' ? eventStart : undefined,
@@ -371,6 +373,7 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
           physician,
           notes: await callNotes.getNotes(physician.npi, to),
           analytics: await analytics.getLabelledAnalytics(physician.npi),
+          contact: await contactsStore.getContact(physician.npi),
           event: { title: event.title, start: event.start },
         });
         briefingSent = true;

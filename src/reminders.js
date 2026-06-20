@@ -6,6 +6,7 @@ const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
 const callNotes = require('./notes');
 const analytics = require('./analytics');
+const contactsStore = require('./contacts-store');
 const tokenStore = require('./token-store');
 
 /**
@@ -80,6 +81,7 @@ async function tick() {
           physician,
           notes: await callNotes.getNotes(physician.npi, user.email),
           analytics: await analytics.getLabelledAnalytics(physician.npi),
+          contact: await contactsStore.getContact(physician.npi),
           event: { title: ev.title, start: ev.start },
           subject: `⏰ In ${minutes} min: ${ev.title} — ${physician.name || physician.npi}`,
           intro: `Reminder: your meeting "${ev.title}" starts in about ${minutes} minutes. Your briefing is below.`,

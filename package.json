@@ -8,7 +8,8 @@
     "start": "node server.js",
     "dev": "node --watch server.js",
     "ingest": "node scripts/ingest.js",
-    "ingest:products": "node scripts/ingest-products.js"
+    "ingest:products": "node scripts/ingest-products.js",
+    "import:contacts": "node scripts/import-contacts.js"
   },
   "keywords": [
     "microsoft-graph",
