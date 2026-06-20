@@ -385,6 +385,18 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
       previousNote,
     });
 
+    // Persist the meeting → physician link (the EXPLICITLY chosen physician),
+    // keyed by calendar event id, so the 90-min reminder briefs this same
+    // physician — making the reminder's brief match the auto-brief's. Best-effort.
+    const homeAccountId = req.session.account?.homeAccountId;
+    if (homeAccountId && crm.enabled) {
+      try {
+        await crm.upsertActivityFromEvent(homeAccountId, event, physician.npi, physician.facility?.id);
+      } catch (err) {
+        console.warn('[schedule] activity link failed:', err.message);
+      }
+    }
+
     // Auto-brief the salesperson: full physician info (details + analytics +
     // their note history) lands in their own inbox the moment the meeting is
     // booked. A mail failure must not fail the booking itself.

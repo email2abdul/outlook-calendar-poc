@@ -7,6 +7,7 @@ const entityMatcher = require('./entity-matcher');
 const callNotes = require('./notes');
 const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
+const crm = require('./crm-store');
 const tokenStore = require('./token-store');
 
 /**
@@ -33,10 +34,25 @@ function startUtcMs(ev) {
 }
 
 /**
- * The physician this meeting is with: an attendee in the directory wins;
- * otherwise a confident entity match from the title/description.
+ * The physician this meeting is with. Priority:
+ *  1) the physician the meeting was SCHEDULED with (the app_activity for this
+ *     event) — authoritative, so the reminder briefs the SAME physician the
+ *     auto-brief did and the two emails match;
+ *  2) an attendee in the directory;
+ *  3) a confident entity match from the title/description.
  */
-async function physicianForEvent(ev) {
+async function physicianForEvent(ev, ownerUserId) {
+  if (ownerUserId && ev.id) {
+    try {
+      const act = await crm.findActivityByEventId(ownerUserId, ev.id);
+      if (act?.physician_npi) {
+        const p = physiciansDir.getByNpi(act.physician_npi);
+        if (p) return p;
+      }
+    } catch {
+      /* fall through to attendee/title matching */
+    }
+  }
   for (const a of ev.attendees || []) {
     const p = physiciansDir.getByEmail(a.email);
     if (p) return p;
@@ -73,7 +89,7 @@ async function tick() {
         if (minutes <= 0 || minutes > LEAD_MINUTES) continue;
         if (await tokenStore.wasReminderSent(user.homeAccountId, ev.id)) continue;
 
-        const physician = await physicianForEvent(ev);
+        const physician = await physicianForEvent(ev, user.homeAccountId);
         if (!physician) continue; // not a physician meeting — no reminder
 
         await graph.sendPhysicianBriefing(token, {
@@ -112,4 +128,4 @@ function start() {
   );
 }
 
-module.exports = { start, tick };
+module.exports = { start, tick, physicianForEvent };

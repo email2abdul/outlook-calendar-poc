@@ -65,6 +65,23 @@ async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId
   return data;
 }
 
+/**
+ * The activity for a specific calendar event — the physician the meeting was
+ * actually SCHEDULED with (written at schedule time). Lets the 90-min reminder
+ * brief the same physician the auto-brief used, instead of re-guessing from the
+ * title.
+ */
+async function findActivityByEventId(ownerUserId, calendarEventId) {
+  if (!calendarEventId) return null;
+  const { data } = await ensure()
+    .from('app_activities')
+    .select('*')
+    .eq('owner_user_id', ownerUserId)
+    .eq('calendar_event_id', String(calendarEventId))
+    .limit(1);
+  return data?.[0] || null;
+}
+
 /** Find an activity by email thread id (for linking replies). */
 async function findActivityByThread(ownerUserId, threadId) {
   if (!threadId) return null;
@@ -182,6 +199,7 @@ module.exports = {
   findActivityByThread,
   findActivityByPhysician,
   findActivityBySubject,
+  findActivityByEventId,
   listActivities,
   emailExists,
   insertEmail,
