@@ -36,6 +36,9 @@ body {
   margin: 0 auto;
   padding: 24px 20px 48px;
   min-height: 100vh;
+  /* dvh tracks the *visible* viewport, so the layout doesn't jump when mobile
+     browser chrome (address bar) shows/hides. 100vh kept as the fallback. */
+  min-height: 100dvh;
   display: flex;
   flex-direction: column;
 }
@@ -76,6 +79,12 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
+}
+
+/* Sign-out stays its natural size; the meta column absorbs the shrink. */
+.account .btn {
+  flex-shrink: 0;
 }
 
 .account__meta {
@@ -83,6 +92,9 @@ body {
   flex-direction: column;
   text-align: right;
   line-height: 1.2;
+  /* Allow the chip to shrink so a long account email can't push the Sign-out
+     button off-screen on narrow viewports. */
+  min-width: 0;
 }
 
 .account__name {
@@ -93,6 +105,7 @@ body {
 .account__email {
   font-size: 12px;
   color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 /* ── Content / cards ───────────────────────────────────────── */
@@ -623,6 +636,8 @@ body {
 
 .table-scroll {
   overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch; /* momentum scroll on iOS */
 }
 
 .physician-analytics__procs {
@@ -656,6 +671,66 @@ body {
 .physician-analytics__procs td:nth-child(3),
 .physician-analytics__procs td:nth-child(4),
 .physician-analytics__procs td:nth-child(5) {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+/* The brief sections (Physician details, Contact Intelligence, Account
+   Opportunity, analytics, …) are injected as the SAME HTML the email uses:
+   bare <table>s with inline cell padding and no class. Without app-side CSS a
+   long, unbreakable value (e.g. an email address) forces the table wider than
+   the panel and breaks the layout. Constrain them to the panel and let long
+   values wrap instead of overflowing. */
+.physician-analytics table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 2px 0 10px;
+}
+
+.physician-analytics table td {
+  vertical-align: top;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.physician-analytics > p {
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
+
+/* Brief "Top procedures" table on wider screens — a clean, lightly-ruled table
+   (it restacks into cards ≤600px, see .brief-cards). Subtle row dividers +
+   uppercase muted headers read as intentional next to the other brief sections,
+   without the boxed-card look. */
+.brief-proc {
+  margin-top: 4px;
+}
+
+.brief-proc thead th {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px !important;
+}
+
+.brief-proc tbody td {
+  border-bottom: 1px solid var(--border);
+  padding-top: 5px !important;
+  padding-bottom: 5px !important;
+}
+
+.brief-proc tbody tr:last-child td {
+  border-bottom: none;
+}
+
+/* Numeric columns stay on one line and tabular-aligned. */
+.brief-proc td:nth-child(3),
+.brief-proc td:nth-child(4),
+.brief-proc td:nth-child(5) {
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
 }
@@ -979,5 +1054,84 @@ body {
 
   .schedule-form .btn {
     align-self: stretch;
+  }
+
+  /* iOS Safari auto-zooms when a focused control's font is < 16px. Bump all
+     form controls to 16px on small screens to suppress that zoom jump. */
+  .input,
+  .schedule-form select,
+  textarea.input {
+    font-size: 16px;
+  }
+
+  /* ── Wide brief tables → stacked "cards" on phones ──────────────
+     The brief's multi-column tables (Top procedures = 5 cols, Account
+     Opportunity = 4 cols) can't stay legible as a grid on a ~320px screen.
+     On small viewports each row becomes a self-contained card and every cell
+     shows its column name (from data-label) beside the value. Clean and
+     readable on any width; the desktop table layout is untouched. */
+  .brief-cards thead {
+    display: none; /* column names move into each cell via data-label */
+  }
+
+  .brief-cards,
+  .brief-cards tbody,
+  .brief-cards tr,
+  .brief-cards td {
+    display: block;
+    width: 100%;
+  }
+
+  .brief-cards tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin-bottom: 8px;
+    background: var(--surface);
+  }
+
+  .brief-cards tr:last-child {
+    margin-bottom: 0;
+  }
+
+  .brief-cards td {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 14px;
+    border: none !important;
+    /* Override the inline email cell padding for the card layout. */
+    padding: 3px 0 !important;
+    /* Numeric columns are nowrap on desktop — let them wrap inside a card. */
+    white-space: normal !important;
+    text-align: right;
+    overflow-wrap: anywhere;
+    font-size: 13px;
+  }
+
+  .brief-cards td:not(:last-child) {
+    border-bottom: 1px solid var(--border) !important;
+  }
+
+  .brief-cards td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--muted);
+    text-align: left;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  /* Cells with no label (shouldn't happen, but be safe) drop the ::before. */
+  .brief-cards td:not([data-label])::before {
+    content: none;
+  }
+
+  /* Free-text fields read better with the label stacked above the value. */
+  .brief-cards td[data-label='Procedure'],
+  .brief-cards td[data-label='Contact'] {
+    flex-direction: column;
+    text-align: left;
+    gap: 2px;
   }
 }

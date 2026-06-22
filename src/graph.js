@@ -334,15 +334,20 @@ function accountOpportunityHtml(opp) {
       const fams = p.families?.length
         ? ` <span style="color:#888">(${escapeHtml(p.families.join(', '))})</span>`
         : '';
-      const activity = p.volume ? `${num(p.volume)} proc${fams}` : '—';
+      // nowrap span keeps the count on one line; in-app the table cell allows
+      // breaking anywhere (so long emails wrap) which would otherwise split the
+      // number itself. Inline style → renders identically in email.
+      const activity = p.volume ? `<span style="white-space:nowrap">${num(p.volume)} proc</span>${fams}` : '—';
       const lumendi = p.lumendiProduct
         ? ` <span style="color:#0a0">● ${escapeHtml(p.lumendiProduct)}</span>`
         : '';
       const contact = [p.email, p.phone].filter(Boolean).map(escapeHtml).join(' · ') || '—';
+      // data-labels drive the mobile stacked-card layout (.brief-cards); inert
+      // in email clients so the emailed table is unchanged.
       return (
-        `<tr><td ${td}><b>${escapeHtml(p.name || p.npi)}</b>${lumendi}</td>` +
-        `<td ${td}>${escapeHtml(p.specialty || '—')}</td>` +
-        `<td ${td}>${activity}</td><td>${contact}</td></tr>`
+        `<tr><td ${td} data-label="Physician"><b>${escapeHtml(p.name || p.npi)}</b>${lumendi}</td>` +
+        `<td ${td} data-label="Specialty">${escapeHtml(p.specialty || '—')}</td>` +
+        `<td ${td} data-label="Volume">${activity}</td><td data-label="Contact">${contact}</td></tr>`
       );
     })
     .join('');
@@ -350,7 +355,7 @@ function accountOpportunityHtml(opp) {
   return (
     '<p><b>Account Opportunity</b></p>' +
     lumendiLine +
-    `<table>${rows}</table>`
+    `<table class="brief-cards">${rows}</table>`
   );
 }
 
@@ -456,18 +461,28 @@ function analyticsHtml(a) {
       .join('') +
     '</table>';
 
+  // The class + data-label attributes drive a mobile "stacked card" layout in
+  // the in-app brief (see .brief-cards in styles.css) so this wide 5-column
+  // table stays clean on phones instead of scrolling/crushing. Classes and
+  // data-* are inert in email clients (and th renders bold like the old <b>
+  // headers), so the emailed table is visually unchanged. thead headers carry
+  // inline left-align/padding to match the previous bold-<td> header look.
+  const th = 'style="text-align:left;padding:2px 12px 2px 0"';
   const procs =
-    '<p><b>Top procedures</b></p><table>' +
-    '<tr><td style="padding:2px 12px 2px 0"><b>CPT</b></td><td style="padding:2px 12px 2px 0"><b>Procedure</b></td>' +
-    '<td style="padding:2px 12px 2px 0"><b>Volume</b></td><td style="padding:2px 12px 2px 0"><b>Medicare</b></td><td><b>Commercial</b></td></tr>' +
+    '<p><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
+    `<thead><tr><th ${th}>CPT</th><th ${th}>Procedure</th><th ${th}>Volume</th>` +
+    `<th ${th}>Medicare</th><th style="text-align:left">Commercial</th></tr></thead><tbody>` +
     a.topProcedures
       .map(
         (p) =>
-          `<tr><td ${td}>${escapeHtml(p.cptCode)}</td><td ${td}>${escapeHtml(p.description || '—')}</td>` +
-          `<td ${td}>${num(p.volume)}</td><td ${td}>${money(p.medicarePhysicianRate)}</td><td>${money(p.commercialRate)}</td></tr>`
+          `<tr><td ${td} data-label="CPT">${escapeHtml(p.cptCode)}</td>` +
+          `<td ${td} data-label="Procedure">${escapeHtml(p.description || '—')}</td>` +
+          `<td ${td} data-label="Volume">${num(p.volume)}</td>` +
+          `<td ${td} data-label="Medicare">${money(p.medicarePhysicianRate)}</td>` +
+          `<td data-label="Commercial">${money(p.commercialRate)}</td></tr>`
       )
       .join('') +
-    '</table>';
+    '</tbody></table></div>';
 
   const facilities =
     '<p><b>Facilities</b></p><table>' +
