@@ -65,6 +65,23 @@ async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId
   return data;
 }
 
+/**
+ * The activity for a specific calendar event — the physician the meeting was
+ * actually SCHEDULED with (written at schedule time). Lets the 90-min reminder
+ * brief the same physician the auto-brief used, instead of re-guessing from the
+ * title.
+ */
+async function findActivityByEventId(ownerUserId, calendarEventId) {
+  if (!calendarEventId) return null;
+  const { data } = await ensure()
+    .from('app_activities')
+    .select('*')
+    .eq('owner_user_id', ownerUserId)
+    .eq('calendar_event_id', String(calendarEventId))
+    .limit(1);
+  return data?.[0] || null;
+}
+
 /** Find an activity by email thread id (for linking replies). */
 async function findActivityByThread(ownerUserId, threadId) {
   if (!threadId) return null;
@@ -93,6 +110,34 @@ async function findActivityByPhysician(ownerUserId, npi) {
   return data?.[0] || null;
 }
 
+/**
+ * The specific meeting a reply is about, matched by SUBJECT. A reply subject
+ * embeds the original meeting/briefing title ("RE: ⏰ In 64 min: Meeting with
+ * md sufiyan — …"), so we pick the activity whose title is a substring of the
+ * subject — the LONGEST match wins, so "Meeting with md sufiyan" beats a shorter
+ * coincidental title. This ties the AI note to the exact meeting (eventId),
+ * instead of any meeting that happens to share the physician.
+ */
+async function findActivityBySubject(ownerUserId, subject) {
+  const subj = (subject || '').toLowerCase();
+  if (!subj) return null;
+  const { data } = await ensure()
+    .from('app_activities')
+    .select('*')
+    .eq('owner_user_id', ownerUserId)
+    .not('title', 'is', null)
+    .limit(300);
+  let best = null, bestLen = 0;
+  for (const a of data || []) {
+    const t = (a.title || '').trim().toLowerCase();
+    if (t && subj.includes(t) && t.length > bestLen) {
+      best = a;
+      bestLen = t.length;
+    }
+  }
+  return best;
+}
+
 /** List a user's activities, newest meeting first. */
 async function listActivities(ownerUserId, limit = 50) {
   const { data, error } = await ensure()
@@ -118,13 +163,20 @@ async function emailExists(provider, providerMsgId) {
   return Boolean(data?.[0]);
 }
 
-/** Insert a normalized email; returns the row (or existing one on conflict). */
+/**
+ * Insert a normalized email and RETURN the new row (callers extract from it on a
+ * fresh insert). Callers dedup via emailExists() first, so this is a plain
+ * insert; a concurrent duplicate trips the unique constraint (23505) and we
+ * return null so the loser skips re-processing. (Was an upsert with
+ * ignoreDuplicates, which silently returned null even for new rows — so
+ * downstream extraction never ran.)
+ */
 async function insertEmail(email) {
-  const { data, error } = await ensure()
-    .from('app_emails')
-    .upsert(email, { onConflict: 'provider,provider_msg_id', ignoreDuplicates: true })
-    .select();
-  if (error) throw new Error(`insertEmail failed: ${error.message}`);
+  const { data, error } = await ensure().from('app_emails').insert(email).select();
+  if (error) {
+    if (error.code === '23505') return null; // already ingested (race)
+    throw new Error(`insertEmail failed: ${error.message}`);
+  }
   return data?.[0] || null;
 }
 
@@ -146,6 +198,8 @@ module.exports = {
   upsertActivityFromEvent,
   findActivityByThread,
   findActivityByPhysician,
+  findActivityBySubject,
+  findActivityByEventId,
   listActivities,
   emailExists,
   insertEmail,

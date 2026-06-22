@@ -1,0 +1,36 @@
+{
+  "generatedBy": "PLACEHOLDER-SEED (not real extraction) — run scripts/ingest-products.js with the actual Lumendi brochure PDFs to replace this",
+  "products": [
+    {
+      "product_name": "DiLumen EZ",
+      "summary": "Endolumenal interventional platform that stabilizes the colon to create a therapeutic working space.",
+      "applies_to_families": ["EMR", "ESD", "Colonoscopy"],
+      "talking_points": [
+        "Creates a stable therapeutic zone for resection in the colon",
+        "Supports advanced polyp removal without referral to surgery"
+      ],
+      "competitive_differentiation": [
+        "Single-operator workflow vs. multi-step alternatives"
+      ],
+      "reimbursement_notes": [],
+      "value_propositions": [
+        "Enables EMR/ESD cases to be kept in-suite rather than referred out"
+      ],
+      "source_file": "PLACEHOLDER"
+    },
+    {
+      "product_name": "DiLumen EUS Accessory",
+      "summary": "Accessory supporting endoscopic ultrasound workflows.",
+      "applies_to_families": ["EUS"],
+      "talking_points": [
+        "Improves access and stability during EUS-guided procedures"
+      ],
+      "competitive_differentiation": [],
+      "reimbursement_notes": [],
+      "value_propositions": [
+        "Streamlines EUS targeting"
+      ],
+      "source_file": "PLACEHOLDER"
+    }
+  ]
+}

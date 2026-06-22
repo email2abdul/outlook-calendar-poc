@@ -5,3 +5,7 @@ node_modules/
 *.db
 *.db-journal
 .vercel
+
+# Lumendi product brochure PDFs — source material for `npm run ingest:products`,
+# not committed (large binaries; the extracted config/product-context.json is).
+brochures/

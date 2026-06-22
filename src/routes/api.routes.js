@@ -6,6 +6,7 @@ const graph = require('../graph');
 const physicians = require('../physicians');
 const callNotes = require('../notes');
 const analytics = require('../analytics');
+const contactsStore = require('../contacts-store');
 const entityMatcher = require('../entity-matcher');
 const crm = require('../crm-store');
 const emailIngest = require('../email-ingest');
@@ -229,6 +230,30 @@ router.get('/physicians/:npi/analytics', requireAuth, async (req, res, next) => 
 });
 
 /**
+ * GET /api/physicians/:npi/brief
+ * The pre-meeting brief HTML — the SAME body the email briefing uses
+ * (graph.physicianBriefHtml), so the in-app brief and the emailed brief match
+ * exactly. Sections with no data for this physician render empty (omitted).
+ */
+router.get('/physicians/:npi/brief', requireAuth, async (req, res, next) => {
+  try {
+    const physician = physicians.getByNpi(req.params.npi);
+    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+
+    const [analyticsData, contact] = await Promise.all([
+      analytics.getLabelledAnalytics(physician.npi),
+      contactsStore.getContact(physician.npi),
+    ]);
+    res.json({
+      npi: physician.npi,
+      html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/physicians/:npi/notes
  * The signed-in organizer's meeting-note history with this physician,
  * newest first.
@@ -299,6 +324,7 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
+      contact: await contactsStore.getContact(physician.npi),
       event: {
         title: typeof eventTitle === 'string' ? eventTitle : undefined,
         start: typeof eventStart === 'string' ? eventStart : undefined,
@@ -359,6 +385,18 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
       previousNote,
     });
 
+    // Persist the meeting → physician link (the EXPLICITLY chosen physician),
+    // keyed by calendar event id, so the 90-min reminder briefs this same
+    // physician — making the reminder's brief match the auto-brief's. Best-effort.
+    const homeAccountId = req.session.account?.homeAccountId;
+    if (homeAccountId && crm.enabled) {
+      try {
+        await crm.upsertActivityFromEvent(homeAccountId, event, physician.npi, physician.facility?.id);
+      } catch (err) {
+        console.warn('[schedule] activity link failed:', err.message);
+      }
+    }
+
     // Auto-brief the salesperson: full physician info (details + analytics +
     // their note history) lands in their own inbox the moment the meeting is
     // booked. A mail failure must not fail the booking itself.
@@ -371,6 +409,7 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
           physician,
           notes: await callNotes.getNotes(physician.npi, to),
           analytics: await analytics.getLabelledAnalytics(physician.npi),
+          contact: await contactsStore.getContact(physician.npi),
           event: { title: event.title, start: event.start },
         });
         briefingSent = true;

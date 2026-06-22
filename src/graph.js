@@ -181,6 +181,11 @@ function physicianDetailsTable(physician) {
             .join(', ')
         : null,
     ],
+    // Identified from the facility (see src/territory.js): health system from the
+    // facility-name brand ("Independent" when none is detected), territory from
+    // the state.
+    ['Health System', physician.facility ? physician.facility.healthSystem || 'Independent / unaffiliated' : null],
+    ['Territory', physician.facility?.territory],
     ['LinkedIn', physician.linkedinUrl],
   ].filter(([, v]) => v);
 
@@ -217,6 +222,214 @@ function buildPhysicianBody(physician, notes, previousNote) {
   ].join('');
 }
 
+/**
+ * HTML "Procedure Intelligence" section — procedure-family volumes
+ * (Colonoscopy / ESD / EMR / EUS) the rep needs at a glance (Lumendi spec).
+ * Returns '' when no family data is available.
+ */
+function procedureIntelligenceHtml(byFamily) {
+  if (!byFamily?.families?.length) return '';
+  const num = (v) => Number(v || 0).toLocaleString();
+  const td = 'style="padding:2px 12px 2px 0"';
+
+  const rows = byFamily.families
+    .map((f) => {
+      const share = byFamily.total ? Math.round((f.volume / byFamily.total) * 100) : 0;
+      const codes = f.cptCodes.length ? ` <span style="color:#888">(CPT ${escapeHtml(f.cptCodes.join(', '))})</span>` : '';
+      return (
+        `<tr><td ${td}><b>${escapeHtml(f.label)}</b></td>` +
+        `<td ${td}>${num(f.volume)} (${share}%)</td><td>${codes}</td></tr>`
+      );
+    })
+    .join('');
+
+  return (
+    '<p><b>Procedure Intelligence</b></p>' +
+    `<table>${rows}</table>`
+  );
+}
+
+/**
+ * HTML "Commercial Signals" section (Lumendi spec) — volume growth trend,
+ * emerging advanced techniques (ESD/EMR/EUS), and therapeutic adoption.
+ * Returns '' when no signals are available.
+ * @param {object} signals from analytics.commercialSignals
+ * @param {object} [summary] analytics.summary (for snare share)
+ */
+function commercialSignalsHtml(signals, summary, lumendiAccount) {
+  if (!signals && !lumendiAccount) return '';
+  const pct = (v) => `${v >= 0 ? '+' : ''}${v}%`;
+  const items = [];
+
+  const g = signals?.growthTrend;
+  if (g && g.yoyPct != null) {
+    const arrow = g.direction === 'up' ? '▲' : g.direction === 'down' ? '▼' : '▬';
+    const color = g.direction === 'up' ? '#0a0' : g.direction === 'down' ? '#c00' : '#888';
+    const overall =
+      g.overallPct != null && g.firstYear !== g.latestYear
+        ? ` · ${pct(g.overallPct)} since ${g.firstYear}`
+        : '';
+    // Year range, not "YoY" — the physician's populated years may be non-consecutive.
+    items.push(
+      `<li><b>Growth trend:</b> <span style="color:${color}">${arrow} ${pct(g.yoyPct)}</span> ` +
+        `(${g.prevYear}→${g.latestYear})${overall}</li>`
+    );
+  }
+
+  const advanced = (signals?.emerging || []).filter((e) => e.isRecent);
+  if (advanced.length) {
+    const parts = advanced.map((e) => {
+      const tag = e.isNew ? ' <span style="color:#0a0">🟢 new</span>' : '';
+      return `${escapeHtml(e.family)} (${Number(e.recentVolume).toLocaleString()})${tag}`;
+    });
+    items.push(`<li><b>Advanced techniques (ESD/EMR/EUS):</b> ${parts.join(', ')}</li>`);
+  }
+
+  if (signals?.therapeuticShare != null) {
+    const snare =
+      summary && summary.snareShare != null
+        ? ` · snare used ${Math.round(summary.snareShare * 100)}%`
+        : '';
+    items.push(
+      `<li><b>Therapeutic adoption:</b> ${Math.round(signals.therapeuticShare * 100)}% of categorized volume${snare}</li>`
+    );
+  }
+
+  // Existing Lumendi account status (P5).
+  if (lumendiAccount) {
+    const label = lumendiAccount.isActiveUser ? 'Lumendi account' : 'Lumendi status';
+    const product = lumendiAccount.product ? ` — ${escapeHtml(lumendiAccount.product)}` : '';
+    const status = lumendiAccount.status ? escapeHtml(lumendiAccount.status) : 'unknown';
+    const since = lumendiAccount.sinceDate ? ` since ${escapeHtml(lumendiAccount.sinceDate)}` : '';
+    items.push(`<li><b>${label}:</b> ${status}${product}${since}</li>`);
+  }
+
+  if (!items.length) return '';
+  return '<p><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
+}
+
+/**
+ * HTML "Account Opportunity" section (Lumendi spec) — other physicians at the
+ * facility and the procedures they perform, so the rep knows who else to engage.
+ * Returns '' when there are no peers.
+ * @param {object} opp from analytics.accountOpportunity
+ */
+function accountOpportunityHtml(opp) {
+  if (!opp || !opp.peers?.length) return '';
+  const num = (v) => Number(v || 0).toLocaleString();
+  const td = 'style="padding:2px 12px 2px 0"';
+
+  const where = opp.facility?.name ? ` at <b>${escapeHtml(opp.facility.name)}</b>` : ' at this facility';
+  const n = opp.performingCount;
+  // Lumendi usage at the facility (P5) — e.g. "1 physician currently using a Lumendi product."
+  const u = opp.lumendiUserCount || 0;
+  const lumendiLine = u
+    ? `<p>${u} physician${u === 1 ? '' : 's'}${where} currently use${u === 1 ? 's' : ''} a Lumendi product. ` +
+      `${n} other${n === 1 ? '' : 's'} perform relevant procedures.</p>`
+    : `<p>${n} other physician${n === 1 ? '' : 's'}${where} perform relevant procedures` +
+      `${opp.truncated ? ' (top by volume)' : ''}.</p>`;
+
+  const rows = opp.peers
+    .map((p) => {
+      const fams = p.families?.length
+        ? ` <span style="color:#888">(${escapeHtml(p.families.join(', '))})</span>`
+        : '';
+      // nowrap span keeps the count on one line; in-app the table cell allows
+      // breaking anywhere (so long emails wrap) which would otherwise split the
+      // number itself. Inline style → renders identically in email.
+      const activity = p.volume ? `<span style="white-space:nowrap">${num(p.volume)} proc</span>${fams}` : '—';
+      const lumendi = p.lumendiProduct
+        ? ` <span style="color:#0a0">● ${escapeHtml(p.lumendiProduct)}</span>`
+        : '';
+      const contact = [p.email, p.phone].filter(Boolean).map(escapeHtml).join(' · ') || '—';
+      // data-labels drive the mobile stacked-card layout (.brief-cards); inert
+      // in email clients so the emailed table is unchanged.
+      return (
+        `<tr><td ${td} data-label="Physician"><b>${escapeHtml(p.name || p.npi)}</b>${lumendi}</td>` +
+        `<td ${td} data-label="Specialty">${escapeHtml(p.specialty || '—')}</td>` +
+        `<td ${td} data-label="Volume">${activity}</td><td data-label="Contact">${contact}</td></tr>`
+      );
+    })
+    .join('');
+
+  return (
+    '<p><b>Account Opportunity</b></p>' +
+    lumendiLine +
+    `<table class="brief-cards">${rows}</table>`
+  );
+}
+
+/**
+ * HTML "Contact Intelligence" section (Lumendi spec, P4) — verified mobile /
+ * LinkedIn / email plus the trust metadata (confidence, last verified, last
+ * refresh) from the app_contacts overlay. Returns '' when no overlay exists
+ * (the base email/phone/linkedin already appear in the physician details).
+ * @param {object} physician normalized directory profile
+ * @param {object} contact from contacts-store.getContact (or null)
+ */
+function contactIntelligenceHtml(physician, contact) {
+  if (!contact) return '';
+  const td = 'style="padding:2px 12px 2px 0"';
+  const rows = [
+    ['Verified email', contact.email],
+    ['Verified mobile', contact.mobile],
+    ['Verified LinkedIn', contact.linkedinUrl],
+  ].filter(([, v]) => v);
+
+  const meta = [];
+  if (contact.confidenceScore != null) meta.push(`Confidence ${contact.confidenceScore}%`);
+  if (contact.lastVerified) meta.push(`Verified ${escapeHtml(contact.lastVerified)}`);
+  if (contact.lastRefresh) meta.push(`Refreshed ${escapeHtml(contact.lastRefresh)}`);
+
+  if (!rows.length && !meta.length) return '';
+
+  const table = rows.length
+    ? '<table>' +
+      rows
+        .map(([k, v]) => `<tr><td ${td}><b>${escapeHtml(k)}</b></td><td>${escapeHtml(v)}</td></tr>`)
+        .join('') +
+      '</table>'
+    : '';
+  const metaLine = meta.length ? `<p style="color:#555">${meta.join(' · ')}</p>` : '';
+
+  return '<p><b>Contact Intelligence</b></p>' + table + metaLine;
+}
+
+/**
+ * HTML "What to Discuss" section (Lumendi spec, Product Context Layer) —
+ * product talking points matched to the physician's procedure families.
+ * Returns '' when there's no matched product context.
+ * @param {object} ctx from analytics.productContext
+ */
+function productContextHtml(ctx) {
+  if (!ctx?.products?.length) return '';
+
+  const blocks = ctx.products
+    .map((p) => {
+      const fams = p.matchedFamilies?.length
+        ? ` <span style="color:#888">(${escapeHtml(p.matchedFamilies.join(', '))})</span>`
+        : '';
+      const bullets = (list, label) =>
+        list?.length
+          ? `<p style="margin:2px 0 0"><i>${escapeHtml(label)}:</i></p><ul style="margin:0 0 4px">` +
+            list.map((t) => `<li>${escapeHtml(t)}</li>`).join('') +
+            '</ul>'
+          : '';
+      return (
+        `<p style="margin:6px 0 0"><b>${escapeHtml(p.productName)}</b>${fams}` +
+        (p.summary ? ` — ${escapeHtml(p.summary)}` : '') +
+        '</p>' +
+        bullets(p.talkingPoints, 'Talking points') +
+        bullets(p.valueProps, 'Value') +
+        bullets(p.differentiation, 'Differentiation') +
+        bullets(p.reimbursement, 'Reimbursement')
+      );
+    })
+    .join('');
+
+  return '<p><b>What to Discuss</b></p>' + blocks;
+}
+
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
 function analyticsHtml(a) {
   if (!a) return '';
@@ -248,18 +461,28 @@ function analyticsHtml(a) {
       .join('') +
     '</table>';
 
+  // The class + data-label attributes drive a mobile "stacked card" layout in
+  // the in-app brief (see .brief-cards in styles.css) so this wide 5-column
+  // table stays clean on phones instead of scrolling/crushing. Classes and
+  // data-* are inert in email clients (and th renders bold like the old <b>
+  // headers), so the emailed table is visually unchanged. thead headers carry
+  // inline left-align/padding to match the previous bold-<td> header look.
+  const th = 'style="text-align:left;padding:2px 12px 2px 0"';
   const procs =
-    '<p><b>Top procedures</b></p><table>' +
-    '<tr><td style="padding:2px 12px 2px 0"><b>CPT</b></td><td style="padding:2px 12px 2px 0"><b>Procedure</b></td>' +
-    '<td style="padding:2px 12px 2px 0"><b>Volume</b></td><td style="padding:2px 12px 2px 0"><b>Medicare</b></td><td><b>Commercial</b></td></tr>' +
+    '<p><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
+    `<thead><tr><th ${th}>CPT</th><th ${th}>Procedure</th><th ${th}>Volume</th>` +
+    `<th ${th}>Medicare</th><th style="text-align:left">Commercial</th></tr></thead><tbody>` +
     a.topProcedures
       .map(
         (p) =>
-          `<tr><td ${td}>${escapeHtml(p.cptCode)}</td><td ${td}>${escapeHtml(p.description || '—')}</td>` +
-          `<td ${td}>${num(p.volume)}</td><td ${td}>${money(p.medicarePhysicianRate)}</td><td>${money(p.commercialRate)}</td></tr>`
+          `<tr><td ${td} data-label="CPT">${escapeHtml(p.cptCode)}</td>` +
+          `<td ${td} data-label="Procedure">${escapeHtml(p.description || '—')}</td>` +
+          `<td ${td} data-label="Volume">${num(p.volume)}</td>` +
+          `<td ${td} data-label="Medicare">${money(p.medicarePhysicianRate)}</td>` +
+          `<td data-label="Commercial">${money(p.commercialRate)}</td></tr>`
       )
       .join('') +
-    '</table>';
+    '</tbody></table></div>';
 
   const facilities =
     '<p><b>Facilities</b></p><table>' +
@@ -271,7 +494,16 @@ function analyticsHtml(a) {
       .join('') +
     '</table>';
 
-  return ['<p><b>Procedure analytics</b></p>', summary, years, payers, procs, facilities].join('');
+  return [
+    procedureIntelligenceHtml(a.byFamily),
+    commercialSignalsHtml(a.commercialSignals, a.summary, a.lumendiAccount),
+    '<p><b>Procedure analytics</b></p>',
+    summary,
+    years,
+    payers,
+    procs,
+    facilities,
+  ].join('');
 }
 
 /**
@@ -287,9 +519,26 @@ function analyticsHtml(a) {
  * @param {object} [opts.analytics] from src/analytics.js (facilities labelled)
  * @param {{title?: string, start?: string}} [opts.event] meeting context
  */
+/**
+ * The brief body (details + contact + procedure/commercial analytics + account
+ * opportunity + what-to-discuss) shared by BOTH the email and the in-app brief,
+ * so they always match. Each section returns '' when that physician has no data
+ * for it, so nothing irrelevant is shown. Notes/intro are added by the caller.
+ */
+function physicianBriefHtml({ physician, analytics, contact }) {
+  return [
+    '<p><b>Physician details</b></p>',
+    physicianDetailsTable(physician),
+    contactIntelligenceHtml(physician, contact),
+    analyticsHtml(analytics),
+    accountOpportunityHtml(analytics?.accountOpportunity),
+    productContextHtml(analytics?.productContext),
+  ].join('');
+}
+
 async function sendPhysicianBriefing(
   accessToken,
-  { toEmail, physician, notes, analytics, event, subject, intro }
+  { toEmail, physician, notes, analytics, event, subject, intro, contact }
 ) {
   const client = getGraphClient(accessToken);
 
@@ -312,9 +561,7 @@ async function sendPhysicianBriefing(
   const content = [
     `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
     meetingLine,
-    '<p><b>Physician details</b></p>',
-    physicianDetailsTable(physician),
-    analyticsHtml(analytics),
+    physicianBriefHtml({ physician, analytics, contact }),
     '<p><b>Meeting notes</b></p>',
     history,
   ].join('');
@@ -447,6 +694,23 @@ async function getInboxDelta(accessToken, deltaLink) {
 }
 
 /**
+ * Most recent Sent Items, newest first (normalized). Used to capture the rep's
+ * own replies in a meeting thread — those land in Sent, not the Inbox — so the
+ * AI MOM picks them up. No delta; the caller dedups on (provider, msg id).
+ */
+async function getRecentSent(accessToken, limit = 25) {
+  const client = getGraphClient(accessToken);
+  const select = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,receivedDateTime';
+  const res = await client
+    .api("/me/mailFolders('sentitems')/messages")
+    .top(limit)
+    .select(select)
+    .orderby('receivedDateTime desc')
+    .get();
+  return (res.value || []).map(normalizeMessage);
+}
+
+/**
  * Lightweight profile lookup for the signed-in user (for the header UI).
  */
 async function getMe(accessToken) {
@@ -462,8 +726,15 @@ module.exports = {
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,
+  getRecentSent,
   getMe,
   getGraphClient,
   createMeetingWithPhysician,
   sendPhysicianBriefing,
+  physicianBriefHtml,
+  analyticsHtml, // exported for brief-rendering tests
+  commercialSignalsHtml, // exported for brief-rendering tests
+  accountOpportunityHtml, // exported for brief-rendering tests
+  productContextHtml, // exported for brief-rendering tests
+  contactIntelligenceHtml, // exported for brief-rendering tests
 };

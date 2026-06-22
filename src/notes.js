@@ -39,6 +39,14 @@ function createSqliteStore() {
       ON call_notes (physician_npi, organizer_email);
   `);
 
+  // 'human' (default) vs 'ai' (extracted from an email reply). Added via ALTER
+  // so existing note databases upgrade in place.
+  try {
+    db.exec(`ALTER TABLE call_notes ADD COLUMN source TEXT NOT NULL DEFAULT 'human'`);
+  } catch {
+    /* column already exists */
+  }
+
   function rowToNote(r) {
     if (!r) return null;
     return {
@@ -47,6 +55,7 @@ function createSqliteStore() {
       eventId: r.event_id,
       meetingDate: r.meeting_date,
       notes: r.notes,
+      source: r.source || 'human',
       createdAt: r.created_at,
       updatedAt: r.updated_at,
     };
@@ -54,8 +63,8 @@ function createSqliteStore() {
 
   const insertStmt = db.prepare(`
     INSERT INTO call_notes
-      (physician_npi, organizer_email, event_id, meeting_date, notes, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (physician_npi, organizer_email, event_id, meeting_date, notes, source, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
   const byIdStmt = db.prepare('SELECT * FROM call_notes WHERE id = ?');
@@ -68,7 +77,7 @@ function createSqliteStore() {
   `);
 
   return {
-    async addNote({ npi, organizerEmail, eventId, meetingDate, notes }) {
+    async addNote({ npi, organizerEmail, eventId, meetingDate, notes, source }) {
       const now = new Date().toISOString();
       const info = insertStmt.run(
         String(npi),
@@ -76,6 +85,7 @@ function createSqliteStore() {
         eventId || null,
         meetingDate || null,
         notes,
+        source || 'human',
         now,
         now
       );
@@ -93,7 +103,7 @@ function createRedisStore(client) {
   const key = (npi, email) => `notes:${npi}:${email}`;
 
   return {
-    async addNote({ npi, organizerEmail, eventId, meetingDate, notes }) {
+    async addNote({ npi, organizerEmail, eventId, meetingDate, notes, source }) {
       const now = new Date().toISOString();
       const note = {
         id: await client.incr('notes:next-id'),
@@ -101,6 +111,7 @@ function createRedisStore(client) {
         eventId: eventId || null,
         meetingDate: meetingDate || null,
         notes,
+        source: source || 'human',
         createdAt: now,
         updatedAt: now,
       };

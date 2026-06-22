@@ -213,7 +213,9 @@ function selectPhysician(p) {
   photo.hidden = !p.photoUrl;
   if (p.photoUrl) photo.src = p.photoUrl;
 
-  renderProfileDetails(p);
+  // Details + all brief sections come from the shared brief HTML (same as the
+  // email), injected below — so the in-app brief and the emailed brief match.
+  $panel('.physician-profile__details').hidden = true;
 
   // The scheduling form only makes sense in the "Schedule call" flow — for a
   // matched attendee the meeting already exists, so show data + notes only.
@@ -242,9 +244,9 @@ function selectPhysician(p) {
   renderNotes([]);
   loadNotes(p.npi);
 
-  // Procedure analytics load asynchronously; hidden until data arrives.
+  // The pre-meeting brief (same body as the email) loads asynchronously.
   $panel('.physician-analytics').hidden = true;
-  loadAnalytics(p.npi);
+  loadBrief(p.npi);
 
   $panel('.physician-profile').hidden = false;
 }
@@ -352,17 +354,22 @@ function renderAnalytics(a) {
   $panel('.physician-analytics').hidden = false;
 }
 
-async function loadAnalytics(npi) {
+// Load the pre-meeting brief (details + all sections) — the SAME HTML the email
+// uses, so the in-app brief matches the emailed one. Sections with no data for
+// this physician come back empty and simply don't render.
+async function loadBrief(npi) {
+  const box = $panel('.physician-analytics');
   try {
-    const res = await fetch(`/api/physicians/${encodeURIComponent(npi)}/analytics`, {
+    const res = await fetch(`/api/physicians/${encodeURIComponent(npi)}/brief`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) return;
     const data = await res.json();
-    // Guard against a stale response after switching physicians.
-    if (data.analytics && selectedPhysician?.npi === npi) renderAnalytics(data.analytics);
+    if (selectedPhysician?.npi !== npi) return; // stale after switching physicians
+    box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
+    box.hidden = false;
   } catch {
-    /* analytics is best-effort */
+    /* brief is best-effort */
   }
 }
 
@@ -403,6 +410,14 @@ function renderNotes(notes) {
       ago.textContent = daysAgoLabel(noteDateLabel(n));
 
       summary.append(date, ago);
+
+      // AI-extracted Meeting Notes (from an email reply) get a distinct badge.
+      if (n.source === 'ai') {
+        const ai = document.createElement('span');
+        ai.className = 'physician-history__badge physician-history__badge--ai';
+        ai.textContent = '🤖 AI from reply';
+        summary.appendChild(ai);
+      }
 
       if (i === 0) {
         const badge = document.createElement('span');
@@ -446,7 +461,17 @@ async function loadNotes(npi) {
     if (!res.ok) return;
     const data = await res.json();
     // Guard against a stale response after switching physicians.
-    if (selectedPhysician?.npi === npi) renderNotes(data.notes || []);
+    if (selectedPhysician?.npi !== npi) return;
+
+    let notes = data.notes || [];
+    // When opened from a specific meeting, show only that meeting's notes
+    // (its eventId) plus general notes with no meeting — so a reply's MOM
+    // appears only under the meeting it belongs to, not every meeting with
+    // the same physician.
+    if (currentEventCtx?.id) {
+      notes = notes.filter((n) => !n.eventId || n.eventId === currentEventCtx.id);
+    }
+    renderNotes(notes);
   } catch {
     /* history is best-effort */
   }

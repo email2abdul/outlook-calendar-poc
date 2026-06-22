@@ -6,6 +6,8 @@ const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
+const callNotes = require('./notes');
+const aiExtractor = require('./ai-extractor');
 
 /**
  * Phase 0 + 1: foundation + Outlook ingestion.
@@ -125,6 +127,7 @@ async function ingestEmails(token, user) {
         activity = await crm.findActivityByPhysician(user.homeAccountId, physician.npi);
       }
     }
+    const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
     const row = await crm.insertEmail({
       provider: 'outlook',
       provider_msg_id: msg.providerMsgId,
@@ -137,7 +140,7 @@ async function ingestEmails(token, user) {
       to_emails: msg.toEmails,
       cc_emails: msg.ccEmails,
       subject: msg.subject,
-      body_text: cleanBody(msg.bodyText || msg.bodyPreview),
+      body_text: cleanedBody,
       body_raw: msg.bodyHtml || msg.bodyText || msg.bodyPreview,
       received_at: msg.receivedAt,
     });
@@ -151,11 +154,160 @@ async function ingestEmails(token, user) {
         sourceEmailId: row.id,
         details: { subject: msg.subject, linkedActivity: activity?.id || null },
       });
+      // Per-reply AI MOM → Meeting Notes. Runs once per email (only on a fresh
+      // insert), so each reply is summarized exactly once. Best-effort.
+      await extractToNote({ activity, cleanedBody, msg, user });
     }
   }
 
   if (deltaLink) await tokenStore.setMailDelta(user.homeAccountId, deltaLink);
   return ingested;
+}
+
+/** True for actual replies ("RE: ...") — used to skip the original briefing/invite. */
+function isReplySubject(subject) {
+  return /^\s*re\s*:/i.test(subject || '');
+}
+
+/**
+ * Ingest the rep's OWN replies from Sent Items. When the rep replies to a
+ * briefing/meeting thread, that reply lands in Sent (not the Inbox), so the
+ * inbox delta never sees it. We fetch recent Sent Items, keep only replies
+ * ("RE: …" — skipping the briefings/invites the app itself sent), and run the
+ * same AI-MOM extraction. Dedup is on (provider, provider_msg_id); extraction
+ * runs once per reply (only on a fresh insert). No delta — a bounded recent
+ * fetch each tick is enough.
+ */
+async function ingestSentReplies(token, user) {
+  let messages;
+  try {
+    messages = await graph.getRecentSent(token, 25);
+  } catch (err) {
+    console.warn('[ingest] sent-items fetch failed:', err.message);
+    return 0;
+  }
+
+  let n = 0;
+  for (const msg of messages) {
+    if (!msg.providerMsgId || !isReplySubject(msg.subject)) continue; // replies only
+    if (await crm.emailExists('outlook', msg.providerMsgId)) continue;
+
+    const activity = await crm.findActivityByThread(user.homeAccountId, msg.threadId);
+    const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
+    const row = await crm.insertEmail({
+      provider: 'outlook',
+      provider_msg_id: msg.providerMsgId,
+      internet_msg_id: msg.internetMsgId,
+      thread_id: msg.threadId,
+      owner_user_id: user.homeAccountId,
+      activity_id: activity?.id || null,
+      from_email: msg.fromEmail,
+      from_name: msg.fromName,
+      to_emails: msg.toEmails,
+      cc_emails: msg.ccEmails,
+      subject: msg.subject,
+      body_text: cleanedBody,
+      body_raw: msg.bodyHtml || msg.bodyText || msg.bodyPreview,
+      received_at: msg.receivedAt,
+    });
+    if (row) {
+      n++;
+      await crm.audit({
+        actor: 'system',
+        action: 'email.ingested',
+        entityType: 'email',
+        entityId: row.id,
+        sourceEmailId: row.id,
+        details: { subject: msg.subject, folder: 'sentitems' },
+      });
+      await extractToNote({ activity, cleanedBody, msg, user });
+    }
+  }
+  return n;
+}
+
+/**
+ * Resolve which physician an incoming email concerns, most reliable first:
+ *  1) the linked activity's physician,
+ *  2) the sender (a physician replying from their own address),
+ *  3) an entity match on the SUBJECT — briefing/meeting replies carry the
+ *     physician name (e.g. "RE: Briefing: Aaron P Baas — …"), so a reply links
+ *     even when the sender is the rep themselves.
+ * Returns an npi or null.
+ */
+async function physicianNpiForEmail({ activity, senderPhysician, msg }) {
+  if (activity?.physician_npi) return activity.physician_npi;
+  if (senderPhysician?.npi) return senderPhysician.npi;
+  if (msg.subject) {
+    try {
+      const analysis = await entityMatcher.analyze(msg.subject);
+      const m = analysis.matched_entities.find((x) => x.entity_type === 'person');
+      if (m) return m.master_id;
+    } catch {
+      /* matcher failure → no subject match */
+    }
+  }
+  return null;
+}
+
+/**
+ * Read one reply with AI and save the extracted points as an AI Meeting Note,
+ * so the rep sees the MOM in the UI. Resolves the physician from the activity /
+ * sender / subject, and only summarizes REPLIES (or physician-sent mail) so the
+ * original briefing/invite self-email isn't summarized. Best-effort: a failure
+ * here never breaks ingestion.
+ */
+async function extractToNote({ activity, cleanedBody, msg, user }) {
+  if (!aiExtractor.enabled || !cleanedBody) return;
+
+  const senderPhysician = msg.fromEmail ? physiciansDir.getByEmail(msg.fromEmail) : null;
+  // Skip non-replies from the rep (the briefing/invite itself); keep replies and
+  // anything a physician sent directly.
+  if (!isReplySubject(msg.subject) && !senderPhysician) return;
+
+  // Tie the note to the SPECIFIC meeting this reply is about (so its eventId is
+  // set and the UI can scope it to that meeting) — already-linked activity,
+  // else the activity whose title the reply subject embeds.
+  const meeting = activity || (await crm.findActivityBySubject(user.homeAccountId, msg.subject));
+
+  // Physician: the meeting's, else the sender, else a subject entity-match.
+  const npi =
+    meeting?.physician_npi ||
+    senderPhysician?.npi ||
+    (await physicianNpiForEmail({ activity: null, senderPhysician: null, msg }));
+  if (!npi) return;
+
+  try {
+    const physician = physiciansDir.getByNpi(npi);
+    const insight = await aiExtractor.extractFromReply({
+      bodyText: cleanedBody,
+      physicianName: physician?.name,
+      meetingTitle: meeting?.title || msg.subject,
+      fromName: msg.fromName,
+    });
+    if (!insight) return;
+
+    await callNotes.addNote({
+      npi,
+      organizerEmail: user.email,
+      eventId: meeting?.calendar_event_id || null,
+      meetingDate: meeting?.meeting_date || null,
+      notes: aiExtractor.formatNote(insight, {
+        receivedAt: msg.receivedAt,
+        meetingTitle: meeting?.title,
+      }),
+      source: 'ai',
+    });
+    await crm.audit({
+      actor: 'ai',
+      action: 'insight.extracted',
+      entityType: 'email',
+      entityId: msg.providerMsgId,
+      details: { npi, eventId: meeting?.calendar_event_id || null, subject: msg.subject },
+    });
+  } catch (err) {
+    console.warn('[ingest] AI extraction failed:', err.message);
+  }
 }
 
 /** One pass over all signed-in salespeople. Exported for manual runs/tests. */
@@ -176,8 +328,9 @@ async function tick() {
 
       const activities = await syncActivities(token, user);
       const emails = await ingestEmails(token, user);
-      if (activities || emails) {
-        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} new emails`);
+      const sent = await ingestSentReplies(token, user);
+      if (activities || emails || sent) {
+        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} inbox + ${sent} sent replies`);
       }
     } catch (err) {
       console.warn(`[ingest] ${user.email || user.homeAccountId}:`, err.message);
@@ -203,4 +356,7 @@ function start() {
   console.log(`[ingest] engine on — syncing activities + ingesting Outlook replies (poll: ${POLL_SECONDS}s)`);
 }
 
-module.exports = { start, tick, cleanBody, syncActivities, ingestEmails };
+module.exports = {
+  start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
+  extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
+};
