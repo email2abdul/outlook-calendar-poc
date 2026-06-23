@@ -822,6 +822,7 @@ async function init() {
   document.getElementById('accountName').textContent = me.user?.name || '';
   document.getElementById('accountEmail').textContent = me.user?.email || '';
   account.hidden = false;
+  document.getElementById('emailSheetBtn').hidden = false;
 
   // Reveal the date filter, defaulted to today.
   document.getElementById('dateFilter').hidden = false;
@@ -845,6 +846,168 @@ document.getElementById('todayBtn').addEventListener('click', () => {
 document.getElementById('logoutBtn').addEventListener('click', async () => {
   await fetch('/auth/logout', { method: 'POST' });
   window.location.reload();
+});
+
+// ── Email Intelligence Sheet ─────────────────────────────────────────────────
+// Reads /api/email-intel (one row per physician-related inbox email) and shows a
+// responsive table (desktop) / stacked cards (mobile) in an overlay, with CSV
+// export. Built with createElement + textContent, so values are never injected
+// as HTML.
+const INTEL_COLUMNS = [
+  { key: 'physicianName', label: 'Physician' },
+  { key: 'facilityName', label: 'Facility' },
+  { key: 'cpt', label: 'CPT(s)' },
+  { key: 'otherNotes', label: 'Other key info' },
+  { key: 'newToDb', label: 'New to DB?' },
+  { key: 'meeting', label: 'Meeting' },
+  { key: 'withWhom', label: 'With whom' },
+  { key: 'emailSubject', label: 'Email subject' },
+  { key: 'received', label: 'Received' },
+];
+
+let intelRows = [];
+
+function cptLines(items) {
+  return (items || [])
+    .map((it) => [it.code, it.description, it.note].map((s) => (s || '').trim()).filter(Boolean).join(' — '))
+    .filter(Boolean);
+}
+
+function intelFmt(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime())
+    ? ''
+    : d.toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+}
+
+/** Returns a string OR an array of strings for a column. */
+function intelCell(r, key) {
+  switch (key) {
+    case 'cpt': return cptLines(r.cptItems);
+    case 'otherNotes': return r.otherNotes || [];
+    case 'newToDb': return r.newToDb || [];
+    case 'meeting': return r.meetingDate || (r.meetingDatetime || '').slice(0, 10) || '';
+    case 'received': return intelFmt(r.receivedAt);
+    default: return r[key] || '';
+  }
+}
+
+function renderIntelTable(rows) {
+  const body = document.getElementById('intelBody');
+  body.innerHTML = '';
+  if (!rows.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'No email intelligence yet — run the backfill or wait for new mail.';
+    body.appendChild(p);
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'intel-table';
+
+  const thead = document.createElement('thead');
+  const htr = document.createElement('tr');
+  for (const col of INTEL_COLUMNS) {
+    const th = document.createElement('th');
+    th.textContent = col.label;
+    htr.appendChild(th);
+  }
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    for (const col of INTEL_COLUMNS) {
+      const td = document.createElement('td');
+      td.setAttribute('data-label', col.label);
+      const val = intelCell(r, col.key);
+      if (Array.isArray(val)) {
+        if (!val.length) {
+          const dash = document.createElement('span');
+          dash.className = 'muted';
+          dash.textContent = '—';
+          td.appendChild(dash);
+        } else {
+          val.forEach((item) => {
+            const line = document.createElement('div');
+            line.className = col.key === 'newToDb' ? 'intel-new' : 'intel-line';
+            line.textContent = item;
+            td.appendChild(line);
+          });
+        }
+      } else {
+        td.textContent = val || '';
+        if (!val) td.classList.add('muted');
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
+
+function csvCell(s) {
+  const v = String(s ?? '');
+  return /[",\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+function intelCsv(rows) {
+  const lines = [INTEL_COLUMNS.map((c) => csvCell(c.label)).join(',')];
+  for (const r of rows) {
+    lines.push(
+      INTEL_COLUMNS.map((c) => {
+        const v = intelCell(r, c.key);
+        return csvCell(Array.isArray(v) ? v.join(' | ') : v);
+      }).join(',')
+    );
+  }
+  return lines.join('\n');
+}
+
+function downloadIntelCsv() {
+  if (!intelRows.length) return;
+  const blob = new Blob([intelCsv(intelRows)], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'email-intelligence-sheet.csv';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function openEmailSheet() {
+  const modal = document.getElementById('intelModal');
+  const body = document.getElementById('intelBody');
+  body.innerHTML = '<p class="muted">Loading…</p>';
+  document.getElementById('intelSummary').textContent = '';
+  modal.hidden = false;
+  try {
+    const res = await fetch('/api/email-intel', { headers: { Accept: 'application/json' } });
+    const data = await res.json();
+    intelRows = data.rows || [];
+    document.getElementById('intelSummary').textContent =
+      `${intelRows.length} email${intelRows.length === 1 ? '' : 's'}`;
+    renderIntelTable(intelRows);
+  } catch {
+    body.innerHTML = '<p class="muted">Failed to load the sheet.</p>';
+  }
+}
+
+function closeEmailSheet() {
+  document.getElementById('intelModal').hidden = true;
+}
+
+document.getElementById('emailSheetBtn').addEventListener('click', openEmailSheet);
+document.getElementById('intelCsvBtn').addEventListener('click', downloadIntelCsv);
+document.querySelectorAll('[data-intel-close]').forEach((el) => el.addEventListener('click', closeEmailSheet));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('intelModal').hidden) closeEmailSheet();
 });
 
 init();
