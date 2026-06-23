@@ -566,13 +566,20 @@ async function sendPhysicianBriefing(
     history,
   ].join('');
 
+  // Deliver to a real Microsoft mailbox when configured. The sign-in identity
+  // (toEmail) can be a federated/Gmail address that Microsoft routes externally
+  // — a sendMail-to-self then only appears in Sent, never the Outlook Inbox.
+  // BRIEFING_TO_EMAIL (an outlook.com/Microsoft address) is delivered internally
+  // so the briefing lands in the Inbox. Notes elsewhere stay keyed by toEmail.
+  const sendTo = config.briefingToEmail || toEmail;
+
   await client.api('/me/sendMail').post({
     message: {
       subject:
         subject ||
         `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
-      toRecipients: [{ emailAddress: { address: toEmail } }],
+      toRecipients: [{ emailAddress: { address: sendTo } }],
     },
     saveToSentItems: true,
   });

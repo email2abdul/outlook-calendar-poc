@@ -48,6 +48,14 @@ const config = {
     secret: required('SESSION_SECRET'),
   },
 
+  // Where physician briefings are delivered. The sign-in identity can be a
+  // federated address (e.g. a Gmail account) that Microsoft routes EXTERNALLY,
+  // so a sendMail-to-self only lands in Sent, never the Outlook Inbox. Set
+  // BRIEFING_TO_EMAIL to the real Microsoft mailbox address (e.g.
+  // you@outlook.com) so the briefing is delivered internally to the Inbox.
+  // When unset, briefings fall back to the signed-in user's own address.
+  briefingToEmail: process.env.BRIEFING_TO_EMAIL?.trim() || null,
+
   graph: {
     // Host only — the Graph client appends the API version (v1.0) itself.
     // Including /v1.0 here produces a doubled .../v1.0/v1.0/... path (400).
