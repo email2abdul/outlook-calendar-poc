@@ -10,6 +10,7 @@ const contactsStore = require('../contacts-store');
 const entityMatcher = require('../entity-matcher');
 const crm = require('../crm-store');
 const emailIngest = require('../email-ingest');
+const emailIntelStore = require('../email-intel-store');
 
 const router = express.Router();
 
@@ -424,6 +425,20 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
       briefingSent,
       invitee: { name: physician.name, email: physician.email },
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/email-intel — the signed-in rep's Email Intelligence Sheet: one row
+ * per physician-related inbox email (physician/facility/CPT + what's new vs the
+ * bis_* data, with meeting context), newest first. Powers the in-app sheet + CSV.
+ */
+router.get('/email-intel', requireAuth, async (req, res, next) => {
+  try {
+    const rows = await emailIntelStore.listIntel(ownerId(req));
+    res.json({ rows });
   } catch (err) {
     next(err);
   }

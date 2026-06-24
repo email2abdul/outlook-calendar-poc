@@ -8,6 +8,7 @@ const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
 const aiExtractor = require('./ai-extractor');
+const emailIntel = require('./email-intel');
 
 /**
  * Phase 0 + 1: foundation + Outlook ingestion.
@@ -128,6 +129,16 @@ async function ingestEmails(token, user) {
       }
     }
     const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
+
+    // Email Intelligence sheet: upsert a structured row for this new inbox
+    // email (physician/facility/CPT + what's new vs bis_*), so the sheet keeps
+    // growing as mail arrives. Best-effort — never breaks ingestion.
+    try {
+      await emailIntel.processMessage({ msg, user, cleanedBody });
+    } catch (err) {
+      console.warn('[ingest] intel-sheet upsert failed:', err.message);
+    }
+
     const row = await crm.insertEmail({
       provider: 'outlook',
       provider_msg_id: msg.providerMsgId,

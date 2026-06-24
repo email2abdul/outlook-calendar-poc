@@ -1135,3 +1135,172 @@ body {
     gap: 2px;
   }
 }
+
+/* ── Email Intelligence Sheet (overlay + responsive table) ─────────────────── */
+.intel-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.intel-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.5);
+}
+
+.intel-modal__panel {
+  position: relative;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  width: 100%;
+  max-width: 1100px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.intel-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.intel-modal__title {
+  font-size: 17px;
+  margin: 0;
+}
+
+.intel-modal__sub {
+  margin: 2px 0 0;
+  font-size: 13px;
+}
+
+.intel-modal__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.intel-modal__body {
+  padding: 12px 20px 20px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Desktop: clean lightly-ruled table. */
+.intel-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.intel-table thead th {
+  text-align: left;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  font-weight: 600;
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--border);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+}
+
+.intel-table tbody td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.intel-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.intel-table tbody tr:hover {
+  background: #f9fafb;
+}
+
+.intel-line {
+  margin: 1px 0;
+}
+
+/* "New to DB" values stand out as little chips. */
+.intel-new {
+  display: inline-block;
+  margin: 1px 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+@media (max-width: 600px) {
+  .intel-modal {
+    padding: 0;
+  }
+
+  .intel-modal__panel {
+    max-width: 100%;
+    max-height: 100dvh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+
+  /* Restack the wide table into labelled cards (same technique as .brief-cards). */
+  .intel-table thead {
+    display: none;
+  }
+
+  .intel-table,
+  .intel-table tbody,
+  .intel-table tr,
+  .intel-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .intel-table tr {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+    margin-bottom: 10px;
+    background: var(--surface);
+  }
+
+  .intel-table td {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    border: none;
+    padding: 4px 0;
+  }
+
+  .intel-table td:not(:last-child) {
+    border-bottom: 1px solid var(--border);
+  }
+
+  .intel-table td::before {
+    content: attr(data-label);
+    font-weight: 600;
+    color: var(--muted);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+}

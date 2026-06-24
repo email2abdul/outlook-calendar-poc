@@ -566,13 +566,20 @@ async function sendPhysicianBriefing(
     history,
   ].join('');
 
+  // Deliver to a real Microsoft mailbox when configured. The sign-in identity
+  // (toEmail) can be a federated/Gmail address that Microsoft routes externally
+  // — a sendMail-to-self then only appears in Sent, never the Outlook Inbox.
+  // BRIEFING_TO_EMAIL (an outlook.com/Microsoft address) is delivered internally
+  // so the briefing lands in the Inbox. Notes elsewhere stay keyed by toEmail.
+  const sendTo = config.briefingToEmail || toEmail;
+
   await client.api('/me/sendMail').post({
     message: {
       subject:
         subject ||
         `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
-      toRecipients: [{ emailAddress: { address: toEmail } }],
+      toRecipients: [{ emailAddress: { address: sendTo } }],
     },
     saveToSentItems: true,
   });
@@ -694,6 +701,38 @@ async function getInboxDelta(accessToken, deltaLink) {
 }
 
 /**
+ * Historical inbox read over a recent window (newest first), independent of the
+ * delta cursor. Used by the email-intelligence backfill to seed the last N days
+ * (default 10, later 30) into the sheet. Paginates via @odata.nextLink up to
+ * `maxPages` so a large inbox can't run unbounded.
+ * @param {string} accessToken
+ * @param {{ sinceDays?: number, pageSize?: number, maxPages?: number }} [opts]
+ * @returns {Promise<object[]>} normalized messages
+ */
+async function getInboxMessages(accessToken, { sinceDays = 10, pageSize = 50, maxPages = 20 } = {}) {
+  const client = getGraphClient(accessToken);
+  const select = 'id,internetMessageId,conversationId,from,toRecipients,ccRecipients,subject,bodyPreview,body,receivedDateTime';
+  const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
+
+  let req = client
+    .api('/me/mailFolders/inbox/messages')
+    .filter(`receivedDateTime ge ${since}`)
+    .orderby('receivedDateTime desc')
+    .select(select)
+    .top(pageSize);
+
+  const messages = [];
+  for (let page = 0; page < maxPages; page++) {
+    const res = await req.get();
+    if (Array.isArray(res.value)) messages.push(...res.value);
+    const next = res['@odata.nextLink'];
+    if (!next) break;
+    req = client.api(next);
+  }
+  return messages.map(normalizeMessage);
+}
+
+/**
  * Most recent Sent Items, newest first (normalized). Used to capture the rep's
  * own replies in a meeting thread — those land in Sent, not the Inbox — so the
  * AI MOM picks them up. No delta; the caller dedups on (provider, msg id).
@@ -726,6 +765,7 @@ module.exports = {
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,
+  getInboxMessages,
   getRecentSent,
   getMe,
   getGraphClient,

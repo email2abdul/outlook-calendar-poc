@@ -10,7 +10,8 @@
     "ingest": "node scripts/ingest.js",
     "ingest:products": "node scripts/ingest-products.js",
     "import:contacts": "node scripts/import-contacts.js",
-    "import:accounts": "node scripts/import-accounts.js"
+    "import:accounts": "node scripts/import-accounts.js",
+    "intel:backfill": "node scripts/intel-backfill.js"
   },
   "keywords": [
     "microsoft-graph",

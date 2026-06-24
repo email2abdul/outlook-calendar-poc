@@ -22,6 +22,7 @@
             <span class="account__name" id="accountName"></span>
             <span class="account__email" id="accountEmail"></span>
           </div>
+          <button class="btn btn--ghost" id="emailSheetBtn" type="button" hidden>📋 Email Sheet</button>
           <button class="btn btn--ghost" id="logoutBtn">Sign out</button>
         </div>
       </header>
@@ -238,6 +239,24 @@
         </div>
       </div>
     </template>
+
+    <!-- Email Intelligence Sheet (overlay) -->
+    <div class="intel-modal" id="intelModal" hidden>
+      <div class="intel-modal__backdrop" data-intel-close></div>
+      <div class="intel-modal__panel" role="dialog" aria-label="Email Intelligence Sheet">
+        <header class="intel-modal__head">
+          <div>
+            <h2 class="intel-modal__title">📋 Email Intelligence Sheet</h2>
+            <p class="intel-modal__sub muted" id="intelSummary"></p>
+          </div>
+          <div class="intel-modal__actions">
+            <button class="btn btn--ghost" id="intelCsvBtn" type="button">⬇ CSV</button>
+            <button class="btn btn--ghost" id="intelCloseBtn" type="button" data-intel-close aria-label="Close">✕</button>
+          </div>
+        </header>
+        <div class="intel-modal__body" id="intelBody"></div>
+      </div>
+    </div>
 
     <script src="/app.js"></script>
   </body>
