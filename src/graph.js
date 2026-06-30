@@ -396,6 +396,51 @@ function contactIntelligenceHtml(physician, contact) {
 }
 
 /**
+ * HTML "Recommended product" section — the best-fit Lumendi product for this
+ * physician, scored from their procedure-family profile (src/product-fit.js).
+ * Returns '' when there's no fit data. When the physician has no advanced
+ * volume the scorer returns a `note` (and no recommendation) — we surface that
+ * so the rep knows WHY nothing is recommended rather than seeing an empty gap.
+ * @param {object} fit from analytics.productFit
+ */
+function productFitHtml(fit) {
+  if (!fit) return '';
+
+  if (!fit.recommended) {
+    return fit.note
+      ? `<p><b>Recommended product</b></p><p><i>${escapeHtml(fit.note)}</i></p>`
+      : '';
+  }
+
+  const r = fit.recommended;
+  const fams = r.matchedFamilies?.length
+    ? ` <span style="color:#888">(${escapeHtml(r.matchedFamilies.join(', '))})</span>`
+    : '';
+  const tag = r.isExpansion
+    ? ' <span style="color:#0a7">— expansion</span>'
+    : '';
+  const current = fit.current
+    ? `<p style="margin:2px 0 0"><i>Current account:</i> ${escapeHtml(fit.current.product)}` +
+      `${fit.current.status ? ` (${escapeHtml(fit.current.status)})` : ''}</p>`
+    : '';
+  const others = (fit.ranked || []).filter((p) => p.productName !== r.productName);
+  const alt = others.length
+    ? '<p style="margin:6px 0 0"><i>Other candidates:</i> ' +
+      others.map((p) => escapeHtml(p.productName)).join(', ') +
+      '</p>'
+    : '';
+
+  return (
+    '<p><b>Recommended product</b></p>' +
+    `<p style="margin:6px 0 0"><b>${escapeHtml(r.productName)}</b>${fams}${tag}` +
+    `${r.strength ? ` <span style="color:#888">· ${escapeHtml(r.strength)}</span>` : ''}</p>` +
+    `<p style="margin:2px 0 0">${escapeHtml(r.reason)}</p>` +
+    current +
+    alt
+  );
+}
+
+/**
  * HTML "What to Discuss" section (Lumendi spec, Product Context Layer) —
  * product talking points matched to the physician's procedure families.
  * Returns '' when there's no matched product context.
@@ -532,6 +577,7 @@ function physicianBriefHtml({ physician, analytics, contact }) {
     contactIntelligenceHtml(physician, contact),
     analyticsHtml(analytics),
     accountOpportunityHtml(analytics?.accountOpportunity),
+    productFitHtml(analytics?.productFit),
     productContextHtml(analytics?.productContext),
   ].join('');
 }
@@ -775,6 +821,7 @@ module.exports = {
   analyticsHtml, // exported for brief-rendering tests
   commercialSignalsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests
+  productFitHtml, // exported for brief-rendering tests
   productContextHtml, // exported for brief-rendering tests
   contactIntelligenceHtml, // exported for brief-rendering tests
 };
