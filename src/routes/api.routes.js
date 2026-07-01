@@ -402,19 +402,24 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
     // their note history) lands in their own inbox the moment the meeting is
     // booked. A mail failure must not fail the booking itself.
     let briefingSent = false;
+    let briefingTo = null;
+    let briefingError = null;
     const to = organizerEmail(req);
-    if (to) {
+    if (!to) {
+      briefingError = 'No organizer email on session';
+    } else {
       try {
-        await graph.sendPhysicianBriefing(token, {
+        briefingTo = await graph.sendPhysicianBriefing(token, {
           toEmail: to,
           physician,
           notes: await callNotes.getNotes(physician.npi, to),
           analytics: await analytics.getLabelledAnalytics(physician.npi),
           contact: await contactsStore.getContact(physician.npi),
-          event: { title: event.title, start: event.start },
+          event: { title: event.title, start: event.start, timeZone: event.timeZone },
         });
         briefingSent = true;
       } catch (err) {
+        briefingError = err.message;
         console.warn('[schedule] auto-briefing failed:', err.message);
       }
     }
@@ -423,6 +428,8 @@ router.post('/calendar/schedule', requireAuth, async (req, res, next) => {
       created: true,
       event,
       briefingSent,
+      briefingTo, // where the brief actually went (may differ from the rep via BRIEFING_TO_EMAIL)
+      briefingError,
       invitee: { name: physician.name, email: physician.email },
     });
   } catch (err) {

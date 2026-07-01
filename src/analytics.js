@@ -372,6 +372,13 @@ async function getLabelledAnalytics(npi) {
   data.productContext = require('./product-context').getTalkingPoints(data.byFamily);
   // This physician's own Lumendi account status (Commercial Signals, P5).
   data.lumendiAccount = await require('./accounts-store').getAccount(npi);
+  // Best-fit Lumendi product for this physician — scored from their procedure
+  // families + esd_procedure flag + current account (POC; hardcoded mapping).
+  data.productFit = require('./product-fit').computeProductFit({
+    byFamily: data.byFamily,
+    esdProcedure: Boolean(physiciansDir.getByNpi(npi)?.esdProcedure),
+    account: data.lumendiAccount,
+  });
 
   return data;
 }

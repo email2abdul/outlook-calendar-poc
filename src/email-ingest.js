@@ -7,8 +7,11 @@ const entityMatcher = require('./entity-matcher');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
+const analytics = require('./analytics');
+const contactsStore = require('./contacts-store');
 const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
+const intelStore = require('./email-intel-store');
 
 /**
  * Phase 0 + 1: foundation + Outlook ingestion.
@@ -27,6 +30,7 @@ const emailIntel = require('./email-intel');
 
 const POLL_SECONDS = Number(process.env.INGEST_POLL_SECONDS) || 300;
 const ACTIVITY_WINDOW_MAX = 30 * 24 * 60; // sync meetings up to 30 days ahead
+const INTEL_RECONCILE_DAYS = Number(process.env.INTEL_RECONCILE_DAYS) || 3;
 
 // ── Body cleaning — keep only the new content the sender just wrote ──────────
 
@@ -97,6 +101,14 @@ async function syncActivities(token, user) {
   for (const ev of events) {
     if (ev.isAllDay) continue;
     const physician = await physicianForEvent(ev);
+
+    // Was this meeting already known? (Checked BEFORE the upsert so we only
+    // instant-brief a genuinely new physician meeting — e.g. one just created
+    // directly in Outlook — not every meeting on every poll.)
+    const existed = ev.id
+      ? await crm.findActivityByEventId(user.homeAccountId, ev.id)
+      : null;
+
     const activity = await crm.upsertActivityFromEvent(
       user.homeAccountId,
       ev,
@@ -104,8 +116,44 @@ async function syncActivities(token, user) {
       physician?.facility?.id
     );
     if (activity) synced++;
+
+    if (physician && !existed) {
+      try {
+        await sendInstantBrief(token, user, ev, physician);
+      } catch (err) {
+        console.warn('[ingest] instant brief failed:', err.message);
+      }
+    }
   }
   return synced;
+}
+
+/**
+ * Instant pre-meeting brief — sent the first time a physician meeting is seen
+ * (e.g. created directly in Outlook, which never hits the app's schedule route).
+ * The same brief body the schedule/reminder emails use, so all three match.
+ * Deduped on a distinct `instant:<eventId>` key so it fires independently of
+ * the timed reminder (which keys on the raw eventId) and never repeats.
+ */
+async function sendInstantBrief(token, user, ev, physician) {
+  if (!user.email || !ev.id) return;
+  const key = `instant:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
+
+  await graph.sendPhysicianBriefing(token, {
+    toEmail: user.email,
+    physician,
+    notes: await callNotes.getNotes(physician.npi, user.email),
+    analytics: await analytics.getLabelledAnalytics(physician.npi),
+    contact: await contactsStore.getContact(physician.npi),
+    event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
+    subject: `🆕 New meeting: ${ev.title} — ${physician.name || physician.npi}`,
+    intro: `A meeting "${ev.title}" with ${
+      physician.name || `NPI ${physician.npi}`
+    } was just added to your calendar. Your pre-meeting brief is below.`,
+  });
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}"`);
 }
 
 async function ingestEmails(token, user) {
@@ -238,6 +286,64 @@ async function ingestSentReplies(token, user) {
 }
 
 /**
+ * Self-heal the Email Intelligence sheet.
+ *
+ * The live tick only attempts an intel row when an email is FIRST ingested
+ * (intel runs inside ingestEmails, on the new inbox-delta message). The delta
+ * cursor never resurfaces that message again, so if the intel attempt failed
+ * transiently — Supabase/AI blip, or the upsert simply never landed — the email
+ * stays permanently absent from the sheet, even though it sits in app_emails.
+ *
+ * This pass closes that gap: each tick we re-scan the recent inbox window and
+ * (re)process any message that still has NO intel row. Bounded to
+ * INTEL_RECONCILE_DAYS (default 3) so it can't grind the whole archive every
+ * poll. Cost is low: existing rows are loaded once and checked in-memory, and
+ * non-physician mail is re-evaluated cheaply because buildRow short-circuits
+ * (returns null) before the Claude enrichment pass ever runs. Once a row exists
+ * the message is skipped forever, so this converges. Best-effort.
+ *
+ * NOTE: only heals MISSING rows. A row that saved but with extracted=false
+ * (AI was disabled/failed at the time) is treated as done and not re-enriched —
+ * re-running AI over partial rows is a separate concern (use the backfill).
+ */
+async function reconcileIntel(token, user, { sinceDays = INTEL_RECONCILE_DAYS } = {}) {
+  if (!intelStore.enabled) return 0;
+
+  let messages;
+  try {
+    messages = await graph.getInboxMessages(token, { sinceDays });
+  } catch (err) {
+    console.warn('[ingest] intel reconcile fetch failed:', err.message);
+    return 0;
+  }
+  if (!messages.length) return 0;
+
+  // Load the rep's existing intel rows once and check membership in-memory,
+  // rather than one existence query per message.
+  let have;
+  try {
+    const rows = await intelStore.listIntel(user.homeAccountId, 500);
+    have = new Set(rows.map((r) => r.providerMsgId).filter(Boolean));
+  } catch (err) {
+    console.warn('[ingest] intel reconcile list failed:', err.message);
+    return 0;
+  }
+
+  let healed = 0;
+  for (const msg of messages) {
+    if (!msg.providerMsgId || have.has(msg.providerMsgId)) continue;
+    try {
+      const cleanedBody = cleanBody(msg.bodyText || msg.bodyPreview);
+      const r = await emailIntel.processMessage({ msg, user, cleanedBody });
+      if (r === 'saved') healed++;
+    } catch (err) {
+      console.warn('[ingest] intel reconcile failed:', err.message);
+    }
+  }
+  return healed;
+}
+
+/**
  * Resolve which physician an incoming email concerns, most reliable first:
  *  1) the linked activity's physician,
  *  2) the sender (a physician replying from their own address),
@@ -340,8 +446,9 @@ async function tick() {
       const activities = await syncActivities(token, user);
       const emails = await ingestEmails(token, user);
       const sent = await ingestSentReplies(token, user);
-      if (activities || emails || sent) {
-        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} inbox + ${sent} sent replies`);
+      const healed = await reconcileIntel(token, user);
+      if (activities || emails || sent || healed) {
+        console.log(`[ingest] ${user.email}: ${activities} activities synced, ${emails} inbox + ${sent} sent replies, ${healed} intel rows healed`);
       }
     } catch (err) {
       console.warn(`[ingest] ${user.email || user.homeAccountId}:`, err.message);
@@ -369,5 +476,5 @@ function start() {
 
 module.exports = {
   start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
-  extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
+  reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
 };
