@@ -572,9 +572,10 @@ async function submitSchedule(evt) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.message || `Request failed (${res.status})`);
 
-    status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})${
-      data.briefingSent ? ' · 📧 Briefing emailed to you' : ''
-    } · ⏰ Outlook will remind you 90 min before`;
+    const briefMsg = data.briefingSent
+      ? ` · 📧 Briefing emailed to ${data.briefingTo || 'you'}`
+      : ` · ⚠️ Briefing not sent${data.briefingError ? ` (${data.briefingError})` : ''}`;
+    status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})${briefMsg} · ⏰ Outlook will remind you 90 min before`;
     status.className = 'schedule-status schedule-status--ok';
     // Let the user read the confirmation, then refresh the day's events.
     setTimeout(loadCalendar, 1500);

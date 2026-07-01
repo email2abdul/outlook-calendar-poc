@@ -163,6 +163,52 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+/** Offset (ms) between a wall-clock-as-UTC instant and how `timeZone` reads it. */
+function tzOffsetMs(instant, timeZone) {
+  const dtf = new Intl.DateTimeFormat('en-US', {
+    timeZone, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const p = Object.fromEntries(dtf.formatToParts(instant).map((x) => [x.type, x.value]));
+  const hour = p.hour === '24' ? '00' : p.hour; // some engines emit 24 at midnight
+  const asUTC = Date.UTC(+p.year, +p.month - 1, +p.day, +hour, +p.minute, +p.second);
+  return asUTC - instant.getTime();
+}
+
+/**
+ * Resolve a Graph dateTime string + its timeZone to an absolute Date.
+ * Graph gives meeting times in different zones depending on the call: the
+ * reminder scan forces UTC (Prefer header) while a freshly-created event echoes
+ * the organizer's local zone. Collapsing both to an instant lets us format them
+ * identically so the auto-brief and the reminder show the SAME meeting time.
+ */
+function toInstant(dateTimeStr, timeZone) {
+  if (!dateTimeStr) return null;
+  const clean = String(dateTimeStr).replace(/\.\d+$/, '').replace(/Z$/, '');
+  if (!timeZone || timeZone.toUpperCase() === 'UTC') return new Date(`${clean}Z`);
+  const guess = new Date(`${clean}Z`);
+  if (Number.isNaN(guess.getTime())) return null;
+  return new Date(guess.getTime() - tzOffsetMs(guess, timeZone));
+}
+
+/**
+ * Human-readable, timezone-stable meeting time for the briefing emails. Returns
+ * a consistent UTC-labelled string ("1 Jul 2026, 09:30 UTC") regardless of the
+ * zone Graph returned, so the schedule-time brief and the pre-meeting reminder
+ * match exactly. Falls back to the raw string if it can't be parsed.
+ */
+function formatMeetingTime(dateTimeStr, timeZone) {
+  const inst = toInstant(dateTimeStr, timeZone);
+  if (!inst || Number.isNaN(inst.getTime())) return dateTimeStr || '';
+  return (
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'UTC', day: 'numeric', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).format(inst) + ' UTC'
+  );
+}
+
 /** HTML details table for a physician profile (shared by invite + briefing). */
 function physicianDetailsTable(physician) {
   const rows = [
@@ -598,9 +644,10 @@ async function sendPhysicianBriefing(
         .join('')
     : '<p><i>No meeting notes recorded yet.</i></p>';
 
+  const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
   const meetingLine = event?.title
     ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${
-        event.start ? ` — ${escapeHtml(event.start)}` : ''
+        meetingWhen ? ` — ${escapeHtml(meetingWhen)}` : ''
       }</p>`
     : '';
 
@@ -629,6 +676,11 @@ async function sendPhysicianBriefing(
     },
     saveToSentItems: true,
   });
+
+  // Return the address the brief actually went to — callers surface this so the
+  // rep sees where it landed (esp. when BRIEFING_TO_EMAIL redirects it, or a
+  // federated sign-in makes a self-send land only in Sent, not the Inbox).
+  return sendTo;
 }
 
 /**
@@ -818,6 +870,7 @@ module.exports = {
   createMeetingWithPhysician,
   sendPhysicianBriefing,
   physicianBriefHtml,
+  formatMeetingTime, // exported for brief-rendering tests
   analyticsHtml, // exported for brief-rendering tests
   commercialSignalsHtml, // exported for brief-rendering tests
   accountOpportunityHtml, // exported for brief-rendering tests

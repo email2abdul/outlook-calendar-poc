@@ -7,6 +7,8 @@ const entityMatcher = require('./entity-matcher');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
+const analytics = require('./analytics');
+const contactsStore = require('./contacts-store');
 const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
 const intelStore = require('./email-intel-store');
@@ -99,6 +101,14 @@ async function syncActivities(token, user) {
   for (const ev of events) {
     if (ev.isAllDay) continue;
     const physician = await physicianForEvent(ev);
+
+    // Was this meeting already known? (Checked BEFORE the upsert so we only
+    // instant-brief a genuinely new physician meeting — e.g. one just created
+    // directly in Outlook — not every meeting on every poll.)
+    const existed = ev.id
+      ? await crm.findActivityByEventId(user.homeAccountId, ev.id)
+      : null;
+
     const activity = await crm.upsertActivityFromEvent(
       user.homeAccountId,
       ev,
@@ -106,8 +116,44 @@ async function syncActivities(token, user) {
       physician?.facility?.id
     );
     if (activity) synced++;
+
+    if (physician && !existed) {
+      try {
+        await sendInstantBrief(token, user, ev, physician);
+      } catch (err) {
+        console.warn('[ingest] instant brief failed:', err.message);
+      }
+    }
   }
   return synced;
+}
+
+/**
+ * Instant pre-meeting brief — sent the first time a physician meeting is seen
+ * (e.g. created directly in Outlook, which never hits the app's schedule route).
+ * The same brief body the schedule/reminder emails use, so all three match.
+ * Deduped on a distinct `instant:<eventId>` key so it fires independently of
+ * the timed reminder (which keys on the raw eventId) and never repeats.
+ */
+async function sendInstantBrief(token, user, ev, physician) {
+  if (!user.email || !ev.id) return;
+  const key = `instant:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
+
+  await graph.sendPhysicianBriefing(token, {
+    toEmail: user.email,
+    physician,
+    notes: await callNotes.getNotes(physician.npi, user.email),
+    analytics: await analytics.getLabelledAnalytics(physician.npi),
+    contact: await contactsStore.getContact(physician.npi),
+    event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
+    subject: `🆕 New meeting: ${ev.title} — ${physician.name || physician.npi}`,
+    intro: `A meeting "${ev.title}" with ${
+      physician.name || `NPI ${physician.npi}`
+    } was just added to your calendar. Your pre-meeting brief is below.`,
+  });
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}"`);
 }
 
 async function ingestEmails(token, user) {
