@@ -628,13 +628,9 @@ function physicianBriefHtml({ physician, analytics, contact }) {
   ].join('');
 }
 
-async function sendPhysicianBriefing(
-  accessToken,
-  { toEmail, physician, notes, analytics, event, subject, intro, contact }
-) {
-  const client = getGraphClient(accessToken);
-
-  const history = notes.length
+/** One physician's meeting-note history as HTML (or a placeholder). */
+function meetingNotesHtml(notes) {
+  return notes && notes.length
     ? notes
         .map(
           (n) =>
@@ -643,6 +639,36 @@ async function sendPhysicianBriefing(
         )
         .join('')
     : '<p><i>No meeting notes recorded yet.</i></p>';
+}
+
+/**
+ * Send ONE briefing email covering one OR MORE physicians. A meeting booked
+ * with several physicians produces a SINGLE email containing every physician's
+ * details (each as its own section), not one email per physician.
+ *
+ * @param {object} opts
+ * @param {string} opts.toEmail organizer's address
+ * @param {Array<{physician:object, notes:object[], analytics?:object, contact?:object}>} opts.physicians
+ * @param {{title?:string, start?:string, timeZone?:string}} [opts.event]
+ * @param {string} [opts.subject]
+ * @param {string} [opts.intro]
+ */
+/** Physician name for headings/subjects. */
+function briefName(p) {
+  return p.name || `NPI ${p.npi}`;
+}
+
+/**
+ * Build the HTML body of a (possibly multi-physician) briefing email. Pure —
+ * exported so it can be rendered/tested without a Graph client. For a single
+ * physician the output is byte-for-byte the old single-brief layout (no name
+ * banner); with several, each physician gets a ruled name banner (inline-styled
+ * so it renders in email clients, which don't load the app stylesheet).
+ */
+function buildBriefingContent({ physicians, event, intro }) {
+  const list = (physicians || []).filter((b) => b && b.physician);
+  const multi = list.length > 1;
+  const names = list.map((b) => briefName(b.physician));
 
   const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
   const meetingLine = event?.title
@@ -651,13 +677,35 @@ async function sendPhysicianBriefing(
       }</p>`
     : '';
 
-  const content = [
-    `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
-    meetingLine,
-    physicianBriefHtml({ physician, analytics, contact }),
-    '<p class="brief-h"><b>Meeting notes</b></p>',
-    history,
-  ].join('');
+  const sections = list
+    .map(({ physician, analytics, contact, notes }) => {
+      const banner = multi
+        ? `<h2 style="font-size:18px;margin:26px 0 8px;padding-bottom:5px;` +
+          `border-bottom:2px solid #0f6cbd">${escapeHtml(briefName(physician))}</h2>`
+        : '';
+      return [
+        banner,
+        physicianBriefHtml({ physician, analytics, contact }),
+        '<p class="brief-h"><b>Meeting notes</b></p>',
+        meetingNotesHtml(notes),
+      ].join('');
+    })
+    .join('');
+
+  const defaultIntro = multi
+    ? `Briefing for ${list.length} physicians on this meeting: ${names.join(', ')}.`
+    : `Briefing for ${names[0]}`;
+
+  return [`<p>${escapeHtml(intro || defaultIntro)}</p>`, meetingLine, sections].join('');
+}
+
+async function sendPhysiciansBriefing(accessToken, { toEmail, physicians, event, subject, intro }) {
+  const client = getGraphClient(accessToken);
+  const list = (physicians || []).filter((b) => b && b.physician);
+  if (!list.length) return null;
+
+  const names = list.map((b) => briefName(b.physician));
+  const content = buildBriefingContent({ physicians: list, event, intro });
 
   // Deliver to a real Microsoft mailbox when configured. The sign-in identity
   // (toEmail) can be a federated/Gmail address that Microsoft routes externally
@@ -669,8 +717,7 @@ async function sendPhysicianBriefing(
   await client.api('/me/sendMail').post({
     message: {
       subject:
-        subject ||
-        `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
+        subject || `Briefing: ${names.join(' & ')}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
       toRecipients: [{ emailAddress: { address: sendTo } }],
     },
@@ -681,6 +728,21 @@ async function sendPhysicianBriefing(
   // rep sees where it landed (esp. when BRIEFING_TO_EMAIL redirects it, or a
   // federated sign-in makes a self-send land only in Sent, not the Inbox).
   return sendTo;
+}
+
+/** Single-physician briefing — thin wrapper over the combined sender so the
+ *  manual "Email me this briefing" and schedule-invite paths are unchanged. */
+async function sendPhysicianBriefing(
+  accessToken,
+  { toEmail, physician, notes, analytics, event, subject, intro, contact }
+) {
+  return sendPhysiciansBriefing(accessToken, {
+    toEmail,
+    physicians: [{ physician, notes, analytics, contact }],
+    event,
+    subject,
+    intro,
+  });
 }
 
 /**
@@ -869,6 +931,8 @@ module.exports = {
   getGraphClient,
   createMeetingWithPhysician,
   sendPhysicianBriefing,
+  sendPhysiciansBriefing,
+  buildBriefingContent,
   physicianBriefHtml,
   formatMeetingTime, // exported for brief-rendering tests
   analyticsHtml, // exported for brief-rendering tests

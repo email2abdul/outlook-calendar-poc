@@ -406,6 +406,77 @@ body {
   padding: 14px;
 }
 
+/* Auto-rendered pre-meeting briefs as accordion drawers — each matched
+   physician has a clickable header that expands its brief; only one is open at
+   a time. The accent left border ties them to the event card. */
+.event__briefs {
+  display: flex;
+  flex-direction: column;
+}
+
+.physician-drawer {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.physician-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* name left, big toggle icon right */
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary-dark);
+  user-select: none;
+  list-style: none; /* hide the default disclosure triangle (Firefox) */
+}
+
+/* hide the default disclosure triangle (WebKit/Blink) */
+.physician-drawer__head::-webkit-details-marker {
+  display: none;
+}
+
+/* Big, unmistakable open/close control — a ⊕ that becomes ⊖ when open, so it's
+   obvious the row expands. Circle + sign reads as a toggle at a glance. */
+.physician-drawer__head::after {
+  content: '+';
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.physician-drawer[open] > .physician-drawer__head::after {
+  content: '\2212'; /* minus sign */
+  background: var(--accent);
+  color: #fff;
+}
+
+.physician-drawer[open] > .physician-drawer__head {
+  border-bottom: 1px solid var(--border);
+}
+
+/* The brief fills the drawer body — drop the standalone section's top rule. */
+.physician-drawer .physician-analytics {
+  margin-top: 0;
+  border-top: none;
+  padding: 12px 14px 14px;
+}
+
 .physician-inline__bar {
   display: flex;
   align-items: center;

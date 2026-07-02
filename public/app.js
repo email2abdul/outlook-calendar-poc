@@ -637,6 +637,68 @@ $panel('.physician-inline__search').addEventListener('input', (e) => {
   searchDebounce = setTimeout(() => searchPhysicians(q), 250);
 });
 
+// ── Auto pre-meeting briefs (drawers, one open at a time) ───────────────────
+// Every attendee whose email is an EXACT match in the directory gets a
+// collapsible drawer beneath the event — a meeting booked with two physicians
+// shows both, each opening its own pre-meeting brief. Accordion: opening one
+// closes the others. All start CLOSED; briefs load lazily on first open.
+// Read-only; the interactive tools (notes, schedule, send briefing) stay on
+// the chip click.
+
+async function loadAutoBrief(box, physician) {
+  try {
+    const res = await fetch(`/api/physicians/${encodeURIComponent(physician.npi)}/brief`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) {
+      box.innerHTML = '<p class="muted">Brief unavailable.</p>';
+      return;
+    }
+    const data = await res.json();
+    box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
+  } catch {
+    box.innerHTML = '<p class="muted">Brief unavailable.</p>';
+  }
+}
+
+function renderAutoBriefs(bodyEl, physicians) {
+  const wrap = document.createElement('div');
+  wrap.className = 'event__briefs';
+  const drawers = [];
+
+  physicians.forEach((p) => {
+    const drawer = document.createElement('details');
+    drawer.className = 'physician-drawer';
+
+    const head = document.createElement('summary');
+    head.className = 'physician-drawer__head';
+    head.textContent =
+      `🩺 ${p.name || `NPI ${p.npi}`}` + (p.specialty ? ` · ${p.specialty}` : '');
+    drawer.appendChild(head);
+
+    const box = document.createElement('div');
+    box.className = 'physician-analytics';
+    box.innerHTML = '<p class="muted">Loading pre-meeting brief…</p>';
+    drawer.appendChild(box);
+
+    let loaded = false;
+    drawer.addEventListener('toggle', () => {
+      if (!drawer.open) return;
+      // Accordion — only one drawer open at a time.
+      for (const other of drawers) if (other !== drawer) other.open = false;
+      if (!loaded) {
+        loaded = true;
+        loadAutoBrief(box, p);
+      }
+    });
+
+    drawers.push(drawer);
+    wrap.appendChild(drawer);
+  });
+
+  bodyEl.appendChild(wrap);
+}
+
 // ── Event list ───────────────────────────────────────────────────────────────
 
 function renderEvents(events) {
@@ -745,6 +807,20 @@ function renderEvents(events) {
         ul.appendChild(chip);
       }
       wrap.hidden = false;
+    }
+
+    // Auto-show the pre-meeting brief for each exact email-matched physician
+    // (deduped by NPI) — both briefs appear for a two-physician meeting.
+    const matchedPhysicians = [];
+    const seenNpi = new Set();
+    for (const a of ev.attendees || []) {
+      if (a.physician && !seenNpi.has(a.physician.npi)) {
+        seenNpi.add(a.physician.npi);
+        matchedPhysicians.push(a.physician);
+      }
+    }
+    if (matchedPhysicians.length) {
+      renderAutoBriefs(node.querySelector('.event__body'), matchedPhysicians);
     }
 
     if (ev.onlineMeetingUrl) {
