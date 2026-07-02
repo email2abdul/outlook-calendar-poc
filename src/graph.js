@@ -263,7 +263,7 @@ function buildPhysicianBody(physician, notes, previousNote) {
   return [
     notes ? `<p>${escapeHtml(notes)}</p>` : '',
     previousSection,
-    '<p><b>Physician details</b></p>',
+    '<p class="brief-h"><b>Physician details</b></p>',
     physicianDetailsTable(physician),
   ].join('');
 }
@@ -290,7 +290,7 @@ function procedureIntelligenceHtml(byFamily) {
     .join('');
 
   return (
-    '<p><b>Procedure Intelligence</b></p>' +
+    '<p class="brief-h"><b>Procedure Intelligence</b></p>' +
     `<table>${rows}</table>`
   );
 }
@@ -351,7 +351,7 @@ function commercialSignalsHtml(signals, summary, lumendiAccount) {
   }
 
   if (!items.length) return '';
-  return '<p><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
+  return '<p class="brief-h"><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
 }
 
 /**
@@ -399,7 +399,7 @@ function accountOpportunityHtml(opp) {
     .join('');
 
   return (
-    '<p><b>Account Opportunity</b></p>' +
+    '<p class="brief-h"><b>Account Opportunity</b></p>' +
     lumendiLine +
     `<table class="brief-cards">${rows}</table>`
   );
@@ -438,7 +438,7 @@ function contactIntelligenceHtml(physician, contact) {
     : '';
   const metaLine = meta.length ? `<p style="color:#555">${meta.join(' · ')}</p>` : '';
 
-  return '<p><b>Contact Intelligence</b></p>' + table + metaLine;
+  return '<p class="brief-h"><b>Contact Intelligence</b></p>' + table + metaLine;
 }
 
 /**
@@ -454,7 +454,7 @@ function productFitHtml(fit) {
 
   if (!fit.recommended) {
     return fit.note
-      ? `<p><b>Recommended product</b></p><p><i>${escapeHtml(fit.note)}</i></p>`
+      ? `<p class="brief-h"><b>Recommended product</b></p><p><i>${escapeHtml(fit.note)}</i></p>`
       : '';
   }
 
@@ -477,7 +477,7 @@ function productFitHtml(fit) {
     : '';
 
   return (
-    '<p><b>Recommended product</b></p>' +
+    '<p class="brief-h"><b>Recommended product</b></p>' +
     `<p style="margin:6px 0 0"><b>${escapeHtml(r.productName)}</b>${fams}${tag}` +
     `${r.strength ? ` <span style="color:#888">· ${escapeHtml(r.strength)}</span>` : ''}</p>` +
     `<p style="margin:2px 0 0">${escapeHtml(r.reason)}</p>` +
@@ -518,7 +518,7 @@ function productContextHtml(ctx) {
     })
     .join('');
 
-  return '<p><b>What to Discuss</b></p>' + blocks;
+  return '<p class="brief-h"><b>What to Discuss</b></p>' + blocks;
 }
 
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
@@ -536,13 +536,13 @@ function analyticsHtml(a) {
     `snare used ${Math.round(a.summary.snareShare * 100)}%</p>`;
 
   const years =
-    '<p><b>Volume by year</b></p><table>' +
+    '<p class="brief-h"><b>Volume by year</b></p><table>' +
     a.byYear.map((y) => `<tr><td ${td}>${y.year}</td><td>${num(y.volume)}</td></tr>`).join('') +
     '</table>';
 
   const totalPayer = a.byPayer.reduce((s, p) => s + p.volume, 0) || 1;
   const payers =
-    '<p><b>Payer mix</b></p><table>' +
+    '<p class="brief-h"><b>Payer mix</b></p><table>' +
     a.byPayer
       .map(
         (p) =>
@@ -560,7 +560,7 @@ function analyticsHtml(a) {
   // inline left-align/padding to match the previous bold-<td> header look.
   const th = 'style="text-align:left;padding:2px 12px 2px 0"';
   const procs =
-    '<p><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
+    '<p class="brief-h"><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
     `<thead><tr><th ${th}>CPT</th><th ${th}>Procedure</th><th ${th}>Volume</th>` +
     `<th ${th}>Medicare</th><th style="text-align:left">Commercial</th></tr></thead><tbody>` +
     a.topProcedures
@@ -576,7 +576,7 @@ function analyticsHtml(a) {
     '</tbody></table></div>';
 
   const facilities =
-    '<p><b>Facilities</b></p><table>' +
+    '<p class="brief-h"><b>Facilities</b></p><table>' +
     a.facilities
       .map((f) => {
         const where = [f.name, [f.city, f.state].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
@@ -588,7 +588,7 @@ function analyticsHtml(a) {
   return [
     procedureIntelligenceHtml(a.byFamily),
     commercialSignalsHtml(a.commercialSignals, a.summary, a.lumendiAccount),
-    '<p><b>Procedure analytics</b></p>',
+    '<p class="brief-h"><b>Procedure analytics</b></p>',
     summary,
     years,
     payers,
@@ -618,7 +618,7 @@ function analyticsHtml(a) {
  */
 function physicianBriefHtml({ physician, analytics, contact }) {
   return [
-    '<p><b>Physician details</b></p>',
+    '<p class="brief-h"><b>Physician details</b></p>',
     physicianDetailsTable(physician),
     contactIntelligenceHtml(physician, contact),
     analyticsHtml(analytics),
@@ -655,7 +655,7 @@ async function sendPhysicianBriefing(
     `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
     meetingLine,
     physicianBriefHtml({ physician, analytics, contact }),
-    '<p><b>Meeting notes</b></p>',
+    '<p class="brief-h"><b>Meeting notes</b></p>',
     history,
   ].join('');
 
