@@ -263,7 +263,7 @@ function buildPhysicianBody(physician, notes, previousNote) {
   return [
     notes ? `<p>${escapeHtml(notes)}</p>` : '',
     previousSection,
-    '<p><b>Physician details</b></p>',
+    '<p class="brief-h"><b>Physician details</b></p>',
     physicianDetailsTable(physician),
   ].join('');
 }
@@ -290,7 +290,7 @@ function procedureIntelligenceHtml(byFamily) {
     .join('');
 
   return (
-    '<p><b>Procedure Intelligence</b></p>' +
+    '<p class="brief-h"><b>Procedure Intelligence</b></p>' +
     `<table>${rows}</table>`
   );
 }
@@ -351,7 +351,7 @@ function commercialSignalsHtml(signals, summary, lumendiAccount) {
   }
 
   if (!items.length) return '';
-  return '<p><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
+  return '<p class="brief-h"><b>Commercial Signals</b></p>' + `<ul style="margin:4px 0">${items.join('')}</ul>`;
 }
 
 /**
@@ -399,7 +399,7 @@ function accountOpportunityHtml(opp) {
     .join('');
 
   return (
-    '<p><b>Account Opportunity</b></p>' +
+    '<p class="brief-h"><b>Account Opportunity</b></p>' +
     lumendiLine +
     `<table class="brief-cards">${rows}</table>`
   );
@@ -438,7 +438,7 @@ function contactIntelligenceHtml(physician, contact) {
     : '';
   const metaLine = meta.length ? `<p style="color:#555">${meta.join(' · ')}</p>` : '';
 
-  return '<p><b>Contact Intelligence</b></p>' + table + metaLine;
+  return '<p class="brief-h"><b>Contact Intelligence</b></p>' + table + metaLine;
 }
 
 /**
@@ -454,7 +454,7 @@ function productFitHtml(fit) {
 
   if (!fit.recommended) {
     return fit.note
-      ? `<p><b>Recommended product</b></p><p><i>${escapeHtml(fit.note)}</i></p>`
+      ? `<p class="brief-h"><b>Recommended product</b></p><p><i>${escapeHtml(fit.note)}</i></p>`
       : '';
   }
 
@@ -477,7 +477,7 @@ function productFitHtml(fit) {
     : '';
 
   return (
-    '<p><b>Recommended product</b></p>' +
+    '<p class="brief-h"><b>Recommended product</b></p>' +
     `<p style="margin:6px 0 0"><b>${escapeHtml(r.productName)}</b>${fams}${tag}` +
     `${r.strength ? ` <span style="color:#888">· ${escapeHtml(r.strength)}</span>` : ''}</p>` +
     `<p style="margin:2px 0 0">${escapeHtml(r.reason)}</p>` +
@@ -518,7 +518,7 @@ function productContextHtml(ctx) {
     })
     .join('');
 
-  return '<p><b>What to Discuss</b></p>' + blocks;
+  return '<p class="brief-h"><b>What to Discuss</b></p>' + blocks;
 }
 
 /** HTML "Procedure analytics" section for the briefing email (or '' if none). */
@@ -536,13 +536,13 @@ function analyticsHtml(a) {
     `snare used ${Math.round(a.summary.snareShare * 100)}%</p>`;
 
   const years =
-    '<p><b>Volume by year</b></p><table>' +
+    '<p class="brief-h"><b>Volume by year</b></p><table>' +
     a.byYear.map((y) => `<tr><td ${td}>${y.year}</td><td>${num(y.volume)}</td></tr>`).join('') +
     '</table>';
 
   const totalPayer = a.byPayer.reduce((s, p) => s + p.volume, 0) || 1;
   const payers =
-    '<p><b>Payer mix</b></p><table>' +
+    '<p class="brief-h"><b>Payer mix</b></p><table>' +
     a.byPayer
       .map(
         (p) =>
@@ -560,7 +560,7 @@ function analyticsHtml(a) {
   // inline left-align/padding to match the previous bold-<td> header look.
   const th = 'style="text-align:left;padding:2px 12px 2px 0"';
   const procs =
-    '<p><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
+    '<p class="brief-h"><b>Top procedures</b></p><div class="table-scroll"><table class="brief-proc brief-cards">' +
     `<thead><tr><th ${th}>CPT</th><th ${th}>Procedure</th><th ${th}>Volume</th>` +
     `<th ${th}>Medicare</th><th style="text-align:left">Commercial</th></tr></thead><tbody>` +
     a.topProcedures
@@ -576,7 +576,7 @@ function analyticsHtml(a) {
     '</tbody></table></div>';
 
   const facilities =
-    '<p><b>Facilities</b></p><table>' +
+    '<p class="brief-h"><b>Facilities</b></p><table>' +
     a.facilities
       .map((f) => {
         const where = [f.name, [f.city, f.state].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
@@ -588,7 +588,7 @@ function analyticsHtml(a) {
   return [
     procedureIntelligenceHtml(a.byFamily),
     commercialSignalsHtml(a.commercialSignals, a.summary, a.lumendiAccount),
-    '<p><b>Procedure analytics</b></p>',
+    '<p class="brief-h"><b>Procedure analytics</b></p>',
     summary,
     years,
     payers,
@@ -618,7 +618,7 @@ function analyticsHtml(a) {
  */
 function physicianBriefHtml({ physician, analytics, contact }) {
   return [
-    '<p><b>Physician details</b></p>',
+    '<p class="brief-h"><b>Physician details</b></p>',
     physicianDetailsTable(physician),
     contactIntelligenceHtml(physician, contact),
     analyticsHtml(analytics),
@@ -628,13 +628,9 @@ function physicianBriefHtml({ physician, analytics, contact }) {
   ].join('');
 }
 
-async function sendPhysicianBriefing(
-  accessToken,
-  { toEmail, physician, notes, analytics, event, subject, intro, contact }
-) {
-  const client = getGraphClient(accessToken);
-
-  const history = notes.length
+/** One physician's meeting-note history as HTML (or a placeholder). */
+function meetingNotesHtml(notes) {
+  return notes && notes.length
     ? notes
         .map(
           (n) =>
@@ -643,6 +639,36 @@ async function sendPhysicianBriefing(
         )
         .join('')
     : '<p><i>No meeting notes recorded yet.</i></p>';
+}
+
+/**
+ * Send ONE briefing email covering one OR MORE physicians. A meeting booked
+ * with several physicians produces a SINGLE email containing every physician's
+ * details (each as its own section), not one email per physician.
+ *
+ * @param {object} opts
+ * @param {string} opts.toEmail organizer's address
+ * @param {Array<{physician:object, notes:object[], analytics?:object, contact?:object}>} opts.physicians
+ * @param {{title?:string, start?:string, timeZone?:string}} [opts.event]
+ * @param {string} [opts.subject]
+ * @param {string} [opts.intro]
+ */
+/** Physician name for headings/subjects. */
+function briefName(p) {
+  return p.name || `NPI ${p.npi}`;
+}
+
+/**
+ * Build the HTML body of a (possibly multi-physician) briefing email. Pure —
+ * exported so it can be rendered/tested without a Graph client. For a single
+ * physician the output is byte-for-byte the old single-brief layout (no name
+ * banner); with several, each physician gets a ruled name banner (inline-styled
+ * so it renders in email clients, which don't load the app stylesheet).
+ */
+function buildBriefingContent({ physicians, event, intro }) {
+  const list = (physicians || []).filter((b) => b && b.physician);
+  const multi = list.length > 1;
+  const names = list.map((b) => briefName(b.physician));
 
   const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
   const meetingLine = event?.title
@@ -651,13 +677,35 @@ async function sendPhysicianBriefing(
       }</p>`
     : '';
 
-  const content = [
-    `<p>${escapeHtml(intro || `Briefing for ${physician.name || `NPI ${physician.npi}`}`)}</p>`,
-    meetingLine,
-    physicianBriefHtml({ physician, analytics, contact }),
-    '<p><b>Meeting notes</b></p>',
-    history,
-  ].join('');
+  const sections = list
+    .map(({ physician, analytics, contact, notes }) => {
+      const banner = multi
+        ? `<h2 style="font-size:18px;margin:26px 0 8px;padding-bottom:5px;` +
+          `border-bottom:2px solid #0f6cbd">${escapeHtml(briefName(physician))}</h2>`
+        : '';
+      return [
+        banner,
+        physicianBriefHtml({ physician, analytics, contact }),
+        '<p class="brief-h"><b>Meeting notes</b></p>',
+        meetingNotesHtml(notes),
+      ].join('');
+    })
+    .join('');
+
+  const defaultIntro = multi
+    ? `Briefing for ${list.length} physicians on this meeting: ${names.join(', ')}.`
+    : `Briefing for ${names[0]}`;
+
+  return [`<p>${escapeHtml(intro || defaultIntro)}</p>`, meetingLine, sections].join('');
+}
+
+async function sendPhysiciansBriefing(accessToken, { toEmail, physicians, event, subject, intro }) {
+  const client = getGraphClient(accessToken);
+  const list = (physicians || []).filter((b) => b && b.physician);
+  if (!list.length) return null;
+
+  const names = list.map((b) => briefName(b.physician));
+  const content = buildBriefingContent({ physicians: list, event, intro });
 
   // Deliver to a real Microsoft mailbox when configured. The sign-in identity
   // (toEmail) can be a federated/Gmail address that Microsoft routes externally
@@ -669,8 +717,7 @@ async function sendPhysicianBriefing(
   await client.api('/me/sendMail').post({
     message: {
       subject:
-        subject ||
-        `Briefing: ${physician.name || physician.npi}${event?.title ? ` — ${event.title}` : ''}`,
+        subject || `Briefing: ${names.join(' & ')}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
       toRecipients: [{ emailAddress: { address: sendTo } }],
     },
@@ -681,6 +728,21 @@ async function sendPhysicianBriefing(
   // rep sees where it landed (esp. when BRIEFING_TO_EMAIL redirects it, or a
   // federated sign-in makes a self-send land only in Sent, not the Inbox).
   return sendTo;
+}
+
+/** Single-physician briefing — thin wrapper over the combined sender so the
+ *  manual "Email me this briefing" and schedule-invite paths are unchanged. */
+async function sendPhysicianBriefing(
+  accessToken,
+  { toEmail, physician, notes, analytics, event, subject, intro, contact }
+) {
+  return sendPhysiciansBriefing(accessToken, {
+    toEmail,
+    physicians: [{ physician, notes, analytics, contact }],
+    event,
+    subject,
+    intro,
+  });
 }
 
 /**
@@ -869,6 +931,8 @@ module.exports = {
   getGraphClient,
   createMeetingWithPhysician,
   sendPhysicianBriefing,
+  sendPhysiciansBriefing,
+  buildBriefingContent,
   physicianBriefHtml,
   formatMeetingTime, // exported for brief-rendering tests
   analyticsHtml, // exported for brief-rendering tests

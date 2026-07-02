@@ -32,7 +32,7 @@ body {
 }
 
 .app {
-  max-width: 720px;
+  max-width: 820px;
   margin: 0 auto;
   padding: 24px 20px 48px;
   min-height: 100vh;
@@ -80,6 +80,9 @@ body {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  /* Keep the account block pinned to the right of the topbar — even when it
+     wraps onto its own line under the brand on a narrow desktop window. */
+  margin-left: auto;
 }
 
 /* Sign-out stays its natural size; the meta column absorbs the shrink. */
@@ -290,6 +293,8 @@ body {
   gap: 6px;
   margin-top: 8px;
   font-size: 13px;
+  /* Let the chip list shrink within the card instead of forcing overflow. */
+  min-width: 0;
 }
 
 .event__attendee-list {
@@ -299,6 +304,8 @@ body {
   display: flex;
   flex-wrap: wrap;
   gap: 4px 10px;
+  min-width: 0;
+  flex: 1;
 }
 
 .event__attendee {
@@ -374,8 +381,14 @@ body {
   color: var(--muted);
 }
 
-.date-filter__input {
+/* The extra `.date-filter` qualifier lifts this above `.input { width: 100% }`
+   (which is later in the file), so the date box stays a compact control on
+   desktop instead of stretching the full row. The small-screen override below
+   uses the same specificity + later source order to reclaim full width. */
+.date-filter .date-filter__input {
+  flex: 0 1 220px;
   width: auto;
+  min-width: 160px;
   margin-top: 0;
 }
 
@@ -391,6 +404,77 @@ body {
   border-radius: 10px;
   background: var(--bg);
   padding: 14px;
+}
+
+/* Auto-rendered pre-meeting briefs as accordion drawers — each matched
+   physician has a clickable header that expands its brief; only one is open at
+   a time. The accent left border ties them to the event card. */
+.event__briefs {
+  display: flex;
+  flex-direction: column;
+}
+
+.physician-drawer {
+  margin-top: 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+.physician-drawer__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between; /* name left, big toggle icon right */
+  gap: 12px;
+  padding: 14px;
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary-dark);
+  user-select: none;
+  list-style: none; /* hide the default disclosure triangle (Firefox) */
+}
+
+/* hide the default disclosure triangle (WebKit/Blink) */
+.physician-drawer__head::-webkit-details-marker {
+  display: none;
+}
+
+/* Big, unmistakable open/close control — a ⊕ that becomes ⊖ when open, so it's
+   obvious the row expands. Circle + sign reads as a toggle at a glance. */
+.physician-drawer__head::after {
+  content: '+';
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--accent);
+  border-radius: 50%;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.physician-drawer[open] > .physician-drawer__head::after {
+  content: '\2212'; /* minus sign */
+  background: var(--accent);
+  color: #fff;
+}
+
+.physician-drawer[open] > .physician-drawer__head {
+  border-bottom: 1px solid var(--border);
+}
+
+/* The brief fills the drawer body — drop the standalone section's top rule. */
+.physician-drawer .physician-analytics {
+  margin-top: 0;
+  border-top: none;
+  padding: 12px 14px 14px;
 }
 
 .physician-inline__bar {
@@ -692,11 +776,46 @@ body {
   vertical-align: top;
   overflow-wrap: anywhere;
   word-break: break-word;
+  padding: 2px 0;
+}
+
+/* The first column of these key/value tables is a label ("Email", "Facility
+   Address", "Colonoscopy"…). break-anywhere squeezed that column to ~1 char on
+   phones and split short labels mid-word ("Colonosco/py"). Let the label wrap
+   only at spaces and hold its natural width; keep break-anywhere on the value
+   cells so long emails still wrap. */
+.physician-analytics table td:first-child {
+  overflow-wrap: normal;
+  word-break: normal;
+  padding-right: 14px;
 }
 
 .physician-analytics > p {
-  margin: 12px 0 4px;
+  margin: 14px 0 4px;
   font-size: 13px;
+}
+
+/* Section headers in the brief carry a `brief-h` class (added in graph.js;
+   inert in the emailed copy). A hairline divider + uppercase label turns the
+   brief into scannable sections instead of a wall of bold paragraphs. */
+.physician-analytics p.brief-h {
+  margin: 16px 0 6px;
+}
+
+.physician-analytics p.brief-h b {
+  display: block;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* The "Pre-meeting brief" heading leads the panel; no divider needed above the
+   first section right beneath it. */
+.physician-analytics > h3 + p.brief-h {
+  margin-top: 6px;
 }
 
 /* Brief "Top procedures" table on wider screens — a clean, lightly-ruled table
@@ -1008,8 +1127,9 @@ body {
     width: 100%;
   }
 
-  .date-filter__input {
-    flex: 1;
+  .date-filter .date-filter__input {
+    flex: 1 1 auto;
+    width: auto;
     min-width: 0;
   }
 
@@ -1027,10 +1147,15 @@ body {
     min-width: 0;
   }
 
-  /* Long emails must wrap instead of overflowing the chip row. */
+  /* Long emails / facility names must wrap inside the chip instead of
+     overflowing the card. min-width:0 lets a single long-token chip shrink
+     below its content width so it can break rather than force a scrollbar. */
   .event__attendee {
     white-space: normal;
     word-break: break-word;
+    overflow-wrap: anywhere;
+    max-width: 100%;
+    min-width: 0;
   }
 
   .physician-inline {

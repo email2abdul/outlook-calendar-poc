@@ -137,13 +137,20 @@ async function dayHandler(req, res, next) {
           })
         );
 
-        // Entity analysis over the WHOLE event text (title + description):
-        // people / facilities / organizations / locations are extracted,
-        // classified and matched against the Supabase master data. Matched
-        // physicians (and suggestions, when nothing clears the confidence
-        // threshold) become option chips so the user picks who the meeting
-        // is actually with.
+        // When an attendee is an EXACT email match, that IS who the meeting is
+        // with — skip the title analysis entirely so no title-based option
+        // chips compete with the confirmed physician (and save the AI call).
         const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
+        if (attendeeNpis.size) {
+          return { ...ev, attendees, titleMatches: [], entityAnalysis: null };
+        }
+
+        // No email match — fall back to entity analysis over the WHOLE event
+        // text (title + description): people / facilities / organizations /
+        // locations are extracted, classified and matched against the Supabase
+        // master data. Matched physicians (and suggestions, when nothing clears
+        // the confidence threshold) become option chips so the user picks who
+        // the meeting is actually with.
         const entityAnalysis = await entityMatcher.analyze(
           [ev.title, ev.description].filter(Boolean).join('. ')
         );

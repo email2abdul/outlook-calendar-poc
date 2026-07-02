@@ -76,17 +76,26 @@ function cleanBody(text) {
   return body.replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** The physician an event is with: a directory attendee, else a title match. */
-async function physicianForEvent(ev) {
+/**
+ * Every physician an event is with, deduped by NPI: all attendees whose email
+ * is an EXACT match in the directory (so a meeting with two physician emails
+ * yields two), else a single title match. Empty array when it's not a
+ * physician meeting.
+ */
+async function physiciansForEvent(ev) {
+  const found = new Map();
   for (const a of ev.attendees || []) {
     const p = physiciansDir.getByEmail(a.email);
-    if (p) return p;
+    if (p) found.set(p.npi, p);
   }
+  if (found.size) return [...found.values()];
+
   const analysis = await entityMatcher.analyze(
     [ev.title, ev.description].filter(Boolean).join('. ')
   );
   const m = analysis.matched_entities.find((x) => x.entity_type === 'person');
-  return m ? physiciansDir.getByNpi(m.master_id) : null;
+  const p = m ? physiciansDir.getByNpi(m.master_id) : null;
+  return p ? [p] : [];
 }
 
 // ── Per-user sync ────────────────────────────────────────────────────────────
@@ -100,7 +109,10 @@ async function syncActivities(token, user) {
   let synced = 0;
   for (const ev of events) {
     if (ev.isAllDay) continue;
-    const physician = await physicianForEvent(ev);
+    const physicians = await physiciansForEvent(ev);
+    // The activity row links to a single physician (schema is one NPI per
+    // activity); use the first. All matched physicians are still briefed below.
+    const primary = physicians[0] || null;
 
     // Was this meeting already known? (Checked BEFORE the upsert so we only
     // instant-brief a genuinely new physician meeting — e.g. one just created
@@ -112,14 +124,16 @@ async function syncActivities(token, user) {
     const activity = await crm.upsertActivityFromEvent(
       user.homeAccountId,
       ev,
-      physician?.npi,
-      physician?.facility?.id
+      primary?.npi,
+      primary?.facility?.id
     );
     if (activity) synced++;
 
-    if (physician && !existed) {
+    // Instant-brief the matched physician(s) in ONE email (a two-physician
+    // meeting → a single brief with both), only the first time it's seen.
+    if (physicians.length && !existed) {
       try {
-        await sendInstantBrief(token, user, ev, physician);
+        await sendInstantBrief(token, user, ev, physicians);
       } catch (err) {
         console.warn('[ingest] instant brief failed:', err.message);
       }
@@ -133,27 +147,36 @@ async function syncActivities(token, user) {
  * (e.g. created directly in Outlook, which never hits the app's schedule route).
  * The same brief body the schedule/reminder emails use, so all three match.
  * Deduped on a distinct `instant:<eventId>` key so it fires independently of
- * the timed reminder (which keys on the raw eventId) and never repeats.
+ * the timed reminder and never repeats. All physicians on the meeting go into
+ * one email (a section each).
  */
-async function sendInstantBrief(token, user, ev, physician) {
-  if (!user.email || !ev.id) return;
+async function sendInstantBrief(token, user, ev, physicians) {
+  if (!user.email || !ev.id || !physicians.length) return;
   const key = `instant:${ev.id}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
 
-  await graph.sendPhysicianBriefing(token, {
+  const bundles = [];
+  for (const physician of physicians) {
+    bundles.push({
+      physician,
+      notes: await callNotes.getNotes(physician.npi, user.email),
+      analytics: await analytics.getLabelledAnalytics(physician.npi),
+      contact: await contactsStore.getContact(physician.npi),
+    });
+  }
+  const names = physicians.map((p) => p.name || `NPI ${p.npi}`).join(', ');
+
+  await graph.sendPhysiciansBriefing(token, {
     toEmail: user.email,
-    physician,
-    notes: await callNotes.getNotes(physician.npi, user.email),
-    analytics: await analytics.getLabelledAnalytics(physician.npi),
-    contact: await contactsStore.getContact(physician.npi),
+    physicians: bundles,
     event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
-    subject: `🆕 New meeting: ${ev.title} — ${physician.name || physician.npi}`,
-    intro: `A meeting "${ev.title}" with ${
-      physician.name || `NPI ${physician.npi}`
-    } was just added to your calendar. Your pre-meeting brief is below.`,
+    subject: `🆕 New meeting: ${ev.title} — ${names}`,
+    intro:
+      `A meeting "${ev.title}" with ${names} was just added to your calendar. ` +
+      (physicians.length > 1 ? 'Their pre-meeting briefs are below.' : 'Your pre-meeting brief is below.'),
   });
   await tokenStore.markReminderSent(user.homeAccountId, key);
-  console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}"`);
+  console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}" (${names})`);
 }
 
 async function ingestEmails(token, user) {

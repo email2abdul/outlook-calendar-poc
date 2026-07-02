@@ -34,34 +34,54 @@ function startUtcMs(ev) {
 }
 
 /**
- * The physician this meeting is with. Priority:
- *  1) the physician the meeting was SCHEDULED with (the app_activity for this
- *     event) — authoritative, so the reminder briefs the SAME physician the
- *     auto-brief did and the two emails match;
- *  2) an attendee in the directory;
- *  3) a confident entity match from the title/description.
+ * Every physician this meeting is with, deduped by NPI. A meeting can list more
+ * than one physician as an attendee (the rep invited two doctors) — each gets
+ * their own brief. Sources:
+ *  1) attendees whose email is an EXACT match in the master directory (ALL of
+ *     them — this is what makes a two-physician meeting produce two briefs);
+ *  2) the physician the meeting was SCHEDULED with (the app_activity) — kept so
+ *     an app-scheduled physician who isn't listed as an email attendee is still
+ *     briefed, and the reminder matches the auto-brief;
+ *  3) only when nothing above matched: a confident entity match from the
+ *     title/description, so name-only meetings still work.
  */
-async function physicianForEvent(ev, ownerUserId) {
+async function physiciansForEvent(ev, ownerUserId) {
+  const found = new Map(); // npi → physician (dedupes overlap between sources)
+
+  // 1) exact email matches on the attendee list.
+  for (const a of ev.attendees || []) {
+    const p = physiciansDir.getByEmail(a.email);
+    if (p) found.set(p.npi, p);
+  }
+
+  // 2) the physician the meeting was scheduled with (authoritative for
+  //    app-created meetings; may already be one of the email matches above).
   if (ownerUserId && ev.id) {
     try {
       const act = await crm.findActivityByEventId(ownerUserId, ev.id);
       if (act?.physician_npi) {
         const p = physiciansDir.getByNpi(act.physician_npi);
-        if (p) return p;
+        if (p) found.set(p.npi, p);
       }
     } catch {
-      /* fall through to attendee/title matching */
+      /* fall through to title matching */
     }
   }
-  for (const a of ev.attendees || []) {
-    const p = physiciansDir.getByEmail(a.email);
-    if (p) return p;
-  }
+
+  if (found.size) return [...found.values()];
+
+  // 3) fallback — entity match on the title/description (name-only meetings).
   const analysis = await entityMatcher.analyze(
     [ev.title, ev.description].filter(Boolean).join('. ')
   );
   const match = analysis.matched_entities.find((m) => m.entity_type === 'person');
-  return match ? physiciansDir.getByNpi(match.master_id) : null;
+  const p = match ? physiciansDir.getByNpi(match.master_id) : null;
+  return p ? [p] : [];
+}
+
+/** Back-compat single-physician helper — the first match, or null. */
+async function physicianForEvent(ev, ownerUserId) {
+  return (await physiciansForEvent(ev, ownerUserId))[0] || null;
 }
 
 /** One scan over all users — exported for tests and manual runs. */
@@ -89,21 +109,35 @@ async function tick() {
         if (minutes <= 0 || minutes > LEAD_MINUTES) continue;
         if (await tokenStore.wasReminderSent(user.homeAccountId, ev.id)) continue;
 
-        const physician = await physicianForEvent(ev, user.homeAccountId);
-        if (!physician) continue; // not a physician meeting — no reminder
+        // Every physician on the meeting (exact-email attendees + scheduled
+        // physician) goes into ONE reminder email with a section each.
+        const physicians = await physiciansForEvent(ev, user.homeAccountId);
+        if (!physicians.length) continue; // not a physician meeting — no reminder
 
-        await graph.sendPhysicianBriefing(token, {
+        const bundles = [];
+        for (const physician of physicians) {
+          bundles.push({
+            physician,
+            notes: await callNotes.getNotes(physician.npi, user.email),
+            analytics: await analytics.getLabelledAnalytics(physician.npi),
+            contact: await contactsStore.getContact(physician.npi),
+          });
+        }
+        const names = physicians.map((p) => p.name || p.npi).join(', ');
+
+        await graph.sendPhysiciansBriefing(token, {
           toEmail: user.email,
-          physician,
-          notes: await callNotes.getNotes(physician.npi, user.email),
-          analytics: await analytics.getLabelledAnalytics(physician.npi),
-          contact: await contactsStore.getContact(physician.npi),
+          physicians: bundles,
           event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
-          subject: `⏰ In ${minutes} min: ${ev.title} — ${physician.name || physician.npi}`,
-          intro: `Reminder: your meeting "${ev.title}" starts in about ${minutes} minutes. Your briefing is below.`,
+          subject: `⏰ In ${minutes} min: ${ev.title} — ${names}`,
+          intro:
+            `Reminder: your meeting "${ev.title}" starts in about ${minutes} minutes. ` +
+            (physicians.length > 1
+              ? `${physicians.length} physicians are on this meeting; their briefings are below.`
+              : 'Your briefing is below.'),
         });
         await tokenStore.markReminderSent(user.homeAccountId, ev.id);
-        console.log(`[reminders] sent to ${user.email} — "${ev.title}" in ${minutes} min`);
+        console.log(`[reminders] sent to ${user.email} — "${ev.title}" (${names}) in ${minutes} min`);
       }
     } catch (err) {
       console.warn(`[reminders] ${user.email || user.homeAccountId}:`, err.message);
@@ -128,4 +162,4 @@ function start() {
   );
 }
 
-module.exports = { start, tick, physicianForEvent };
+module.exports = { start, tick, physiciansForEvent, physicianForEvent };
