@@ -61,6 +61,24 @@ const config = {
     // Including /v1.0 here produces a doubled .../v1.0/v1.0/... path (400).
     baseUrl: 'https://graph.microsoft.com',
   },
+
+  // Dynamics 365 (Dataverse) — app-only read of Lead records. Fully optional and
+  // independent of the Outlook/Graph auth above: it uses its OWN app registration
+  // in the tenant that owns the Dynamics org (client-credentials flow). When any
+  // of these are unset, `configured` is false and the Leads feature no-ops.
+  dynamics: (() => {
+    const url = process.env.DYNAMICS_URL?.trim().replace(/\/$/, '') || null;
+    const tenantId = process.env.DYNAMICS_TENANT_ID?.trim() || null;
+    const clientId = process.env.DYNAMICS_CLIENT_ID?.trim() || null;
+    const clientSecret = process.env.DYNAMICS_CLIENT_SECRET?.trim() || null;
+    return {
+      url,
+      tenantId,
+      clientId,
+      clientSecret,
+      configured: Boolean(url && tenantId && clientId && clientSecret),
+    };
+  })(),
 };
 
 module.exports = config;

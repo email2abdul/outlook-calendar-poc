@@ -11,6 +11,7 @@ const entityMatcher = require('../entity-matcher');
 const crm = require('../crm-store');
 const emailIngest = require('../email-ingest');
 const emailIntelStore = require('../email-intel-store');
+const dynamics = require('../dynamics');
 
 const router = express.Router();
 
@@ -453,6 +454,23 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
   try {
     const rows = await emailIntelStore.listIntel(ownerId(req));
     res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/leads — Lead records read from Dynamics 365 (app-only). Phase 1
+ * returns just first/last name. `configured` tells the UI whether the Dynamics
+ * env vars are set, so it can show a helpful hint instead of an empty list.
+ */
+router.get('/leads', requireAuth, async (req, res, next) => {
+  try {
+    if (!dynamics.isConfigured()) {
+      return res.json({ configured: false, leads: [] });
+    }
+    const leads = await dynamics.getLeads();
+    res.json({ configured: true, leads });
   } catch (err) {
     next(err);
   }

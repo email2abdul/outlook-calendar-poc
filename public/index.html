@@ -23,6 +23,7 @@
             <span class="account__email" id="accountEmail"></span>
           </div>
           <button class="btn btn--ghost" id="emailSheetBtn" type="button" hidden>📋 Email Sheet</button>
+          <button class="btn btn--ghost" id="leadsBtn" type="button" hidden>👥 Leads</button>
           <button class="btn btn--ghost" id="logoutBtn">Sign out</button>
         </div>
       </header>
@@ -255,6 +256,32 @@
           </div>
         </header>
         <div class="intel-modal__body" id="intelBody"></div>
+      </div>
+    </div>
+
+    <!-- Dynamics 365 Leads (overlay) — reuses the intel-modal styling -->
+    <div class="intel-modal" id="leadsModal" hidden>
+      <div class="intel-modal__backdrop" data-leads-close></div>
+      <div class="intel-modal__panel" role="dialog" aria-label="Dynamics 365 Leads">
+        <header class="intel-modal__head">
+          <div>
+            <h2 class="intel-modal__title">👥 Dynamics 365 Leads</h2>
+            <p class="intel-modal__sub muted" id="leadsSummary"></p>
+          </div>
+          <div class="intel-modal__actions">
+            <button class="btn btn--ghost" id="leadsCloseBtn" type="button" data-leads-close aria-label="Close">✕</button>
+          </div>
+        </header>
+        <div class="leads-toolbar" id="leadsToolbar" hidden>
+          <input type="search" class="input leads-search" id="leadsSearch"
+                 placeholder="Search name, email, status, owner…" autocomplete="off" />
+        </div>
+        <div class="intel-modal__body" id="leadsBody"></div>
+        <footer class="leads-pager" id="leadsPager" hidden>
+          <button class="btn btn--ghost" id="leadsPrev" type="button">← Prev</button>
+          <span class="leads-pager__info muted" id="leadsPageInfo"></span>
+          <button class="btn btn--ghost" id="leadsNext" type="button">Next →</button>
+        </footer>
       </div>
     </div>
 

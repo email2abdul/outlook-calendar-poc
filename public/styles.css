@@ -1429,3 +1429,36 @@ body {
     letter-spacing: 0.04em;
   }
 }
+
+/* Dynamics Leads: search toolbar + pagination footer (non-scrolling, so the
+   list scrolls between them). Reuses .intel-modal / .intel-table for the list. */
+.leads-toolbar {
+  padding: 12px 20px 4px;
+  flex-shrink: 0;
+}
+
+.leads-search {
+  width: 100%;
+}
+
+.leads-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.leads-pager__info {
+  font-size: 13px;
+  min-width: 0;
+  text-align: center;
+}
+
+.leads-pager .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}

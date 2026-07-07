@@ -900,6 +900,7 @@ async function init() {
   document.getElementById('accountEmail').textContent = me.user?.email || '';
   account.hidden = false;
   document.getElementById('emailSheetBtn').hidden = false;
+  document.getElementById('leadsBtn').hidden = false;
 
   // Reveal the date filter, defaulted to today.
   document.getElementById('dateFilter').hidden = false;
@@ -1085,6 +1086,156 @@ document.getElementById('intelCsvBtn').addEventListener('click', downloadIntelCs
 document.querySelectorAll('[data-intel-close]').forEach((el) => el.addEventListener('click', closeEmailSheet));
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && !document.getElementById('intelModal').hidden) closeEmailSheet();
+});
+
+// ── Dynamics 365 Leads ───────────────────────────────────────────────────────
+// Reads /api/leads (Lead records from Dynamics 365) and shows them in an overlay
+// with a name search + client-side pagination (20 per page). Phase 1: first +
+// last name only. Built with createElement + textContent, so values are never
+// injected as HTML.
+const LEADS_PAGE_SIZE = 20;
+let leadsAll = [];       // full set from the API
+let leadsFiltered = [];  // after the search filter
+let leadsPage = 1;
+
+// Columns shown in the leads table. `get` returns the display string for a lead;
+// the search box matches across every column's text.
+const LEADS_COLUMNS = [
+  { label: 'Name', get: (l) => `${l.firstName || ''} ${l.lastName || ''}`.trim() },
+  { label: 'Email', get: (l) => l.email || '' },
+  { label: 'Status', get: (l) => l.status || '' },
+  { label: 'Owner', get: (l) => l.owner || '' },
+  { label: 'Created', get: (l) => intelFmt(l.createdOn) },
+];
+
+function renderLeadsTable(leads, emptyMsg) {
+  const body = document.getElementById('leadsBody');
+  body.innerHTML = '';
+  if (!leads.length) {
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = emptyMsg || 'No leads found.';
+    body.appendChild(p);
+    return;
+  }
+
+  const table = document.createElement('table');
+  table.className = 'intel-table';
+
+  const thead = document.createElement('thead');
+  const htr = document.createElement('tr');
+  for (const col of LEADS_COLUMNS) {
+    const th = document.createElement('th');
+    th.textContent = col.label;
+    htr.appendChild(th);
+  }
+  thead.appendChild(htr);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  for (const lead of leads) {
+    const tr = document.createElement('tr');
+    for (const col of LEADS_COLUMNS) {
+      const td = document.createElement('td');
+      td.setAttribute('data-label', col.label);
+      td.textContent = col.get(lead);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  body.appendChild(table);
+}
+
+/** Render the current page of the filtered leads + update the pager. */
+function renderLeadsPage() {
+  const searching = document.getElementById('leadsSearch').value.trim() !== '';
+  const total = leadsFiltered.length;
+  const pages = Math.max(1, Math.ceil(total / LEADS_PAGE_SIZE));
+  if (leadsPage > pages) leadsPage = pages;
+  if (leadsPage < 1) leadsPage = 1;
+
+  const start = (leadsPage - 1) * LEADS_PAGE_SIZE;
+  const slice = leadsFiltered.slice(start, start + LEADS_PAGE_SIZE);
+  renderLeadsTable(slice, searching ? 'No leads match your search.' : 'No leads found.');
+
+  const pager = document.getElementById('leadsPager');
+  if (total > LEADS_PAGE_SIZE) {
+    pager.hidden = false;
+    document.getElementById('leadsPageInfo').textContent =
+      `Page ${leadsPage} of ${pages} · ${total} lead${total === 1 ? '' : 's'}`;
+    document.getElementById('leadsPrev').disabled = leadsPage <= 1;
+    document.getElementById('leadsNext').disabled = leadsPage >= pages;
+  } else {
+    pager.hidden = true;
+  }
+}
+
+/** Apply the search box to the full set and reset to page 1. */
+function applyLeadsSearch() {
+  const q = document.getElementById('leadsSearch').value.trim().toLowerCase();
+  leadsFiltered = q
+    ? leadsAll.filter((l) =>
+        LEADS_COLUMNS.some((c) => c.get(l).toLowerCase().includes(q))
+      )
+    : leadsAll.slice();
+  leadsPage = 1;
+  document.getElementById('leadsSummary').textContent =
+    `${leadsFiltered.length} lead${leadsFiltered.length === 1 ? '' : 's'}${q ? ' (filtered)' : ''}`;
+  renderLeadsPage();
+}
+
+async function openLeads() {
+  const modal = document.getElementById('leadsModal');
+  const body = document.getElementById('leadsBody');
+  const toolbar = document.getElementById('leadsToolbar');
+  const pager = document.getElementById('leadsPager');
+  modal.hidden = false;
+  toolbar.hidden = true;
+  pager.hidden = true;
+  document.getElementById('leadsSearch').value = '';
+  document.getElementById('leadsSummary').textContent = 'Loading…';
+  body.innerHTML = '';
+  try {
+    const res = await fetch('/api/leads', { headers: { Accept: 'application/json' } });
+    const data = await res.json();
+    if (!data.configured) {
+      document.getElementById('leadsSummary').textContent = '';
+      const p = document.createElement('p');
+      p.className = 'muted';
+      p.textContent = 'Dynamics 365 is not configured — set the DYNAMICS_* env vars.';
+      body.appendChild(p);
+      return;
+    }
+    leadsAll = data.leads || [];
+    toolbar.hidden = leadsAll.length === 0;
+    applyLeadsSearch();
+  } catch (err) {
+    document.getElementById('leadsSummary').textContent = '';
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'Could not load leads. Please try again.';
+    body.appendChild(p);
+  }
+}
+
+function closeLeads() {
+  document.getElementById('leadsModal').hidden = true;
+}
+
+document.getElementById('leadsBtn').addEventListener('click', openLeads);
+document.getElementById('leadsSearch').addEventListener('input', applyLeadsSearch);
+document.getElementById('leadsPrev').addEventListener('click', () => {
+  leadsPage -= 1;
+  renderLeadsPage();
+});
+document.getElementById('leadsNext').addEventListener('click', () => {
+  leadsPage += 1;
+  renderLeadsPage();
+});
+document.querySelectorAll('[data-leads-close]').forEach((el) => el.addEventListener('click', closeLeads));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('leadsModal').hidden) closeLeads();
 });
 
 init();
