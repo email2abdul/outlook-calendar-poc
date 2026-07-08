@@ -77,6 +77,13 @@ const config = {
       clientId,
       clientSecret,
       configured: Boolean(url && tenantId && clientId && clientSecret),
+      // Part 2 (embed the lead brief INSIDE Dynamics via an iframe/side pane):
+      // a shared token gates the public /embed/lead-brief endpoint (no Outlook
+      // session there), and frame-ancestors lets Dynamics iframe our page.
+      embedToken: process.env.DYNAMICS_EMBED_TOKEN?.trim() || null,
+      embedFrameAncestors:
+        process.env.DYNAMICS_EMBED_FRAME_ANCESTORS?.trim() ||
+        'https://*.dynamics.com https://*.crm.dynamics.com',
     };
   })(),
 };

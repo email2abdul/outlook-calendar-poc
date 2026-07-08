@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BIS Lead Brief</title>
+  <style>
+    html, body { margin: 0; height: 100%; font-family: Segoe UI, -apple-system, Roboto, sans-serif; }
+    #status { padding: 16px; color: #6b7280; font-size: 14px; }
+    iframe { border: 0; width: 100%; height: 100%; display: none; }
+  </style>
+</head>
+<body>
+  <!--
+    Dynamics 365 web resource — shows the BIS lead brief from our app inside a
+    side pane (opened by your lead-click JS).
+
+    SETUP (replace these two placeholders before uploading):
+      __APP_BASE_URL__  → your app's public HTTPS base URL, e.g. https://leads.revworx.io
+                          (the AWS server; NO trailing slash)
+      __EMBED_TOKEN__   → the SAME value as DYNAMICS_EMBED_TOKEN on the server
+
+    Upload: Solution → New → Web resource (Type = Web page (HTML)) → upload this
+    file → Publish. Your click-JS opens the side pane pointing at this web
+    resource, passing the clicked lead's fields as the `data` parameter (see
+    dynamics/open-side-pane.js). This page reads them and loads the brief.
+
+    Two ways it gets the lead (tries in order):
+      1. `data` query param from the side pane (grid/list click) — PREFERRED
+      2. the Lead form's fields via Xrm.Page (fallback, if put on a form)
+  -->
+  <div id="status">Loading BIS brief…</div>
+  <iframe id="brief" title="BIS Lead Brief"></iframe>
+
+  <script>
+    var APP_BASE_URL = 'https://agentpoc.insightmonk.com';
+    var EMBED_TOKEN = '__EMBED_TOKEN__'; // paste your DYNAMICS_EMBED_TOKEN here
+
+    // 1) Fields passed by the side-pane JS as ?data=<url-encoded querystring>.
+    function fieldsFromData() {
+      try {
+        var raw = new URLSearchParams(window.location.search).get('data');
+        if (!raw) return null;
+        var p = new URLSearchParams(raw);
+        return {
+          email: p.get('email') || '',
+          firstName: p.get('firstName') || '',
+          lastName: p.get('lastName') || '',
+          company: p.get('company') || '',
+        };
+      } catch (e) { return null; }
+    }
+
+    // 2) Fallback: read the open Lead form's fields.
+    function fieldsFromForm() {
+      try {
+        var pg = window.parent && window.parent.Xrm && window.parent.Xrm.Page;
+        if (!pg || !pg.getAttribute) return null;
+        var v = function (n) {
+          var a = pg.getAttribute(n);
+          var x = a && a.getValue ? a.getValue() : '';
+          return x == null ? '' : String(x);
+        };
+        return {
+          email: v('emailaddress1'),
+          firstName: v('firstname'),
+          lastName: v('lastname'),
+          company: v('companyname'),
+        };
+      } catch (e) { return null; }
+    }
+
+    function build(f) {
+      var qs =
+        'token=' + encodeURIComponent(EMBED_TOKEN) +
+        '&email=' + encodeURIComponent(f.email || '') +
+        '&firstName=' + encodeURIComponent(f.firstName || '') +
+        '&lastName=' + encodeURIComponent(f.lastName || '') +
+        '&company=' + encodeURIComponent(f.company || '');
+      var frame = document.getElementById('brief');
+      frame.src = APP_BASE_URL + '/embed/lead-brief?' + qs;
+      frame.style.display = 'block';
+      document.getElementById('status').style.display = 'none';
+    }
+
+    var tries = 0;
+    (function wait() {
+      var f = fieldsFromData() || fieldsFromForm();
+      if (f) return build(f);
+      if (tries++ < 20) return setTimeout(wait, 250);
+      document.getElementById('status').textContent =
+        'Could not read the lead. Open the side pane from a lead.';
+    })();
+  </script>
+</body>
+</html>
