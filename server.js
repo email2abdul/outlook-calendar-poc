@@ -9,6 +9,7 @@ const redisClient = require('./src/redis');
 const physicians = require('./src/physicians');
 const authRoutes = require('./src/routes/auth.routes');
 const apiRoutes = require('./src/routes/api.routes');
+const embedRoutes = require('./src/routes/embed.routes');
 
 const app = express();
 
@@ -68,6 +69,8 @@ app.use(
 // ── Routes
 app.use('/auth', authRoutes);
 app.use('/api', apiRoutes);
+// Public (token-gated, no session) — embedded inside Dynamics as an iframe.
+app.use('/embed', embedRoutes);
 
 // ── Static frontend
 app.use(express.static(path.join(__dirname, 'public')));

@@ -1429,3 +1429,136 @@ body {
     letter-spacing: 0.04em;
   }
 }
+
+/* Dynamics Leads: search toolbar + pagination footer (non-scrolling, so the
+   list scrolls between them). Reuses .intel-modal / .intel-table for the list. */
+.leads-toolbar {
+  padding: 12px 20px 4px;
+  flex-shrink: 0;
+}
+
+.leads-search {
+  width: 100%;
+}
+
+.leads-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.leads-pager__info {
+  font-size: 13px;
+  min-width: 0;
+  text-align: center;
+}
+
+.leads-pager .btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+  pointer-events: none;
+}
+
+/* Clicking a lead row opens the intelligence sidebar. */
+.intel-table tbody tr.leads-row {
+  cursor: pointer;
+}
+
+/* Lead intelligence sidebar — slides in from the right, over the leads modal. */
+.lead-sidebar {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+}
+
+.lead-sidebar__backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.5);
+}
+
+.lead-sidebar__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  width: 460px;
+  max-width: 100%;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.lead-sidebar__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.lead-sidebar__title {
+  font-size: 17px;
+  margin: 0;
+}
+
+.lead-sidebar__badge {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #dbeafe;
+  color: #1e40af;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.lead-sidebar__body {
+  padding: 16px 20px 24px;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* The matched physician's facility + people list (facility-only match). */
+.lead-sidebar__facility {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+
+.lead-sidebar__people {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.lead-sidebar__people li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.lead-sidebar__people li:last-child {
+  border-bottom: none;
+}
+
+.lead-sidebar__people .name {
+  font-weight: 600;
+}
+
+.lead-sidebar__people .spec {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+@media (max-width: 600px) {
+  .lead-sidebar__panel {
+    width: 100%;
+  }
+}

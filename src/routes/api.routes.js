@@ -11,6 +11,8 @@ const entityMatcher = require('../entity-matcher');
 const crm = require('../crm-store');
 const emailIngest = require('../email-ingest');
 const emailIntelStore = require('../email-intel-store');
+const dynamics = require('../dynamics');
+const leadMatch = require('../lead-match');
 
 const router = express.Router();
 
@@ -453,6 +455,74 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
   try {
     const rows = await emailIntelStore.listIntel(ownerId(req));
     res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/leads — Lead records read from Dynamics 365 (app-only). Phase 1
+ * returns just first/last name. `configured` tells the UI whether the Dynamics
+ * env vars are set, so it can show a helpful hint instead of an empty list.
+ */
+router.get('/leads', requireAuth, async (req, res, next) => {
+  try {
+    if (!dynamics.isConfigured()) {
+      return res.json({ configured: false, leads: [] });
+    }
+    const leads = await dynamics.getLeads();
+    res.json({ configured: true, leads });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/leads/match?email=&firstName=&lastName=&company=
+ * Enrich a Dynamics lead with BIS (Supabase) data. Matches the lead to a
+ * physician in priority order (email → name → facility) and, for a physician
+ * hit, returns the SAME pre-meeting brief HTML the email/in-app brief use
+ * (graph.physicianBriefHtml). For a facility-only hit, returns the facility +
+ * candidate physicians there. `matchedBy:null` when nothing matches.
+ */
+router.get('/leads/match', requireAuth, async (req, res, next) => {
+  try {
+    const { email, firstName, lastName, company } = req.query;
+    const result = await leadMatch.matchLeadToBis({ email, firstName, lastName, company });
+
+    if (result.matchedBy === 'email' || result.matchedBy === 'name') {
+      // Re-resolve the full profile by NPI so the brief has every field.
+      const physician =
+        physicians.getByNpi(result.physician.npi) || result.physician;
+      const [analyticsData, contact] = await Promise.all([
+        analytics.getLabelledAnalytics(physician.npi),
+        contactsStore.getContact(physician.npi),
+      ]);
+      return res.json({
+        matchedBy: result.matchedBy,
+        physician: {
+          npi: physician.npi,
+          name: physician.name,
+          specialty: physician.specialty,
+          facility: physician.facility || null,
+        },
+        html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+      });
+    }
+
+    if (result.matchedBy === 'facility') {
+      return res.json({
+        matchedBy: 'facility',
+        facility: result.facility || null,
+        candidates: (result.candidates || []).map((c) => ({
+          npi: c.npi,
+          name: c.name,
+          specialty: c.specialty || null,
+        })),
+      });
+    }
+
+    return res.json({ matchedBy: null });
   } catch (err) {
     next(err);
   }
