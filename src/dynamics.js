@@ -69,8 +69,11 @@ async function getToken() {
 // Requesting these needs the `odata.include-annotations` Prefer header below.
 const FMT = '@OData.Community.Display.V1.FormattedValue';
 
-// Fields we read from each Lead. Keep in sync with the UI columns.
-const LEAD_SELECT = 'firstname,lastname,emailaddress1,createdon,statuscode,_ownerid_value';
+// Fields we read from each Lead. Keep in sync with the UI columns. `companyname`
+// + `address1_city` aren't shown as columns — they feed the BIS match cascade
+// (email → name → facility) when a lead is opened in the sidebar.
+const LEAD_SELECT =
+  'firstname,lastname,emailaddress1,createdon,statuscode,_ownerid_value,companyname,address1_city';
 
 /**
  * Fetch ALL Lead records with their display fields. Follows the OData
@@ -115,6 +118,8 @@ async function getLeads(max = 5000) {
         createdOn: l.createdon || '', // raw ISO — the UI formats it
         status: l['statuscode' + FMT] || '',
         owner: l['_ownerid_value' + FMT] || '',
+        company: l.companyname || '', // for the facility match
+        city: l.address1_city || '',
       });
     }
     // Dynamics returns the next page's URL here when there are more rows.

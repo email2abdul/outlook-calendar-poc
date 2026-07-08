@@ -1135,6 +1135,9 @@ function renderLeadsTable(leads, emptyMsg) {
   const tbody = document.createElement('tbody');
   for (const lead of leads) {
     const tr = document.createElement('tr');
+    tr.className = 'leads-row';
+    tr.title = 'Open BIS intelligence for this lead';
+    tr.addEventListener('click', () => openLeadSidebar(lead));
     for (const col of LEADS_COLUMNS) {
       const td = document.createElement('td');
       td.setAttribute('data-label', col.label);
@@ -1234,8 +1237,118 @@ document.getElementById('leadsNext').addEventListener('click', () => {
   renderLeadsPage();
 });
 document.querySelectorAll('[data-leads-close]').forEach((el) => el.addEventListener('click', closeLeads));
+
+// ── Lead intelligence sidebar ────────────────────────────────────────────────
+// Click a lead → match it to BIS (Supabase) data (email → name → facility) and
+// show the physician's pre-meeting brief (or facility + people, or no-match).
+const LEAD_MATCH_LABELS = {
+  email: 'Matched by email',
+  name: 'Matched by name',
+  facility: 'Matched by facility',
+};
+
+function renderLeadSidebar(data, lead) {
+  const body = document.getElementById('leadSbBody');
+  const badge = document.getElementById('leadSbBadge');
+  body.innerHTML = '';
+
+  if (data.matchedBy && LEAD_MATCH_LABELS[data.matchedBy]) {
+    badge.textContent = LEAD_MATCH_LABELS[data.matchedBy];
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+
+  // Physician hit → the full pre-meeting brief (server HTML, same as email).
+  if (data.matchedBy === 'email' || data.matchedBy === 'name') {
+    body.classList.add('physician-analytics');
+    body.innerHTML = data.html || '<p class="muted">No brief data.</p>';
+    return;
+  }
+
+  body.classList.remove('physician-analytics');
+
+  // Facility hit → facility name + physicians practising there.
+  if (data.matchedBy === 'facility') {
+    const fac = document.createElement('p');
+    fac.className = 'lead-sidebar__facility';
+    fac.textContent = data.facility?.name
+      ? `Facility: ${data.facility.name}${data.facility.city ? ' — ' + data.facility.city : ''}`
+      : `Facility match for "${lead.company || ''}"`;
+    body.appendChild(fac);
+
+    const list = document.createElement('ul');
+    list.className = 'lead-sidebar__people';
+    for (const c of data.candidates || []) {
+      const li = document.createElement('li');
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = c.name || '';
+      const spec = document.createElement('div');
+      spec.className = 'spec';
+      spec.textContent = c.specialty || '';
+      li.appendChild(name);
+      if (c.specialty) li.appendChild(spec);
+      list.appendChild(li);
+    }
+    if ((data.candidates || []).length) body.appendChild(list);
+    return;
+  }
+
+  // No match.
+  const p = document.createElement('p');
+  p.className = 'muted';
+  p.textContent = 'No matching physician or facility found in the BIS database.';
+  body.appendChild(p);
+}
+
+async function openLeadSidebar(lead) {
+  const sb = document.getElementById('leadSidebar');
+  const body = document.getElementById('leadSbBody');
+  document.getElementById('leadSbName').textContent =
+    `${lead.firstName || ''} ${lead.lastName || ''}`.trim() || '(no name)';
+  document.getElementById('leadSbBadge').hidden = true;
+  sb.hidden = false;
+  body.classList.remove('physician-analytics');
+  body.innerHTML = '<p class="muted">Loading BIS data…</p>';
+  try {
+    const params = new URLSearchParams({
+      email: lead.email || '',
+      firstName: lead.firstName || '',
+      lastName: lead.lastName || '',
+      company: lead.company || '',
+    });
+    const res = await fetch('/api/leads/match?' + params.toString(), {
+      headers: { Accept: 'application/json' },
+    });
+    const data = await res.json();
+    renderLeadSidebar(data, lead);
+  } catch (err) {
+    body.classList.remove('physician-analytics');
+    body.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'muted';
+    p.textContent = 'Could not load BIS data. Please try again.';
+    body.appendChild(p);
+  }
+}
+
+function closeLeadSidebar() {
+  document.getElementById('leadSidebar').hidden = true;
+}
+
+document.querySelectorAll('[data-lead-sb-close]').forEach((el) =>
+  el.addEventListener('click', closeLeadSidebar)
+);
+
+// Escape: close the sidebar first (if open), otherwise the leads modal.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !document.getElementById('leadsModal').hidden) closeLeads();
+  if (e.key !== 'Escape') return;
+  if (!document.getElementById('leadSidebar').hidden) {
+    closeLeadSidebar();
+  } else if (!document.getElementById('leadsModal').hidden) {
+    closeLeads();
+  }
 });
 
 init();

@@ -285,6 +285,21 @@
       </div>
     </div>
 
+    <!-- Lead intelligence sidebar — BIS (Supabase) data matched to a lead -->
+    <aside class="lead-sidebar" id="leadSidebar" hidden>
+      <div class="lead-sidebar__backdrop" data-lead-sb-close></div>
+      <div class="lead-sidebar__panel" role="dialog" aria-label="Lead intelligence">
+        <header class="lead-sidebar__head">
+          <div class="lead-sidebar__heading">
+            <h2 class="lead-sidebar__title" id="leadSbName"></h2>
+            <span class="lead-sidebar__badge" id="leadSbBadge" hidden></span>
+          </div>
+          <button class="btn btn--ghost" type="button" data-lead-sb-close aria-label="Close">✕</button>
+        </header>
+        <div class="lead-sidebar__body" id="leadSbBody"></div>
+      </div>
+    </aside>
+
     <script src="/app.js"></script>
   </body>
 </html>
