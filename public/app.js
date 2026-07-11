@@ -47,29 +47,15 @@ function renderHeaderDate(dateStr, timeZone) {
   if (timeZone) label.textContent += ` · ${timeZone}`;
 }
 
-// ── Inline physician panel ───────────────────────────────────────────────────
-// A single panel instance, moved beneath whichever event the user is acting
-// on: matched attendee chip → details; "Schedule call" → search first.
+// ── Physician intelligence blocks ─────────────────────────────────────────────
+// Clicking a meeting expands its detail region with one self-contained block per
+// matched physician — each carrying the pre-meeting brief, that physician's
+// inbox email intelligence, the meeting-note history, and the actions (save
+// note / email the briefing / schedule a call). Blocks share NO global state, so
+// a meeting with two physicians renders two independently-working blocks.
 
-const inlinePanel = document
-  .getElementById('physician-inline-template')
-  .content.firstElementChild.cloneNode(true);
-
-const $panel = (sel) => inlinePanel.querySelector(sel);
-
-let selectedPhysician = null;
-let searchDebounce = null;
-// The event the panel was opened from — meeting notes get linked to it.
-let currentEventCtx = null;
-// 'view'    → matched attendee: meeting already exists, show details + notes only.
-// 'schedule'→ from "Schedule call": include the scheduling form.
-let panelMode = 'view';
-
-function closeInlinePanel() {
-  selectedPhysician = null;
-  currentEventCtx = null;
-  inlinePanel.remove();
-}
+const physBlockTpl = document.getElementById('physician-block-template');
+const physSearchTpl = document.getElementById('physician-search-template');
 
 /** "2026-06-05" style label for a note (meeting date, else when written). */
 function noteDateLabel(note) {
@@ -89,298 +75,115 @@ function daysAgoLabel(dateStr) {
   return months === 1 ? '1 month ago' : `${months} months ago`;
 }
 
-/** Attach the panel under an event card (it disappears from anywhere else). */
-function attachInlinePanel(eventLi) {
-  eventLi.querySelector('.event__body').appendChild(inlinePanel);
-  $panel('.schedule-status').hidden = true;
-  const dateInput = $panel('.schedule-form__date');
-  if (!dateInput.value) dateInput.value = todayYmd();
-}
-
-/** Matched attendee → details + meeting notes only (meeting already exists). */
-function openPhysicianDetails(eventLi, physician, ev) {
-  attachInlinePanel(eventLi);
-  currentEventCtx = ev || null;
-  panelMode = 'view';
-  $panel('.physician-inline__title').textContent = 'Physician details';
-  $panel('.physician-inline__search-wrap').hidden = true;
-  selectPhysician(physician);
-}
-
-/**
- * Title-match suggestion → full details PLUS the scheduling form, so the
- * user can book a meeting with whichever suggested physician they pick.
- */
-function openPhysicianSchedule(eventLi, physician, ev) {
-  attachInlinePanel(eventLi);
-  currentEventCtx = ev || null;
-  panelMode = 'schedule';
-  $panel('.physician-inline__title').textContent = 'Schedule with this physician';
-  $panel('.physician-inline__search-wrap').hidden = true;
-  selectPhysician(physician);
-}
-
-/** Unmatched attendee → empty inline search under the event. */
-function openPhysicianSearch(eventLi, ev) {
-  attachInlinePanel(eventLi);
-  currentEventCtx = ev || null;
-  panelMode = 'schedule';
-  $panel('.physician-inline__title').textContent = 'Physician directory';
-  selectedPhysician = null;
-  $panel('.physician-profile').hidden = true;
-  $panel('.physician-inline__search-wrap').hidden = false;
-
-  // Start blank — prefilling (e.g. with the organizer's own email) just
-  // surfaces irrelevant results; let the user type who they're looking for.
-  const input = $panel('.physician-inline__search');
-  input.value = '';
-  renderPhysicianResults([]);
-  input.focus();
-}
-
-function renderPhysicianResults(results) {
-  const list = $panel('.physician-results');
-  list.innerHTML = '';
-
-  for (const p of results) {
-    const li = document.createElement('li');
-    li.className = 'physician-result';
-
-    const name = document.createElement('strong');
-    name.textContent = p.name || `NPI ${p.npi}`;
-
-    const meta = document.createElement('span');
-    meta.className = 'muted';
-    // Facility distinguishes same-name physicians — "which one am I meeting?"
-    // matchHint explains fallback results (e.g. "same city as <facility>").
-    meta.textContent = [p.specialty, p.facility?.name, p.email || 'no email', p.matchHint && `📍 ${p.matchHint}`]
-      .filter(Boolean)
-      .join(' · ');
-
-    li.append(name, meta);
-    if (!p.email) li.classList.add('physician-result--noemail');
-    li.addEventListener('click', () => selectPhysician(p));
-    list.appendChild(li);
-  }
-}
-
-function renderProfileDetails(p) {
-  const dl = $panel('.physician-profile__details');
-  dl.innerHTML = '';
-
-  const facilityAddress = p.facility
-    ? [p.facility.address, p.facility.city, p.facility.state, p.facility.zip].filter(Boolean).join(', ')
-    : null;
-
-  const rows = [
-    ['NPI', p.npi],
-    ['Email', p.email || '— not on file —'],
-    ['Phone', p.phone],
-    ['ESD Procedure', p.esdProcedure ? 'Yes' : 'No'],
-    ['Facility', p.facility?.name],
-    ['Facility Type', p.facility?.type],
-    ['Address', facilityAddress],
-    ['LinkedIn', p.linkedinUrl],
-  ];
-
-  for (const [label, value] of rows) {
-    if (!value) continue;
-    const dt = document.createElement('dt');
-    dt.textContent = label;
-    const dd = document.createElement('dd');
-    if (label === 'LinkedIn') {
-      const a = document.createElement('a');
-      a.href = value;
-      a.target = '_blank';
-      a.rel = 'noopener';
-      a.textContent = value;
-      dd.appendChild(a);
-    } else {
-      dd.textContent = value;
-    }
-    dl.append(dt, dd);
-  }
-}
-
-function selectPhysician(p) {
-  selectedPhysician = p;
-  $panel('.physician-results').innerHTML = '';
-
-  $panel('.physician-profile__name').textContent = p.name || `NPI ${p.npi}`;
-  $panel('.physician-profile__specialty').textContent = p.specialty || '';
-
-  const photo = $panel('.physician-profile__photo');
-  photo.hidden = !p.photoUrl;
-  if (p.photoUrl) photo.src = p.photoUrl;
-
-  // Details + all brief sections come from the shared brief HTML (same as the
-  // email), injected below — so the in-app brief and the emailed brief match.
-  $panel('.physician-profile__details').hidden = true;
-
-  // The scheduling form only makes sense in the "Schedule call" flow — for a
-  // matched attendee the meeting already exists, so show data + notes only.
-  const form = $panel('.schedule-form');
-  form.hidden = panelMode !== 'schedule';
-
-  if (panelMode === 'schedule') {
-    // Sensible defaults for the form.
-    $panel('.schedule-form__subject').value = `Call with ${p.name || 'physician'}`;
-    const status = $panel('.schedule-status');
-    status.hidden = true;
-
-    const canInvite = Boolean(p.email);
-    $panel('.schedule-form__submit').disabled = !canInvite;
-    if (!canInvite) {
-      status.textContent = 'This physician has no email on file — invite cannot be sent.';
-      status.className = 'schedule-status schedule-status--error';
-      status.hidden = false;
+/** The exact-email-matched physicians on an event, deduped by NPI. */
+function matchedPhysiciansOf(ev) {
+  const out = [];
+  const seen = new Set();
+  for (const a of ev.attendees || []) {
+    if (a.physician && !seen.has(a.physician.npi)) {
+      seen.add(a.physician.npi);
+      out.push(a.physician);
     }
   }
-
-  // Reset note UI for this physician, then load their history.
-  $panel('.mom-form__text').value = '';
-  $panel('.mom-form__status').hidden = true;
-  $panel('.briefing__status').hidden = true;
-  renderNotes([]);
-  loadNotes(p.npi);
-
-  // The pre-meeting brief (same body as the email) loads asynchronously.
-  $panel('.physician-analytics').hidden = true;
-  loadBrief(p.npi);
-
-  $panel('.physician-profile').hidden = false;
+  return out;
 }
 
-// ── Procedure analytics ─────────────────────────────────────────────────────
-
-const fmtNum = (n) => Number(n || 0).toLocaleString();
-
-function renderAnalytics(a) {
-  // Summary chips.
-  const summary = $panel('.physician-analytics__summary');
-  summary.innerHTML = '';
-  const chips = [
-    [`${fmtNum(a.summary.totalVolume)}`, 'total procedures'],
-    [`${a.summary.firstYear}–${a.summary.lastYear}`, 'active years'],
-    [`${a.summary.distinctProcedures}`, 'CPT codes'],
-    [`${Math.round(a.summary.snareShare * 100)}%`, 'snare used'],
-  ];
-  for (const [value, label] of chips) {
-    const chip = document.createElement('div');
-    chip.className = 'stat-chip';
-    const v = document.createElement('strong');
-    v.textContent = value;
-    const l = document.createElement('span');
-    l.className = 'muted';
-    l.textContent = label;
-    chip.append(v, l);
-    summary.appendChild(chip);
+// Email-intel rows are fetched once and shared across every block on the page.
+let intelRowsCache = null;
+async function getIntelRows() {
+  if (intelRowsCache) return intelRowsCache;
+  try {
+    const res = await fetch('/api/email-intel', { headers: { Accept: 'application/json' } });
+    if (!res.ok) return (intelRowsCache = []);
+    const data = await res.json();
+    return (intelRowsCache = data.rows || []);
+  } catch {
+    return (intelRowsCache = []);
   }
-
-  // Volume by year — horizontal bars scaled to the busiest year.
-  const years = $panel('.physician-analytics__years');
-  years.innerHTML = '';
-  const maxYear = Math.max(...a.byYear.map((y) => y.volume), 1);
-  for (const y of a.byYear) {
-    const li = document.createElement('li');
-    li.className = 'bar-row';
-    const label = document.createElement('span');
-    label.className = 'bar-row__label';
-    label.textContent = y.year;
-    const track = document.createElement('span');
-    track.className = 'bar-row__track';
-    const fill = document.createElement('span');
-    fill.className = 'bar-row__fill';
-    fill.style.width = `${Math.max(4, Math.round((y.volume / maxYear) * 100))}%`;
-    track.appendChild(fill);
-    const val = document.createElement('span');
-    val.className = 'bar-row__value muted';
-    val.textContent = fmtNum(y.volume);
-    li.append(label, track, val);
-    years.appendChild(li);
-  }
-
-  // Payer mix.
-  const payers = $panel('.physician-analytics__payers');
-  payers.innerHTML = '';
-  const totalPayer = a.byPayer.reduce((s, p) => s + p.volume, 0) || 1;
-  for (const p of a.byPayer) {
-    const li = document.createElement('li');
-    li.className = 'payer-row';
-    const name = document.createElement('span');
-    name.textContent = p.payer || 'Unknown';
-    const share = document.createElement('span');
-    share.className = 'muted';
-    share.textContent = `${fmtNum(p.volume)} (${Math.round((p.volume / totalPayer) * 100)}%)`;
-    li.append(name, share);
-    payers.appendChild(li);
-  }
-
-  // Top procedures table.
-  const tbody = $panel('.physician-analytics__procs tbody');
-  tbody.innerHTML = '';
-  const money = (v) => (v == null ? '—' : `$${fmtNum(v)}`);
-  for (const proc of a.topProcedures) {
-    const tr = document.createElement('tr');
-    for (const text of [
-      proc.cptCode,
-      proc.description || '—',
-      fmtNum(proc.volume),
-      money(proc.medicarePhysicianRate),
-      money(proc.commercialRate),
-    ]) {
-      const td = document.createElement('td');
-      td.textContent = text;
-      tr.appendChild(td);
-    }
-    tbody.appendChild(tr);
-  }
-
-  // Facilities they operate at.
-  const facilities = $panel('.physician-analytics__facilities');
-  facilities.innerHTML = '';
-  for (const f of a.facilities) {
-    const li = document.createElement('li');
-    li.className = 'payer-row';
-    const name = document.createElement('span');
-    name.textContent = [f.name, [f.city, f.state].filter(Boolean).join(', ')].filter(Boolean).join(' — ');
-    const vol = document.createElement('span');
-    vol.className = 'muted';
-    vol.textContent = `${fmtNum(f.volume)} procedures`;
-    li.append(name, vol);
-    facilities.appendChild(li);
-  }
-
-  $panel('.physician-analytics').hidden = false;
 }
 
-// Load the pre-meeting brief (details + all sections) — the SAME HTML the email
-// uses, so the in-app brief matches the emailed one. Sections with no data for
-// this physician come back empty and simply don't render.
-async function loadBrief(npi) {
-  const box = $panel('.physician-analytics');
+// ── Brief (same server HTML as the email) ─────────────────────────────────────
+
+async function loadBriefInto(box, npi) {
   try {
     const res = await fetch(`/api/physicians/${encodeURIComponent(npi)}/brief`, {
       headers: { Accept: 'application/json' },
     });
-    if (!res.ok) return;
+    if (!res.ok) {
+      box.innerHTML = '<p class="muted">Brief unavailable.</p>';
+      return;
+    }
     const data = await res.json();
-    if (selectedPhysician?.npi !== npi) return; // stale after switching physicians
     box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
-    box.hidden = false;
   } catch {
-    /* brief is best-effort */
+    box.innerHTML = '<p class="muted">Brief unavailable.</p>';
   }
 }
 
-// ── Meeting notes────────────────────────────────────────────────────────────
+// ── Email intelligence for one physician ──────────────────────────────────────
 
-function renderNotes(notes) {
-  const list = $panel('.physician-history__list');
+function renderIntelForBlock(block, rows) {
+  const wrap = block.querySelector('.physician-block__intel');
+  const list = block.querySelector('.physician-block__intel-list');
+  list.innerHTML = '';
+  if (!rows.length) {
+    wrap.hidden = true;
+    return;
+  }
+  wrap.hidden = false;
+  wrap.querySelector('h3').textContent = `Email intelligence (${rows.length})`;
+
+  for (const r of rows) {
+    const li = document.createElement('li');
+    li.className = 'intel-mini';
+
+    const subj = document.createElement('div');
+    subj.className = 'intel-mini__subject';
+    subj.textContent = r.emailSubject || '(no subject)';
+
+    const meta = document.createElement('div');
+    meta.className = 'intel-mini__meta muted';
+    meta.textContent = [r.receivedAt ? intelFmt(r.receivedAt) : '', r.withWhom].filter(Boolean).join(' · ');
+
+    li.append(subj, meta);
+
+    // CPT lines + free-form "other key info" as compact bullets.
+    const facts = [];
+    (r.cptItems || []).forEach((it) => {
+      const s = [it.code, it.description, it.note].map((x) => (x || '').trim()).filter(Boolean).join(' — ');
+      if (s) facts.push(`CPT: ${s}`);
+    });
+    (r.otherNotes || []).forEach((n) => {
+      if (n) facts.push(n);
+    });
+    if (facts.length) {
+      const ul = document.createElement('ul');
+      ul.className = 'intel-mini__facts';
+      facts.forEach((f) => {
+        const x = document.createElement('li');
+        x.textContent = f;
+        ul.appendChild(x);
+      });
+      li.appendChild(ul);
+    }
+
+    list.appendChild(li);
+  }
+}
+
+async function loadIntelInto(block, physician) {
+  const rows = await getIntelRows();
+  const mine = rows.filter((r) => r.physicianNpi && String(r.physicianNpi) === String(physician.npi));
+  renderIntelForBlock(block, mine);
+}
+
+// ── Meeting notes ─────────────────────────────────────────────────────────────
+
+function renderNotesInto(block, notes) {
+  const list = block.querySelector('.physician-history__list');
   list.innerHTML = '';
 
-  // Heading carries the count so a long history is obvious at a glance.
-  $panel('.physician-history h3').textContent = notes.length
+  block.querySelector('.physician-history h3').textContent = notes.length
     ? `Meeting notes (${notes.length})`
     : 'Meeting notes';
 
@@ -389,100 +192,88 @@ function renderNotes(notes) {
     li.className = 'physician-history__empty muted';
     li.textContent = 'No previous meeting notes yet.';
     list.appendChild(li);
-  } else {
-    notes.forEach((n, i) => {
-      const li = document.createElement('li');
-
-      // Collapsible timeline entry — only the latest starts expanded.
-      const item = document.createElement('details');
-      item.className = 'physician-history__item';
-      if (i === 0) item.open = true;
-
-      const summary = document.createElement('summary');
-      summary.className = 'physician-history__summary';
-
-      const date = document.createElement('span');
-      date.className = 'physician-history__date';
-      date.textContent = noteDateLabel(n);
-
-      const ago = document.createElement('span');
-      ago.className = 'physician-history__ago muted';
-      ago.textContent = daysAgoLabel(noteDateLabel(n));
-
-      summary.append(date, ago);
-
-      // AI-extracted Meeting Notes (from an email reply) get a distinct badge.
-      if (n.source === 'ai') {
-        const ai = document.createElement('span');
-        ai.className = 'physician-history__badge physician-history__badge--ai';
-        ai.textContent = '🤖 AI from reply';
-        summary.appendChild(ai);
-      }
-
-      if (i === 0) {
-        const badge = document.createElement('span');
-        badge.className = 'physician-history__badge';
-        badge.textContent = 'Latest';
-        summary.appendChild(badge);
-      }
-
-      // One-line preview, visible only while collapsed.
-      const firstLine = n.notes.split('\n')[0];
-      const snippet = document.createElement('span');
-      snippet.className = 'physician-history__snippet muted';
-      snippet.textContent = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
-      summary.appendChild(snippet);
-
-      const body = document.createElement('div');
-      body.className = 'physician-history__notes';
-      body.textContent = n.notes;
-
-      item.append(summary, body);
-      li.appendChild(item);
-      list.appendChild(li);
-    });
+    return;
   }
 
-  // "Last call" reminder above the schedule form.
-  const box = $panel('.schedule-form__lastnote');
-  const latest = notes[0];
-  box.hidden = !latest;
-  if (latest) {
-    $panel('.schedule-form__lastnote-date').textContent = noteDateLabel(latest);
-    $panel('.schedule-form__lastnote-text').textContent = latest.notes;
-  }
+  notes.forEach((n, i) => {
+    const li = document.createElement('li');
+
+    // Collapsible timeline entry — only the latest starts expanded.
+    const item = document.createElement('details');
+    item.className = 'physician-history__item';
+    if (i === 0) item.open = true;
+
+    const summary = document.createElement('summary');
+    summary.className = 'physician-history__summary';
+
+    const date = document.createElement('span');
+    date.className = 'physician-history__date';
+    date.textContent = noteDateLabel(n);
+
+    const ago = document.createElement('span');
+    ago.className = 'physician-history__ago muted';
+    ago.textContent = daysAgoLabel(noteDateLabel(n));
+
+    summary.append(date, ago);
+
+    // AI-extracted Meeting Notes (from an email reply) get a distinct badge.
+    if (n.source === 'ai') {
+      const ai = document.createElement('span');
+      ai.className = 'physician-history__badge physician-history__badge--ai';
+      ai.textContent = '🤖 AI from reply';
+      summary.appendChild(ai);
+    }
+
+    if (i === 0) {
+      const badge = document.createElement('span');
+      badge.className = 'physician-history__badge';
+      badge.textContent = 'Latest';
+      summary.appendChild(badge);
+    }
+
+    // One-line preview, visible only while collapsed.
+    const firstLine = n.notes.split('\n')[0];
+    const snippet = document.createElement('span');
+    snippet.className = 'physician-history__snippet muted';
+    snippet.textContent = firstLine.length > 60 ? `${firstLine.slice(0, 60)}…` : firstLine;
+    summary.appendChild(snippet);
+
+    const body = document.createElement('div');
+    body.className = 'physician-history__notes';
+    body.textContent = n.notes;
+
+    item.append(summary, body);
+    li.appendChild(item);
+    list.appendChild(li);
+  });
 }
 
-async function loadNotes(npi) {
+async function loadNotesInto(block, physician, event) {
   try {
-    const res = await fetch(`/api/physicians/${encodeURIComponent(npi)}/notes`, {
+    const res = await fetch(`/api/physicians/${encodeURIComponent(physician.npi)}/notes`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) return;
     const data = await res.json();
-    // Guard against a stale response after switching physicians.
-    if (selectedPhysician?.npi !== npi) return;
-
     let notes = data.notes || [];
-    // When opened from a specific meeting, show only that meeting's notes
-    // (its eventId) plus general notes with no meeting — so a reply's MOM
-    // appears only under the meeting it belongs to, not every meeting with
-    // the same physician.
-    if (currentEventCtx?.id) {
-      notes = notes.filter((n) => !n.eventId || n.eventId === currentEventCtx.id);
+    // When shown under a specific meeting, keep only that meeting's notes (its
+    // eventId) plus general notes with no meeting — so a reply's MOM appears
+    // only under the meeting it belongs to, not every meeting with the same
+    // physician.
+    if (event?.id) {
+      notes = notes.filter((n) => !n.eventId || n.eventId === event.id);
     }
-    renderNotes(notes);
+    renderNotesInto(block, notes);
   } catch {
     /* history is best-effort */
   }
 }
 
-async function submitMom(evt) {
+async function submitMomFor(evt, block, physician, event) {
   evt.preventDefault();
-  if (!selectedPhysician) return;
 
-  const text = $panel('.mom-form__text');
-  const status = $panel('.mom-form__status');
+  const text = block.querySelector('.mom-form__text');
+  const status = block.querySelector('.mom-form__status');
   const notes = text.value.trim();
   if (!notes) return;
 
@@ -490,17 +281,14 @@ async function submitMom(evt) {
   status.hidden = false;
 
   try {
-    const res = await fetch(`/api/physicians/${encodeURIComponent(selectedPhysician.npi)}/notes`, {
+    const res = await fetch(`/api/physicians/${encodeURIComponent(physician.npi)}/notes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         notes,
-        eventId: currentEventCtx?.id || null,
-        // Tie the note to the meeting's day (fall back to the selected date).
-        meetingDate:
-          (currentEventCtx?.start || '').slice(0, 10) ||
-          document.getElementById('dateInput').value ||
-          todayYmd(),
+        eventId: event?.id || null,
+        // Tie the note to the meeting's day (fall back to today).
+        meetingDate: (event?.start || '').slice(0, 10) || todayYmd(),
       }),
     });
 
@@ -509,90 +297,16 @@ async function submitMom(evt) {
 
     text.value = '';
     status.textContent = '✅ Note saved';
-    loadNotes(selectedPhysician.npi);
+    loadNotesInto(block, physician, event);
   } catch (err) {
     status.textContent = `❌ ${err.message || 'Failed to save note'}`;
   }
 }
 
-async function searchPhysicians(q) {
-  if (q.trim().length < 2) {
-    renderPhysicianResults([]);
-    return;
-  }
-  try {
-    const res = await fetch(`/api/physicians/search?q=${encodeURIComponent(q)}`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    renderPhysicianResults(data.results || []);
-  } catch {
-    /* search is best-effort; ignore transient errors */
-  }
-}
-
-async function submitSchedule(evt) {
-  evt.preventDefault();
-  if (!selectedPhysician) return;
-
-  const status = $panel('.schedule-status');
-  const btn = $panel('.schedule-form__submit');
-
-  const date = $panel('.schedule-form__date').value;
-  const time = $panel('.schedule-form__time').value;
-  const duration = Number($panel('.schedule-form__duration').value);
-
-  const start = `${date}T${time}:00`;
-  const endDate = new Date(`${start}`);
-  endDate.setMinutes(endDate.getMinutes() + duration);
-  const pad = (n) => String(n).padStart(2, '0');
-  const end = `${endDate.getFullYear()}-${pad(endDate.getMonth() + 1)}-${pad(endDate.getDate())}T${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:00`;
-
-  btn.disabled = true;
-  status.textContent = 'Sending invite…';
-  status.className = 'schedule-status';
-  status.hidden = false;
-
-  try {
-    const res = await fetch('/api/calendar/schedule', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        npi: selectedPhysician.npi,
-        subject: $panel('.schedule-form__subject').value,
-        start,
-        end,
-        timeZone: getBrowserTimeZone(),
-        notes: $panel('.schedule-form__notes').value,
-        includePreviousNotes: $panel('.schedule-form__include-notes').checked,
-      }),
-    });
-
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.message || `Request failed (${res.status})`);
-
-    const briefMsg = data.briefingSent
-      ? ` · 📧 Briefing emailed to ${data.briefingTo || 'you'}`
-      : ` · ⚠️ Briefing not sent${data.briefingError ? ` (${data.briefingError})` : ''}`;
-    status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})${briefMsg} · ⏰ Outlook will remind you 90 min before`;
-    status.className = 'schedule-status schedule-status--ok';
-    // Let the user read the confirmation, then refresh the day's events.
-    setTimeout(loadCalendar, 1500);
-  } catch (err) {
-    status.textContent = `❌ ${err.message || 'Failed to schedule'}`;
-    status.className = 'schedule-status schedule-status--error';
-  } finally {
-    btn.disabled = false;
-  }
-}
-
 /** Email the organizer this physician's details + full meeting-note history. */
-async function sendBriefing() {
-  if (!selectedPhysician) return;
-
-  const btn = $panel('.briefing__send');
-  const status = $panel('.briefing__status');
+async function sendBriefingFor(block, physician, event) {
+  const btn = block.querySelector('.briefing__send');
+  const status = block.querySelector('.briefing__status');
 
   btn.disabled = true;
   status.textContent = 'Sending…';
@@ -601,14 +315,14 @@ async function sendBriefing() {
 
   try {
     const res = await fetch(
-      `/api/physicians/${encodeURIComponent(selectedPhysician.npi)}/send-briefing`,
+      `/api/physicians/${encodeURIComponent(physician.npi)}/send-briefing`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
         body: JSON.stringify({
-          eventTitle: currentEventCtx?.title || null,
+          eventTitle: event?.title || null,
           // Readable "2026-06-05 15:00" instead of the raw ISO string.
-          eventStart: (currentEventCtx?.start || '').slice(0, 16).replace('T', ' ') || null,
+          eventStart: (event?.start || '').slice(0, 16).replace('T', ' ') || null,
         }),
       }
     );
@@ -626,86 +340,220 @@ async function sendBriefing() {
   }
 }
 
-// Wire the panel's controls once — the instance is reused across events.
-$panel('.physician-inline__close').addEventListener('click', closeInlinePanel);
-$panel('.briefing__send').addEventListener('click', sendBriefing);
-$panel('.schedule-form').addEventListener('submit', submitSchedule);
-$panel('.mom-form').addEventListener('submit', submitMom);
-$panel('.physician-inline__search').addEventListener('input', (e) => {
-  clearTimeout(searchDebounce);
-  const q = e.target.value;
-  searchDebounce = setTimeout(() => searchPhysicians(q), 250);
-});
+// ── Schedule a call ───────────────────────────────────────────────────────────
 
-// ── Auto pre-meeting briefs (drawers, one open at a time) ───────────────────
-// Every attendee whose email is an EXACT match in the directory gets a
-// collapsible drawer beneath the event — a meeting booked with two physicians
-// shows both, each opening its own pre-meeting brief. Accordion: opening one
-// closes the others. All start CLOSED; briefs load lazily on first open.
-// Read-only; the interactive tools (notes, schedule, send briefing) stay on
-// the chip click.
+function wireScheduleForm(form, physician) {
+  const status = form.querySelector('.schedule-status');
+  const subject = form.querySelector('.schedule-form__subject');
+  const dateInput = form.querySelector('.schedule-form__date');
+  const submitBtn = form.querySelector('.schedule-form__submit');
 
-async function loadAutoBrief(box, physician) {
-  try {
-    const res = await fetch(`/api/physicians/${encodeURIComponent(physician.npi)}/brief`, {
-      headers: { Accept: 'application/json' },
-    });
-    if (!res.ok) {
-      box.innerHTML = '<p class="muted">Brief unavailable.</p>';
-      return;
+  if (!dateInput.value) dateInput.value = todayYmd();
+  subject.value = `Call with ${physician.name || 'physician'}`;
+
+  const canInvite = Boolean(physician.email);
+  submitBtn.disabled = !canInvite;
+  if (!canInvite) {
+    status.textContent = 'This physician has no email on file — invite cannot be sent.';
+    status.className = 'schedule-status schedule-status--error';
+    status.hidden = false;
+  }
+
+  form.addEventListener('submit', async (evt) => {
+    evt.preventDefault();
+
+    const date = dateInput.value;
+    const time = form.querySelector('.schedule-form__time').value;
+    const duration = Number(form.querySelector('.schedule-form__duration').value);
+
+    const start = `${date}T${time}:00`;
+    const endDate = new Date(start);
+    endDate.setMinutes(endDate.getMinutes() + duration);
+    const pad = (n) => String(n).padStart(2, '0');
+    const end = `${endDate.getFullYear()}-${pad(endDate.getMonth() + 1)}-${pad(endDate.getDate())}T${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:00`;
+
+    submitBtn.disabled = true;
+    status.textContent = 'Sending invite…';
+    status.className = 'schedule-status';
+    status.hidden = false;
+
+    try {
+      const res = await fetch('/api/calendar/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({
+          npi: physician.npi,
+          subject: subject.value,
+          start,
+          end,
+          timeZone: getBrowserTimeZone(),
+          notes: form.querySelector('.schedule-form__notes').value,
+          includePreviousNotes: form.querySelector('.schedule-form__include-notes').checked,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || `Request failed (${res.status})`);
+
+      const briefMsg = data.briefingSent
+        ? ` · 📧 Briefing emailed to ${data.briefingTo || 'you'}`
+        : ` · ⚠️ Briefing not sent${data.briefingError ? ` (${data.briefingError})` : ''}`;
+      status.textContent = `✅ Invite sent to ${data.invitee.name} (${data.invitee.email})${briefMsg}`;
+      status.className = 'schedule-status schedule-status--ok';
+      // Let the user read the confirmation, then refresh the day's events.
+      setTimeout(loadCalendar, 1800);
+    } catch (err) {
+      status.textContent = `❌ ${err.message || 'Failed to schedule'}`;
+      status.className = 'schedule-status schedule-status--error';
+    } finally {
+      submitBtn.disabled = false;
     }
-    const data = await res.json();
-    box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
-  } catch {
-    box.innerHTML = '<p class="muted">Brief unavailable.</p>';
+  });
+}
+
+// ── One physician block ───────────────────────────────────────────────────────
+
+function buildPhysicianBlock(physician, event, { scheduleOpen = false } = {}) {
+  const block = physBlockTpl.content.firstElementChild.cloneNode(true);
+  block.dataset.npi = physician.npi;
+
+  block.querySelector('.physician-block__name').textContent = physician.name || `NPI ${physician.npi}`;
+  block.querySelector('.physician-block__specialty').textContent = physician.specialty || '';
+
+  const photo = block.querySelector('.physician-block__photo');
+  if (physician.photoUrl) {
+    photo.src = physician.photoUrl;
+    photo.hidden = false;
+  }
+
+  // All three data sections load asynchronously and independently.
+  loadBriefInto(block.querySelector('.physician-block__brief'), physician.npi);
+  loadIntelInto(block, physician);
+  loadNotesInto(block, physician, event);
+
+  // Actions.
+  block.querySelector('.mom-form').addEventListener('submit', (e) => submitMomFor(e, block, physician, event));
+  block.querySelector('.briefing__send').addEventListener('click', () => sendBriefingFor(block, physician, event));
+
+  const sched = block.querySelector('.physician-block__schedule');
+  if (scheduleOpen) sched.open = true;
+  wireScheduleForm(block.querySelector('.schedule-form'), physician);
+
+  return block;
+}
+
+// ── Physician search (used only when nobody on the meeting matched) ───────────
+
+function renderPhysicianResults(list, results, onPick) {
+  list.innerHTML = '';
+  for (const p of results) {
+    const li = document.createElement('li');
+    li.className = 'physician-result';
+
+    const name = document.createElement('strong');
+    name.textContent = p.name || `NPI ${p.npi}`;
+
+    const meta = document.createElement('span');
+    meta.className = 'muted';
+    // Facility distinguishes same-name physicians; matchHint explains fallbacks.
+    meta.textContent = [p.specialty, p.facility?.name, p.email || 'no email', p.matchHint && `📍 ${p.matchHint}`]
+      .filter(Boolean)
+      .join(' · ');
+
+    li.append(name, meta);
+    if (!p.email) li.classList.add('physician-result--noemail');
+    li.addEventListener('click', () => onPick(p));
+    list.appendChild(li);
   }
 }
 
-function renderAutoBriefs(bodyEl, physicians) {
-  const wrap = document.createElement('div');
-  wrap.className = 'event__briefs';
-  const drawers = [];
-
-  physicians.forEach((p) => {
-    const drawer = document.createElement('details');
-    drawer.className = 'physician-drawer';
-
-    const head = document.createElement('summary');
-    head.className = 'physician-drawer__head';
-    head.textContent =
-      `🩺 ${p.name || `NPI ${p.npi}`}` + (p.specialty ? ` · ${p.specialty}` : '');
-    drawer.appendChild(head);
-
-    const box = document.createElement('div');
-    box.className = 'physician-analytics';
-    box.innerHTML = '<p class="muted">Loading pre-meeting brief…</p>';
-    drawer.appendChild(box);
-
-    let loaded = false;
-    drawer.addEventListener('toggle', () => {
-      if (!drawer.open) return;
-      // Accordion — only one drawer open at a time.
-      for (const other of drawers) if (other !== drawer) other.open = false;
-      if (!loaded) {
-        loaded = true;
-        loadAutoBrief(box, p);
-      }
+async function searchPhysicians(q, list, onPick) {
+  if (q.trim().length < 2) {
+    list.innerHTML = '';
+    return;
+  }
+  try {
+    const res = await fetch(`/api/physicians/search?q=${encodeURIComponent(q)}`, {
+      headers: { Accept: 'application/json' },
     });
+    if (!res.ok) return;
+    const data = await res.json();
+    renderPhysicianResults(list, data.results || [], onPick);
+  } catch {
+    /* search is best-effort; ignore transient errors */
+  }
+}
 
-    drawers.push(drawer);
-    wrap.appendChild(drawer);
+// ── The meeting detail region ─────────────────────────────────────────────────
+
+/** No email match → title-based suggestions + a search box to pick a physician. */
+function buildNoMatch(detail, ev) {
+  const intro = document.createElement('p');
+  intro.className = 'muted event__detail-intro';
+  intro.textContent = 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
+  detail.appendChild(intro);
+
+  // Slot that holds the chosen physician's full block.
+  const pickedWrap = document.createElement('div');
+  pickedWrap.className = 'event__detail-picked';
+
+  function pick(p) {
+    pickedWrap.innerHTML = '';
+    pickedWrap.appendChild(buildPhysicianBlock(p, ev, { scheduleOpen: true }));
+    pickedWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Physicians matched from the meeting title (name / facility / email).
+  if (ev.titleMatches && ev.titleMatches.length) {
+    const chips = document.createElement('ul');
+    chips.className = 'event__attendee-list event__detail-suggestions';
+    for (const p of ev.titleMatches) {
+      const chip = document.createElement('li');
+      chip.className = 'event__attendee event__attendee--physician';
+      chip.title = p.matchHint
+        ? `${p.matchHint} — click to view details & schedule`
+        : 'Matched from the meeting title — click to view details & schedule';
+      chip.textContent = `🩺 ${[p.name, p.facility?.name].filter(Boolean).join(' · ')}${p.matchHint ? ' · 📍 nearby' : ''}`;
+      chip.addEventListener('click', () => pick(p));
+      chips.appendChild(chip);
+    }
+    detail.appendChild(chips);
+  }
+
+  // Free-text search — start blank, let the rep type who they're looking for.
+  const searchWrap = physSearchTpl.content.firstElementChild.cloneNode(true);
+  const input = searchWrap.querySelector('.physician-inline__search');
+  const results = searchWrap.querySelector('.physician-results');
+  let deb = null;
+  input.addEventListener('input', (e) => {
+    clearTimeout(deb);
+    const q = e.target.value;
+    deb = setTimeout(() => searchPhysicians(q, results, pick), 250);
   });
+  detail.appendChild(searchWrap);
 
-  bodyEl.appendChild(wrap);
+  detail.appendChild(pickedWrap);
+}
+
+function buildDetail(detail, ev) {
+  detail.innerHTML = '';
+  const matched = matchedPhysiciansOf(ev);
+  if (matched.length) {
+    for (const p of matched) detail.appendChild(buildPhysicianBlock(p, ev));
+  } else {
+    buildNoMatch(detail, ev);
+  }
 }
 
 // ── Event list ───────────────────────────────────────────────────────────────
 
 function renderEvents(events) {
-  closeInlinePanel(); // re-render detaches the panel anyway; reset state too
   const list = document.getElementById('eventList');
   const tpl = document.getElementById('event-template');
   list.innerHTML = '';
+
+  // Track every card so opening one closes the others (accordion).
+  const cards = [];
 
   for (const ev of events) {
     const node = tpl.content.cloneNode(true);
@@ -744,6 +592,8 @@ function renderEvents(events) {
       desc.hidden = false;
     }
 
+    // Attendee chips — informational. Physicians in the directory carry a 🩺 and
+    // the "last call" hint; the full details open in the detail region below.
     if (ev.attendees && ev.attendees.length > 0) {
       const wrap = node.querySelector('.event__attendees');
       const ul = node.querySelector('.event__attendee-list');
@@ -758,69 +608,23 @@ function renderEvents(events) {
         const label = a.name && a.email && a.name !== a.email ? `${a.name} <${a.email}>` : a.email || a.name || 'Unknown';
 
         if (a.physician) {
-          // Known physician — clickable chip showing details under this event.
           chip.classList.add('event__attendee--physician');
-          chip.title = 'In physician directory — click to view details';
+          chip.title = 'In physician directory — full brief below';
           chip.textContent = `🩺 ${rsvpIcon[a.response] || ''} ${label}`.replace(/\s+/g, ' ');
           if (a.lastNote) {
-            // Reminder of the organizer's last recorded call with them.
             const hint = document.createElement('span');
             hint.className = 'event__attendee-lastcall';
             hint.textContent = `📝 last: ${a.lastNote.meetingDate || (a.lastNote.createdAt || '').slice(0, 10)}`;
             chip.appendChild(hint);
           }
-          chip.addEventListener('click', () => openPhysicianDetails(li, a.physician, ev));
         } else {
           chip.title = `${a.type} · ${a.response} · not in physician directory`;
           chip.textContent = `${rsvpIcon[a.response] || ''} ${label}`.trim();
-
-          // Offer "Schedule call" only when the attendee has no email at all —
-          // someone with an email is already reachable through this meeting.
-          if (!a.email) {
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'event__schedule-call';
-            btn.textContent = '📞 Schedule call';
-            btn.addEventListener('click', () => openPhysicianSearch(li, ev));
-            chip.appendChild(btn);
-          }
         }
 
         ul.appendChild(chip);
       }
       wrap.hidden = false;
-    }
-
-    // Physicians matched from the meeting title (name / facility / email) —
-    // each is a clickable option, so the user picks who the meeting is with.
-    if (ev.titleMatches && ev.titleMatches.length > 0) {
-      const wrap = node.querySelector('.event__attendees');
-      const ul = node.querySelector('.event__attendee-list');
-      for (const p of ev.titleMatches) {
-        const chip = document.createElement('li');
-        chip.className = 'event__attendee event__attendee--physician';
-        chip.title = p.matchHint
-          ? `${p.matchHint} — click to view details & schedule a meeting`
-          : 'Matched from the meeting title — click to view details & schedule a meeting';
-        chip.textContent = `🩺 ${[p.name, p.facility?.name].filter(Boolean).join(' · ')}${p.matchHint ? ' · 📍 nearby' : ''}`;
-        chip.addEventListener('click', () => openPhysicianSchedule(li, p, ev));
-        ul.appendChild(chip);
-      }
-      wrap.hidden = false;
-    }
-
-    // Auto-show the pre-meeting brief for each exact email-matched physician
-    // (deduped by NPI) — both briefs appear for a two-physician meeting.
-    const matchedPhysicians = [];
-    const seenNpi = new Set();
-    for (const a of ev.attendees || []) {
-      if (a.physician && !seenNpi.has(a.physician.npi)) {
-        seenNpi.add(a.physician.npi);
-        matchedPhysicians.push(a.physician);
-      }
-    }
-    if (matchedPhysicians.length) {
-      renderAutoBriefs(node.querySelector('.event__body'), matchedPhysicians);
     }
 
     if (ev.onlineMeetingUrl) {
@@ -829,6 +633,48 @@ function renderEvents(events) {
       join.hidden = false;
     }
 
+    // The click-to-open hint reflects what the detail region will show.
+    const hasMatch = matchedPhysiciansOf(ev).length > 0;
+    const hasSuggestions = (ev.titleMatches || []).length > 0;
+    const toggle = node.querySelector('.event__toggle');
+    toggle.textContent = hasMatch
+      ? '🩺 BIS intelligence — click to open'
+      : hasSuggestions
+        ? '🔎 Possible physician matches — click to open'
+        : '＋ Physician lookup — click to open';
+
+    // Wire the whole card as an accordion. Built lazily on first open so the
+    // day view stays fast even with many meetings.
+    const detail = node.querySelector('.event__detail');
+    let built = false;
+
+    const card = {
+      li,
+      collapse() {
+        li.classList.remove('event--open');
+        detail.hidden = true;
+      },
+    };
+
+    function expand() {
+      for (const c of cards) if (c.li !== li) c.collapse();
+      li.classList.add('event--open');
+      detail.hidden = false;
+      if (!built) {
+        built = true;
+        buildDetail(detail, ev);
+      }
+    }
+
+    li.addEventListener('click', (e) => {
+      // Ignore clicks on real controls and anything inside the open detail
+      // region — only "empty" header clicks toggle the card.
+      if (e.target.closest('a, button, input, textarea, select, .event__detail')) return;
+      if (li.classList.contains('event--open')) card.collapse();
+      else expand();
+    });
+
+    cards.push(card);
     list.appendChild(node);
   }
 }

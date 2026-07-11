@@ -7,6 +7,7 @@ const analytics = require('../analytics');
 const contactsStore = require('../contacts-store');
 const graph = require('../graph');
 const leadMatch = require('../lead-match');
+const entityMatcher = require('../entity-matcher');
 
 /**
  * Part 2 — embed the lead BIS brief INSIDE Dynamics 365.
@@ -119,6 +120,89 @@ router.get('/lead-brief', async (req, res, next) => {
           '<p class="muted">No matching physician or facility found in the BIS database.</p>'
       )
     );
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** Build one physician "block" (name + specialty + brief HTML) for the add-in. */
+async function physicianBlock(physician, matchedBy) {
+  const [analyticsData, contact] = await Promise.all([
+    analytics.getLabelledAnalytics(physician.npi),
+    contactsStore.getContact(physician.npi),
+  ]);
+  return {
+    npi: physician.npi,
+    name: physician.name || `NPI ${physician.npi}`,
+    specialty: physician.specialty || '',
+    matchedBy,
+    html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+  };
+}
+
+/**
+ * GET /embed/meeting-brief?token=&emails=a@x,b@y&subject=&npi=
+ * JSON (not framed) — powers the Outlook Add-in task pane. Given a meeting's
+ * attendee emails, returns a pre-meeting brief block per exactly-matched
+ * physician; with no email match, falls back to physician suggestions from the
+ * subject text. `npi` returns a single physician's block (used when the rep
+ * clicks a suggestion). Token-gated (config.addin.token), same as the Dynamics
+ * embed — the task pane has no Outlook session.
+ */
+router.get('/meeting-brief', async (req, res, next) => {
+  try {
+    // JSON API fetched same-origin by the task pane — never framed itself.
+    res.set('Content-Security-Policy', "default-src 'none'");
+
+    const expected = config.addin.token;
+    if (!expected) return res.status(403).json({ ok: false, error: 'not_configured' });
+    if (req.query.token !== expected) return res.status(403).json({ ok: false, error: 'forbidden' });
+
+    // Single physician by NPI (suggestion click).
+    if (req.query.npi) {
+      const physician = physicians.getByNpi(String(req.query.npi));
+      if (!physician) return res.json({ ok: true, matchedBy: 'none', blocks: [], suggestions: [] });
+      return res.json({ ok: true, matchedBy: 'npi', blocks: [await physicianBlock(physician, 'npi')], suggestions: [] });
+    }
+
+    const emails = String(req.query.emails || '')
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const subject = typeof req.query.subject === 'string' ? req.query.subject : '';
+
+    // 1) Exact email matches → one brief block per physician (deduped by NPI).
+    const matched = [];
+    const seen = new Set();
+    for (const e of emails) {
+      const p = physicians.getByEmail(e);
+      if (p && !seen.has(p.npi)) {
+        seen.add(p.npi);
+        matched.push(p);
+      }
+    }
+    if (matched.length) {
+      const blocks = await Promise.all(matched.map((p) => physicianBlock(p, 'email')));
+      return res.json({ ok: true, matchedBy: 'email', blocks, suggestions: [] });
+    }
+
+    // 2) No email match → entity analysis over the subject for suggestions.
+    let suggestions = [];
+    if (subject) {
+      try {
+        const ea = await entityMatcher.analyze(subject);
+        suggestions = entityMatcher.physicianProfilesFrom(ea, {}).map((p) => ({
+          npi: p.npi,
+          name: p.name || `NPI ${p.npi}`,
+          specialty: p.specialty || '',
+          facility: p.facility?.name || '',
+          matchHint: p.matchHint || '',
+        }));
+      } catch {
+        /* suggestions are best-effort */
+      }
+    }
+    return res.json({ ok: true, matchedBy: 'none', blocks: [], suggestions });
   } catch (err) {
     next(err);
   }

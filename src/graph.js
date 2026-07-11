@@ -767,6 +767,41 @@ async function getUpcomingEvents(accessToken, withinMinutes = 180) {
   return (response.value || []).map(normalizeEvent);
 }
 
+// Hidden marker that makes brief injection idempotent (never inject twice).
+const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
+
+/**
+ * Embed the BIS pre-meeting brief INTO a calendar event's own body, so opening
+ * the meeting in Outlook shows the brief inline (no add-in needed; works on any
+ * account, including personal outlook.com). Idempotent via BRIEF_MARKER, and it
+ * PREPENDS to the existing body so the Teams join info etc. is preserved.
+ *
+ * PATCH on /me/events/{id} updates the organiser's own copy and does not send a
+ * meeting update to attendees, so the brief stays private to the rep. Returns
+ * true if it injected, false if the brief was already present (or no body).
+ */
+async function injectBriefIntoEvent(accessToken, eventId, innerHtml) {
+  if (!eventId || !innerHtml) return false;
+  const client = getGraphClient(accessToken);
+
+  const existing = await client.api(`/me/events/${eventId}`).select('body').get();
+  const current = existing?.body?.content || '';
+  if (current.includes(BRIEF_MARKER)) return false;
+
+  const block =
+    `${BRIEF_MARKER}` +
+    '<div style="border:1px solid #0f6cbd;border-radius:10px;padding:12px 14px;margin:0 0 14px;' +
+    'background:#f5f9fd;font-family:-apple-system,Segoe UI,Roboto,sans-serif">' +
+    '<div style="font-weight:700;color:#0a4f8a;margin-bottom:8px">🩺 BIS pre-meeting brief</div>' +
+    innerHtml +
+    '</div><hr>';
+
+  await client.api(`/me/events/${eventId}`).patch({
+    body: { contentType: 'HTML', content: block + current },
+  });
+  return true;
+}
+
 /**
  * Create a calendar event with the physician as a required attendee. Graph
  * sends the invite email to the attendee automatically on creation.
@@ -930,6 +965,7 @@ module.exports = {
   getMe,
   getGraphClient,
   createMeetingWithPhysician,
+  injectBriefIntoEvent,
   sendPhysicianBriefing,
   sendPhysiciansBriefing,
   buildBriefingContent,

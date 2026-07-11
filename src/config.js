@@ -86,6 +86,19 @@ const config = {
         'https://*.dynamics.com https://*.crm.dynamics.com',
     };
   })(),
+
+  // Outlook Add-in — a ribbon button on a calendar meeting opens a task pane
+  // showing that meeting's pre-meeting brief. The manifest + task pane use
+  // absolute URLs off `baseUrl`; the task pane calls the token-gated
+  // /embed/meeting-brief. Reuses the Dynamics embed token unless ADDIN_TOKEN is
+  // set. `frameAncestors` lets Outlook host the task pane in its iframe.
+  addin: {
+    baseUrl: process.env.PUBLIC_BASE_URL?.trim().replace(/\/$/, '') || 'https://agentpoc.insightmonk.com',
+    token: process.env.ADDIN_TOKEN?.trim() || process.env.DYNAMICS_EMBED_TOKEN?.trim() || null,
+    frameAncestors:
+      process.env.ADDIN_FRAME_ANCESTORS?.trim() ||
+      'https://outlook.office.com https://outlook.office365.com https://outlook.live.com https://*.office.com https://*.outlook.com',
+  },
 };
 
 module.exports = config;
