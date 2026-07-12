@@ -138,8 +138,55 @@ async function syncActivities(token, user) {
         console.warn('[ingest] instant brief failed:', err.message);
       }
     }
+
+    // Embed the brief INTO the meeting body so it shows inside the event in
+    // Outlook. Runs for every physician meeting (not just new ones) so meetings
+    // that predate this feature get enriched too; the enrich key + body marker
+    // keep it to exactly once.
+    if (physicians.length) {
+      try {
+        await enrichEventBody(token, user, ev, physicians);
+      } catch (err) {
+        console.warn('[ingest] enrich meeting body failed:', err.message);
+      }
+    }
   }
   return synced;
+}
+
+/**
+ * Embed the pre-meeting brief into the meeting's own Outlook body — the same
+ * brief the emails carry (buildBriefingContent), so opening the event shows it
+ * inline with no add-in. Guarded by an `enriched:<eventId>` key (skip the Graph
+ * round-trip on later ticks) plus a body marker inside injectBriefIntoEvent, so
+ * it injects exactly once and never notifies attendees.
+ */
+async function enrichEventBody(token, user, ev, physicians) {
+  if (!ev.id || !physicians.length) return;
+  const key = `enriched:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
+
+  const bundles = [];
+  for (const physician of physicians) {
+    bundles.push({
+      physician,
+      notes: await callNotes.getNotes(physician.npi, user.email),
+      analytics: await analytics.getLabelledAnalytics(physician.npi),
+      contact: await contactsStore.getContact(physician.npi),
+    });
+  }
+  const content = graph.buildBriefingContent({
+    physicians: bundles,
+    event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
+    intro: 'Auto-added BIS pre-meeting brief for this meeting:',
+  });
+
+  const injected = await graph.injectBriefIntoEvent(token, ev.id, content);
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  if (injected) {
+    const names = physicians.map((p) => p.name || `NPI ${p.npi}`).join(', ');
+    console.log(`[ingest] brief embedded in meeting "${ev.title}" (${names})`);
+  }
 }
 
 /**

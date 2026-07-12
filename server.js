@@ -10,6 +10,7 @@ const physicians = require('./src/physicians');
 const authRoutes = require('./src/routes/auth.routes');
 const apiRoutes = require('./src/routes/api.routes');
 const embedRoutes = require('./src/routes/embed.routes');
+const addinRoutes = require('./src/routes/addin.routes');
 
 const app = express();
 
@@ -71,6 +72,9 @@ app.use('/auth', authRoutes);
 app.use('/api', apiRoutes);
 // Public (token-gated, no session) — embedded inside Dynamics as an iframe.
 app.use('/embed', embedRoutes);
+// Outlook Add-in task pane (framed by Outlook; sets its own CSP). Static assets
+// under public/addin/ (taskpane.js, icons) are served by express.static below.
+app.use('/addin', addinRoutes);
 
 // ── Static frontend
 app.use(express.static(path.join(__dirname, 'public')));
