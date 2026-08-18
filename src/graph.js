@@ -628,6 +628,203 @@ function physicianBriefHtml({ physician, analytics, contact }) {
   ].join('');
 }
 
+// ── External (enriched) brief ────────────────────────────────────────────────
+
+/**
+ * One provenance-tagged field as a table row: badge, value, source, and — for
+ * anything sourced from the open web — a link that proves it.
+ */
+function provenanceRow(label, f) {
+  if (!f) return '';
+
+  // A list of proof URLs is only useful if it is clickable.
+  const values = Array.isArray(f.value) ? f.value : [f.value];
+  const rendered = values
+    .map((v) => {
+      const text = String(v);
+      return /^https?:\/\//i.test(text)
+        ? `<a href="${escapeHtml(text)}" style="color:#0f6cbd;word-break:break-all">${escapeHtml(text)}</a>`
+        : escapeHtml(text);
+    })
+    .join(Array.isArray(f.value) ? '<br>' : ', ');
+
+  const link = f.sourceUrl
+    ? ` <a href="${escapeHtml(f.sourceUrl)}" style="color:#0f6cbd;text-decoration:none">🔗</a>`
+    : '';
+  return (
+    `<tr><td style="padding:3px 12px 3px 0;vertical-align:top"><b>${escapeHtml(label)}</b></td>` +
+    `<td style="padding:3px 0;vertical-align:top">${rendered}` +
+    `<span style="color:#777;font-size:12px"> — ${f.badge} ${escapeHtml(f.source)}${link}</span>` +
+    '</td></tr>'
+  );
+}
+
+/** Labels that camelCase-splitting alone would render awkwardly. */
+const FIELD_LABELS = {
+  npi: 'NPI',
+  npiEnumerated: 'NPI registered',
+  facilityCcn: 'Facility CCN',
+  evidenceUrls: 'Evidence',
+  identityReasoning: 'How we identified them',
+  jobTitle: 'Title',
+  licenseNumber: 'License #',
+};
+
+/** Turn a camelCase profile key into a readable label. */
+function fieldLabel(key) {
+  if (FIELD_LABELS[key]) return FIELD_LABELS[key];
+  const words = key.replace(/([A-Z])/g, ' $1').trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The pre-meeting brief for someone who is NOT in the BIS master — assembled
+ * from public registries and the open web by src/enrichment.
+ *
+ * Deliberately a sibling of physicianBriefHtml rather than a branch inside it:
+ * this brief carries things the BIS one never does — a per-field source badge,
+ * proof links, disagreements between sources, and an "Extra Intelligence"
+ * section for facts bis_* has no column for. The rep must always be able to see
+ * at a glance which numbers are theirs and which came from outside.
+ *
+ * @param {object} result the object returned by enrichment.enrich()
+ */
+function externalBriefHtml(result) {
+  if (!result) return '';
+  const profile = result.profile || { fields: {}, extra: {}, conflicts: [], notes: [], sources: [] };
+  const out = [];
+
+  // ── Origin banner — the first thing the rep must know ─────────────────────
+  const banners = {
+    external: ['#8a5700', '#fff8e6', '⚠️', 'Not in your BIS database — profile assembled from external sources.'],
+    ambiguous: ['#8a5700', '#fff8e6', '⚠️', `Possible match only (${result.confidence}% confident) — confirm before using.`],
+    facility_only: ['#8a5700', '#fff8e6', '⚠️', 'Person could not be identified — facility information only.'],
+    unresolved: ['#7a2048', '#fdf0f4', '❔', 'Could not identify this person from the available sources.'],
+    not_physician: ['#7a2048', '#fdf0f4', '🚫', 'Identified as a non-physician — no physician brief produced.'],
+    recovered_in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Recovered from BIS by NPI — the email was missing from the master, but the physician is in it.'],
+    in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Already in your BIS database.'],
+  };
+  const [colour, bg, icon, text] = banners[result.status] || banners.unresolved;
+  out.push(
+    `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid ${colour};` +
+      `background:${bg};color:${colour}"><b>${icon} ${escapeHtml(text)}</b></p>`
+  );
+
+  if (result.matchedFacility) {
+    out.push(
+      `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #0b6b3a;background:#eefaf3;` +
+        `color:#0b6b3a"><b>🟢 Facility found in BIS:</b> ${escapeHtml(result.matchedFacility.name)} ` +
+        `(${escapeHtml(result.matchedFacility.id)}) — volumes, territory and colleagues below are your own data.</p>`
+    );
+  }
+
+  // ── Identity ──────────────────────────────────────────────────────────────
+  const fieldRows = Object.entries(profile.fields)
+    .map(([key, f]) => provenanceRow(fieldLabel(key), f))
+    .join('');
+  if (fieldRows) {
+    // With no person resolved the same table holds only facility data — calling
+    // it "Physician details" would promise something the brief doesn't have.
+    const identified = Boolean(result.npi || profile.fields.name);
+    out.push(
+      `<p class="brief-h"><b>${identified ? 'Physician details' : 'Facility details'}</b></p>`,
+      `<table>${fieldRows}</table>`
+    );
+  }
+
+  // ── Extra Intelligence — no BIS counterpart ──────────────────────────────
+  const extraRows = Object.entries(profile.extra)
+    .map(([key, f]) => provenanceRow(fieldLabel(key), f))
+    .join('');
+  if (extraRows) {
+    out.push(
+      '<p class="brief-h"><b>Extra Intelligence</b> ' +
+        '<span style="font-size:12px;color:#7a2048;background:#fdf0f4;padding:1px 6px;border-radius:3px">' +
+        '+ EXTRA — not held in BIS</span></p>',
+      `<table>${extraRows}</table>`
+    );
+  }
+
+  // ── Conflicts — never resolved silently ──────────────────────────────────
+  if (profile.conflicts?.length) {
+    out.push(
+      '<p class="brief-h"><b>Source disagreements</b></p><ul style="margin:4px 0">' +
+        profile.conflicts
+          .map(
+            (c) =>
+              `<li>${escapeHtml(fieldLabel(c.key))}: kept <b>${escapeHtml(String(c.kept.value))}</b> ` +
+              `(${escapeHtml(c.kept.source)}) over <i>${escapeHtml(String(c.discarded.value))}</i> ` +
+              `(${escapeHtml(c.discarded.source)})</li>`
+          )
+          .join('') +
+        '</ul>'
+    );
+  }
+
+  // ── BIS colleagues — the payoff when the person themselves is absent ─────
+  if (result.colleagues?.length) {
+    out.push(
+      '<p class="brief-h"><b>Colleagues at this facility</b> ' +
+        '<span style="font-size:12px;color:#0b6b3a">🟢 from BIS</span></p>',
+      '<table>' +
+        result.colleagues
+          .map(
+            (c) =>
+              `<tr><td style="padding:2px 12px 2px 0"><b>${escapeHtml(c.name || c.npi)}</b></td>` +
+              `<td>${escapeHtml([c.specialty, c.email].filter(Boolean).join(' · '))}</td></tr>`
+          )
+          .join('') +
+        '</table>'
+    );
+  }
+
+  // ── Candidates to confirm ────────────────────────────────────────────────
+  if (result.alternatives?.length) {
+    out.push(
+      '<p class="brief-h"><b>Other possible matches</b></p><ul style="margin:4px 0">' +
+        result.alternatives
+          .map((a) => {
+            const who = [a.name, a.specialty, [a.city, a.state].filter(Boolean).join(', ')]
+              .filter(Boolean)
+              .join(' · ');
+            const link = a.sourceUrl
+              ? ` <a href="${escapeHtml(a.sourceUrl)}" style="color:#0f6cbd;text-decoration:none">🔗</a>`
+              : '';
+            return `<li>${escapeHtml(who)}${link}</li>`;
+          })
+          .join('') +
+        '</ul>'
+    );
+  }
+
+  // ── Where every field came from ──────────────────────────────────────────
+  if (profile.sources?.length) {
+    out.push(
+      '<p class="brief-h"><b>Sources</b></p><ul style="margin:4px 0;font-size:13px">' +
+        profile.sources
+          .map((s) => {
+            const link = s.url
+              ? `<a href="${escapeHtml(s.url)}" style="color:#0f6cbd;text-decoration:none">${escapeHtml(s.url)}</a>`
+              : '<i>no public URL</i>';
+            return `<li>${s.badge} <b>${escapeHtml(s.source)}</b> — ${link}<br>` +
+              `<span style="color:#777">${escapeHtml(s.fields.join(', '))}</span></li>`;
+          })
+          .join('') +
+        '</ul>'
+    );
+  }
+
+  if (profile.notes?.length) {
+    out.push(
+      '<p style="color:#555;font-size:13px;margin-top:10px">' +
+        profile.notes.map((n) => escapeHtml(n)).join('<br>') +
+        '</p>'
+    );
+  }
+
+  return out.join('');
+}
+
 /** One physician's meeting-note history as HTML (or a placeholder). */
 function meetingNotesHtml(notes) {
   return notes && notes.length
@@ -970,6 +1167,7 @@ module.exports = {
   sendPhysiciansBriefing,
   buildBriefingContent,
   physicianBriefHtml,
+  externalBriefHtml,
   formatMeetingTime, // exported for brief-rendering tests
   analyticsHtml, // exported for brief-rendering tests
   commercialSignalsHtml, // exported for brief-rendering tests

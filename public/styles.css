@@ -1734,3 +1734,52 @@ body {
     width: 100%;
   }
 }
+
+/* ── External enrichment (agent lookup for attendees not in BIS) ─────────────
+   Rendered inside a meeting's detail panel when an attendee's email is not in
+   the directory. The brief HTML itself is server-rendered with its own inline
+   styles (badges, source links); these rules only frame the cards. */
+.enrich {
+  margin: 4px 0 14px;
+}
+
+.enrich__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.enrich__card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #0f6cbd;
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+
+.enrich__who {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 14px;
+  /* Long addresses must not push the card wide on mobile. */
+  overflow-wrap: anywhere;
+}
+
+.enrich__body table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.enrich__body td {
+  overflow-wrap: anywhere;
+}
+
+.enrich__deep {
+  margin-top: 10px;
+}
+
+@media (max-width: 600px) {
+  .enrich__card {
+    padding: 10px;
+  }
+}

@@ -3,7 +3,7 @@
 const auth = require('./auth');
 const graph = require('./graph');
 const physiciansDir = require('./physicians');
-const entityMatcher = require('./entity-matcher');
+const context = require('./enrichment/context');
 const callNotes = require('./notes');
 const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
@@ -42,14 +42,17 @@ function startUtcMs(ev) {
  *  2) the physician the meeting was SCHEDULED with (the app_activity) — kept so
  *     an app-scheduled physician who isn't listed as an email attendee is still
  *     briefed, and the reminder matches the auto-brief;
- *  3) only when nothing above matched: a confident entity match from the
- *     title/description, so name-only meetings still work.
+ *
+ * Identity comes from those two sources only. The organizer is never matched,
+ * and the title/description are never used to guess who the meeting is with —
+ * a wrong guess here emails a brief about the wrong physician.
  */
-async function physiciansForEvent(ev, ownerUserId) {
+async function physiciansForEvent(ev, ownerUserId, selfEmail) {
   const found = new Map(); // npi → physician (dedupes overlap between sources)
 
-  // 1) exact email matches on the attendee list.
-  for (const a of ev.attendees || []) {
+  // 1) exact email matches on the ATTENDEE list. The organizer (the rep who
+  //    scheduled the meeting) is never matched — see enrichment/context.js.
+  for (const a of context.attendeesToEnrich(ev, { selfEmail })) {
     const p = physiciansDir.getByEmail(a.email);
     if (p) found.set(p.npi, p);
   }
@@ -64,24 +67,16 @@ async function physiciansForEvent(ev, ownerUserId) {
         if (p) found.set(p.npi, p);
       }
     } catch {
-      /* fall through to title matching */
+      /* activity lookup unavailable — the attendee matches still stand */
     }
   }
 
-  if (found.size) return [...found.values()];
-
-  // 3) fallback — entity match on the title/description (name-only meetings).
-  const analysis = await entityMatcher.analyze(
-    [ev.title, ev.description].filter(Boolean).join('. ')
-  );
-  const match = analysis.matched_entities.find((m) => m.entity_type === 'person');
-  const p = match ? physiciansDir.getByNpi(match.master_id) : null;
-  return p ? [p] : [];
+  return [...found.values()];
 }
 
 /** Back-compat single-physician helper — the first match, or null. */
-async function physicianForEvent(ev, ownerUserId) {
-  return (await physiciansForEvent(ev, ownerUserId))[0] || null;
+async function physicianForEvent(ev, ownerUserId, selfEmail) {
+  return (await physiciansForEvent(ev, ownerUserId, selfEmail))[0] || null;
 }
 
 /** One scan over all users — exported for tests and manual runs. */
@@ -111,7 +106,7 @@ async function tick() {
 
         // Every physician on the meeting (exact-email attendees + scheduled
         // physician) goes into ONE reminder email with a section each.
-        const physicians = await physiciansForEvent(ev, user.homeAccountId);
+        const physicians = await physiciansForEvent(ev, user.homeAccountId, user.email);
         if (!physicians.length) continue; // not a physician meeting — no reminder
 
         const bundles = [];

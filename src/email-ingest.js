@@ -4,6 +4,7 @@ const auth = require('./auth');
 const graph = require('./graph');
 const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
+const context = require('./enrichment/context');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
@@ -77,25 +78,24 @@ function cleanBody(text) {
 }
 
 /**
- * Every physician an event is with, deduped by NPI: all attendees whose email
+ * Every physician an event is with, deduped by NPI: the ATTENDEES whose email
  * is an EXACT match in the directory (so a meeting with two physician emails
- * yields two), else a single title match. Empty array when it's not a
- * physician meeting.
+ * yields two). Empty array when it's not a physician meeting.
+ *
+ * Identity comes from the attendee's email address and nothing else. The
+ * organizer — the rep who scheduled the meeting — is never matched, and the
+ * title/description are never used to guess WHO the meeting is with: this
+ * function triggers the automatic brief email and the meeting-body injection,
+ * so a guess here mails the wrong person's data. The title still supplies
+ * facility context elsewhere (src/enrichment/context.js).
  */
-async function physiciansForEvent(ev) {
+async function physiciansForEvent(ev, selfEmail) {
   const found = new Map();
-  for (const a of ev.attendees || []) {
+  for (const a of context.attendeesToEnrich(ev, { selfEmail })) {
     const p = physiciansDir.getByEmail(a.email);
     if (p) found.set(p.npi, p);
   }
-  if (found.size) return [...found.values()];
-
-  const analysis = await entityMatcher.analyze(
-    [ev.title, ev.description].filter(Boolean).join('. ')
-  );
-  const m = analysis.matched_entities.find((x) => x.entity_type === 'person');
-  const p = m ? physiciansDir.getByNpi(m.master_id) : null;
-  return p ? [p] : [];
+  return [...found.values()];
 }
 
 // ── Per-user sync ────────────────────────────────────────────────────────────
@@ -109,7 +109,7 @@ async function syncActivities(token, user) {
   let synced = 0;
   for (const ev of events) {
     if (ev.isAllDay) continue;
-    const physicians = await physiciansForEvent(ev);
+    const physicians = await physiciansForEvent(ev, user.email);
     // The activity row links to a single physician (schema is one NPI per
     // activity); use the first. All matched physicians are still briefed below.
     const primary = physicians[0] || null;
