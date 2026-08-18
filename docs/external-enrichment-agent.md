@@ -1,6 +1,6 @@
 # External Enrichment Agent — Design & Verified Research
 
-**Status:** Phases 1–3 built & tested · design for P4–P5 · **Date:** 2026-08-18  
+**Status:** Phases 1–4 built & tested · design for P5 · **Date:** 2026-08-18  
 **Branch:** `feature/physician-facility-data-enrichment`  
 **Builds on:** the existing outlook-calendar-poc (OAuth/Graph, Supabase `bis_*`
 master data, entity-matcher, analytics, `physicianBriefHtml`, email-ingest).
@@ -333,7 +333,7 @@ resolves:
 | **P1** ✅ | `sources/nppes.js`, `sources/cms-provider.js`, `rematch.js`, `provenance.js`, `states.js`, `http.js`, `GET /api/enrich` — **built and tested 2026-08-18**, see §13 | **$0 — no AI** |
 | **P2** ✅ | `sources/web-identity.js` (web_search + citations + forced-tool-use JSON), `context.js` (organizer rule + title/description hints), confidence gating — **built and tested 2026-08-18**, see §14 | paid tier begins |
 | **P3** ✅ | `externalBriefHtml()` + badges + Extra Intelligence block; `buildNoMatch()` auto-enrich — **built and tested 2026-08-18**, see §15 | — |
-| **P4** | `app_external_profiles` cache + TTL; Open Payments, PubMed, ClinicalTrials extras | — |
+| **P4** ✅ | `app_external_profiles` cache + TTL; Open Payments, PubMed, ClinicalTrials extras — **built and tested 2026-08-18**, see §16 | — |
 | **P5** | `email-ingest` hook (unknown attendee ⇒ auto brief), `promote` flow, backfill script for the 5,179 email-less physicians | — |
 
 P1 and P2 need no new credentials — `ANTHROPIC_API_KEY` is already configured and
@@ -599,3 +599,88 @@ convention `/api/physicians/:npi/brief` and `/api/leads/match` already follow. A
 physician already in BIS gets the **standard** brief (nothing about them is
 enriched); a recovered one gets the origin banner followed by their full BIS
 brief.
+
+
+---
+
+## 16. Phase 4 — what shipped
+
+Built and verified 2026-08-18: the depth sources, and a cache so the expensive
+work happens once.
+
+```
+src/enrichment/sources/open-payments.js   industry payments by NPI
+src/enrichment/sources/literature.js      PubMed + ClinicalTrials.gov
+src/enrichment/cache.js                   app_external_profiles + in-process LRU
+supabase/enrichment-setup.sql             the table (run by hand, per CLAUDE.md)
+```
+
+### Industry payments — the competitor intelligence
+
+This is the most commercially useful thing the agent finds outside BIS, and BIS
+has no column for any of it. Live result for the test physician:
+
+> **$46,990 across 40 payments from 5 companies (2024–2025)**, most recent
+> 25 Oct 2025 — Phathom ($24,217 over 25 payments), Intercept ($11,250),
+> **Lucid Diagnostics** ($5,970), **PENTAX of America** ($3,000),
+> **Medtronic** ($1,565). Named products include **BARRX** and **NEXPOWDER**.
+
+A rep walking into that meeting now knows which device companies are already
+paying this physician, how much, how recently, and for what — before saying a
+word. Two yearly datasets are queried in parallel (2025 and 2024); both use the
+same `covered_recipient_npi` column.
+
+### Publications and trials
+
+PubMed's author index is `Surname II` — **initials, not a first name**. "Shaheen
+Nicholas" matches nothing and a bare "Shaheen" matches every Shaheen in
+medicine, so `authorTerm()` builds the initialled form: **458 publications** for
+`Shaheen NJ[Author]`, most recent 2026 in *Aliment Pharmacol Ther*.
+ClinicalTrials.gov matches a term anywhere in a study, so hits are kept only
+when the person is actually named as an overall official — **4 trials**, and a
+nonsense name correctly returns nothing.
+
+Together these separate a high-volume community endoscopist from a KOL who
+publishes and runs trials on the exact procedure the product serves.
+
+### The cache
+
+`app_external_profiles`, keyed by lowercased email, holding the **whole**
+enrich() result so a hit rebuilds the brief byte-for-byte — provenance
+included — plus a small per-process layer in front of it. Default TTL 14 days
+(`ENRICHMENT_CACHE_DAYS`), `?refresh=1` forces a fresh lookup.
+
+Three rules keep it from doing harm:
+
+1. **Never serve a shallower answer than the caller asked for.** A free-tier
+   result must not satisfy a request that wants the paid tier, or "🔎 Identify
+   with web search" would return the same *unresolved* it was pressed to fix.
+2. **Never cache a BIS hit.** `in_bis` is a free in-memory lookup that must
+   reflect the master as it is now.
+3. **Never cache a failure.** This one was written *because* of a real outage
+   during testing (below): an `unresolved` is as often a transient source
+   problem as a real dead end, and remembering it would have hidden a real
+   physician for a fortnight. `ambiguous` is kept only when the paid tier
+   already ran, since retrying would spend that money to reach the same weak
+   answer.
+
+The table is created by hand (`supabase/enrichment-setup.sql`), so until it is
+run the cache logs one warning and falls back to in-process only. PostgREST
+reports a missing table as `PGRST205` / "Could not find the table … in the
+schema cache", **not** Postgres's `42P01` — matching only on the latter made it
+log a failure on every single lookup instead of disabling itself once.
+
+### A real outage, mid-test
+
+Part way through verification, `npiregistry.cms.hhs.gov` stopped resolving —
+`SERVFAIL` from the local router's DNS (192.168.31.1), while 8.8.8.8 resolved it
+fine and every other source stayed at HTTP 200. So NPPES itself was up; the
+local resolver was not.
+
+The agent behaved exactly as designed: three retries with backoff, one warning
+per source, the cascade continued, and the request returned `unresolved` instead
+of throwing. It also produced the failure that motivated cache rule 3.
+
+Worth knowing operationally: **the running app depends on this hostname**, so a
+DNS problem on the deployment host degrades enrichment to the web and CMS tiers
+only — without breaking anything.

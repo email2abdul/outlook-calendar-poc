@@ -493,7 +493,7 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
  */
 router.get('/enrich', requireAuth, async (req, res, next) => {
   try {
-    const { email, name, firstName, lastName, state, city, npi, facility, context, useWeb } =
+    const { email, name, firstName, lastName, state, city, npi, facility, context, useWeb, refresh } =
       req.query;
 
     if (!email && !name && !lastName && !npi) {
@@ -514,6 +514,7 @@ router.get('/enrich', requireAuth, async (req, res, next) => {
       facilityName: typeof facility === 'string' ? facility : undefined,
       meetingContext: typeof context === 'string' ? context : undefined,
       useWeb: useWeb === 'never' || useWeb === 'always' ? useWeb : undefined,
+      refresh: refresh === '1' || refresh === 'true',
     });
 
     // Render server-side, like /api/physicians/:npi/brief and /api/leads/match:

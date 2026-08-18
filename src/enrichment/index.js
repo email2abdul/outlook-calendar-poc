@@ -7,10 +7,13 @@ const rematch = require('./rematch');
 const nppes = require('./sources/nppes');
 const cms = require('./sources/cms-provider');
 const webIdentity = require('./sources/web-identity');
+const openPayments = require('./sources/open-payments');
+const literature = require('./sources/literature');
+const cache = require('./cache');
 const { createProfile, fromBis, fromRegistry, fromWeb, inferred } = require('./provenance');
 
 /**
- * Enrichment orchestrator — Phases 1 & 2.
+ * Enrichment orchestrator.
  *
  * Runs the DB-first cascade from docs/external-enrichment-agent.md §4:
  *
@@ -20,7 +23,8 @@ const { createProfile, fromBis, fromRegistry, fromWeb, inferred } = require('./p
  *   T2    NPPES           name + state → NPI, specialty, …    free
  *   T3    RE-MATCH        NPI → bis_physicians; facility →    free
  *                         bis_facilities (city/state gated)
- *   T4    CMS             affiliation → CCN → hospital        free
+ *   T4    CMS + extras    affiliation → CCN → hospital; industry     free
+ *                         payments, publications, trials
  *
  * T1 runs only when it has something to buy: the caller gave no name, the
  * mailbox is not organisational, and ANTHROPIC_API_KEY is set. Otherwise the
@@ -163,6 +167,7 @@ function pickBestProvider(results, hints) {
  * @param {string} [query.facilityName] hint for the facility-only path
  * @param {string} [query.meetingContext] meeting title/description, for disambiguation
  * @param {'auto'|'always'|'never'} [query.useWeb='auto'] paid identity tier
+ * @param {boolean} [query.refresh] bypass the cache and look everything up again
  */
 async function enrich(query = {}) {
   const startedAt = Date.now();
@@ -198,6 +203,29 @@ async function enrich(query = {}) {
       return result;
     }
     result.tiers.push('T0:miss');
+  }
+
+  // ── Cache: skip the whole cascade when this address was looked up recently.
+  //    Checked AFTER the BIS lookup so the master is always read live, and it
+  //    never serves a result shallower than this request asks for (a free-tier
+  //    answer cannot satisfy a request that wants the paid tier).
+  const forceRefresh = query.refresh === true || query.refresh === 'true';
+  // Mirror the real T1 decision below, including the organisational-mailbox
+  // check: an address the paid tier will never run for should still be served
+  // from cache, rather than re-running the whole cascade for nothing.
+  const wantsWebForCache =
+    webIdentity.enabled &&
+    Boolean(email) &&
+    (query.useWeb || 'auto') !== 'never' &&
+    !rematch.nameHintsFromEmail(email).generic &&
+    (query.useWeb === 'always' || !(query.lastName || query.name));
+
+  if (email && !forceRefresh && !query.npi) {
+    const hit = await cache.get(email, { wantWeb: wantsWebForCache });
+    if (hit) {
+      hit.elapsedMs = Date.now() - startedAt;
+      return hit;
+    }
   }
 
   // ── T0.5: email domain → facility, from BIS's own emails ─────────────────
@@ -292,6 +320,9 @@ async function enrich(query = {}) {
       );
       result.profile = p.toJSON();
       result.elapsedMs = Date.now() - startedAt;
+      // Worth remembering: without this, the same colleague costs a paid
+      // lookup every time they appear on a meeting.
+      if (email) await cache.put(email, result);
       return result;
     }
 
@@ -434,7 +465,68 @@ async function enrich(query = {}) {
   // ── T4: CMS hospital affiliation (also feeds the facility re-match) ──────
   let hospitals = [];
   if (result.npi) {
-    hospitals = await cms.getAffiliatedHospitals(result.npi, 2);
+    // All four are free and independent, so they run together rather than
+    // adding four round-trips of latency one after another.
+    const [affiliated, payments, publications, trials] = await Promise.all([
+      cms.getAffiliatedHospitals(result.npi, 2),
+      openPayments.getPayments(result.npi),
+      literature.getPublications({
+        firstName: provider?.firstName || identity?.first_name,
+        middleName: provider?.middleName,
+        lastName: provider?.lastName || identity?.last_name,
+      }),
+      literature.getTrials(provider?.name || identity?.full_name),
+    ]);
+    hospitals = affiliated;
+
+    // Industry payments — who else is already paying this physician. The most
+    // commercially useful thing outside BIS, and BIS has no column for it.
+    if (payments) {
+      result.tiers.push('T4:open-payments');
+      const payMeta = { source: openPayments.SOURCE_NAME, sourceUrl: payments.sourceUrl };
+      p.setExtra('industryPayments', fromRegistry(openPayments.summarize(payments), payMeta));
+      p.setExtra(
+        'payingCompanies',
+        fromRegistry(
+          payments.topPayers.map((t) => `${t.payer} ($${t.amount.toLocaleString('en-US')})`),
+          payMeta
+        )
+      );
+      if (payments.products.length) {
+        p.setExtra('paymentProducts', fromRegistry(payments.products, payMeta));
+      }
+      result.industryPayments = payments;
+    }
+
+    if (publications) {
+      result.tiers.push('T4:pubmed');
+      const pubMeta = { source: literature.SOURCE_PUBMED, sourceUrl: publications.sourceUrl };
+      p.setExtra('publications', fromRegistry(`${publications.count} indexed publication(s)`, pubMeta));
+      if (publications.recent.length) {
+        p.setExtra(
+          'recentPublications',
+          fromRegistry(
+            publications.recent.map((r) => `${r.year} — ${r.title}`),
+            pubMeta
+          )
+        );
+      }
+      result.publications = publications;
+    }
+
+    if (trials) {
+      result.tiers.push('T4:trials');
+      const trialMeta = { source: literature.SOURCE_TRIALS, sourceUrl: trials.sourceUrl };
+      p.setExtra(
+        'clinicalTrials',
+        fromRegistry(
+          trials.studies.map((t) => `${t.nct} — ${t.title} (${t.status || 'status unknown'})`),
+          trialMeta
+        )
+      );
+      result.trials = trials;
+    }
+
     if (hospitals.length) {
       result.tiers.push('T4:cms-affiliation');
       const h = hospitals[0];
@@ -557,7 +649,8 @@ async function enrich(query = {}) {
 
   result.profile = p.toJSON();
   result.elapsedMs = Date.now() - startedAt;
+  if (email) await cache.put(email, result);
   return result;
 }
 
-module.exports = { enrich, splitName, pickBestProvider };
+module.exports = { enrich, splitName, pickBestProvider, cache };
