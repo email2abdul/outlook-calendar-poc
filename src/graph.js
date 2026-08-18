@@ -825,6 +825,68 @@ function externalBriefHtml(result) {
   return out.join('');
 }
 
+/**
+ * Email the rep a brief for someone who is NOT in the BIS master.
+ *
+ * The counterpart to sendPhysiciansBriefing for attendees the directory has
+ * never heard of: same delivery rules (BRIEFING_TO_EMAIL honoured, saved to
+ * Sent), same rendering as the in-app card, so email and app match — the
+ * invariant the rest of the briefs already keep.
+ *
+ * @param {string} accessToken
+ * @param {object} opts
+ * @param {string} opts.toEmail        the rep
+ * @param {object[]} opts.enrichments  enrich() results, one per attendee
+ * @param {{title?:string, start?:string, timeZone?:string}} [opts.event]
+ */
+async function sendExternalBriefing(accessToken, { toEmail, enrichments, event }) {
+  const list = (enrichments || []).filter(Boolean);
+  if (!list.length || !toEmail) return null;
+
+  const nameOf = (r) =>
+    r.profile?.fields?.name?.value || r.matchedFacility?.name || r.query?.email || 'unknown contact';
+  const names = list.map(nameOf);
+
+  const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
+  const sections = list
+    .map((r) => {
+      const banner =
+        list.length > 1
+          ? `<h2 style="font-size:18px;margin:26px 0 8px;padding-bottom:5px;` +
+            `border-bottom:2px solid #0f6cbd">${escapeHtml(nameOf(r))}</h2>`
+          : '';
+      return banner + externalBriefHtml(r);
+    })
+    .join('');
+
+  const content = [
+    `<p>${escapeHtml(
+      `An attendee on "${event?.title || 'your meeting'}" is not in the BIS directory. ` +
+        'Here is what we could establish about them from public sources.'
+    )}</p>`,
+    event?.title
+      ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${
+          meetingWhen ? ` — ${escapeHtml(meetingWhen)}` : ''
+        }</p>`
+      : '',
+    sections,
+  ].join('');
+
+  const client = getGraphClient(accessToken);
+  const sendTo = config.briefingToEmail || toEmail;
+
+  await client.api('/me/sendMail').post({
+    message: {
+      subject: `🔎 Outside BIS: ${names.join(' & ')}${event?.title ? ` — ${event.title}` : ''}`,
+      body: { contentType: 'HTML', content },
+      toRecipients: [{ emailAddress: { address: sendTo } }],
+    },
+    saveToSentItems: true,
+  });
+
+  return sendTo;
+}
+
 /** One physician's meeting-note history as HTML (or a placeholder). */
 function meetingNotesHtml(notes) {
   return notes && notes.length
@@ -1168,6 +1230,7 @@ module.exports = {
   buildBriefingContent,
   physicianBriefHtml,
   externalBriefHtml,
+  sendExternalBriefing,
   formatMeetingTime, // exported for brief-rendering tests
   analyticsHtml, // exported for brief-rendering tests
   commercialSignalsHtml, // exported for brief-rendering tests

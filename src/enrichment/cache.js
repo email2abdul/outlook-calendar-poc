@@ -64,6 +64,18 @@ function normEmail(email) {
   return e.includes('@') ? e : null;
 }
 
+/**
+ * The cache key for a lookup. A profile is addressable two ways: by the email
+ * the rep is looking at, and by NPI — the backfill enriches physicians who are
+ * already in BIS and have no email at all, so there is no address to key on.
+ */
+function keyFor({ email, npi } = {}) {
+  const e = normEmail(email);
+  if (e) return e;
+  const n = String(npi || '').replace(/\D/g, '');
+  return n.length === 10 ? `npi:${n}` : null;
+}
+
 function isFresh(refreshedAt) {
   if (!refreshedAt) return false;
   const ts = Date.parse(refreshedAt);
@@ -95,8 +107,9 @@ function rememberInMemory(email, row) {
  * Look up a cached enrichment.
  * @returns {Promise<object|null>} the stored `result` object, or null
  */
-async function get(email, { wantWeb = false } = {}) {
-  const key = normEmail(email);
+async function get(emailOrRef, { wantWeb = false } = {}) {
+  const key =
+    typeof emailOrRef === 'string' ? keyFor({ email: emailOrRef }) : keyFor(emailOrRef || {});
   if (!key) return null;
 
   const local = memory.get(key);
@@ -108,7 +121,7 @@ async function get(email, { wantWeb = false } = {}) {
     const { data, error } = await supabase
       .from(TABLE)
       .select('*')
-      .eq('lookup_email', key)
+      .eq('lookup_key', key)
       .limit(1);
 
     if (error) {
@@ -147,8 +160,9 @@ function hydrate(row) {
  * Store an enrichment result. Best-effort: a cache write must never fail the
  * request that produced it.
  */
-async function put(email, result) {
-  const key = normEmail(email);
+async function put(emailOrRef, result) {
+  const ref = typeof emailOrRef === 'string' ? { email: emailOrRef } : emailOrRef || {};
+  const key = keyFor(ref);
   if (!key || !result) return;
   if (result.status === 'in_bis') return; // rule 2 — always read the master live
 
@@ -164,7 +178,8 @@ async function put(email, result) {
   if (result.status === 'ambiguous' && !webUsed) return;
 
   const row = {
-    lookup_email: key,
+    lookup_key: key,
+    lookup_email: normEmail(ref.email),
     resolved_npi: result.npi || null,
     in_bis: Boolean(result.inBis),
     matched_facility_id: result.matchedFacility?.id || null,
@@ -182,7 +197,7 @@ async function put(email, result) {
   if (!supabase || tableMissing) return;
 
   try {
-    const { error } = await supabase.from(TABLE).upsert(row, { onConflict: 'lookup_email' });
+    const { error } = await supabase.from(TABLE).upsert(row, { onConflict: 'lookup_key' });
     if (error) {
       if (isMissingTable(error)) {
         tableMissing = true;
@@ -200,13 +215,14 @@ async function put(email, result) {
 }
 
 /** Drop one entry (both layers) — used by a forced refresh. */
-async function invalidate(email) {
-  const key = normEmail(email);
+async function invalidate(emailOrRef) {
+  const key =
+    typeof emailOrRef === 'string' ? keyFor({ email: emailOrRef }) : keyFor(emailOrRef || {});
   if (!key) return;
   memory.delete(key);
   if (!supabase || tableMissing) return;
   try {
-    await supabase.from(TABLE).delete().eq('lookup_email', key);
+    await supabase.from(TABLE).delete().eq('lookup_key', key);
   } catch {
     /* best effort */
   }
@@ -216,6 +232,7 @@ module.exports = {
   get,
   put,
   invalidate,
+  keyFor,
   TTL_DAYS,
   get enabled() {
     return Boolean(supabase) && !tableMissing;

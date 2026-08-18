@@ -553,6 +553,56 @@ router.get('/enrich', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * POST /api/enrich/promote
+ * Body: { npi, email?, mobile?, linkedinUrl?, confidence?, source? }
+ *
+ * Promote enriched contact details the rep has CONFIRMED into app_contacts,
+ * the Contact Intelligence overlay the brief already reads.
+ *
+ * This is the only path by which enrichment data becomes part of the app's own
+ * records, and it is deliberately manual: the agent writes to its cache
+ * automatically, but a human decides what is trustworthy enough to keep.
+ * bis_* is never written to — the master stays read-only.
+ */
+router.post('/enrich/promote', requireAuth, async (req, res, next) => {
+  try {
+    const { npi, email, mobile, linkedinUrl, confidence, source } = req.body || {};
+    if (typeof npi !== 'string' || !/^\d{10}$/.test(npi.trim())) {
+      return res.status(400).json({ error: 'bad_request', message: 'A 10-digit npi is required.' });
+    }
+    if (!email && !mobile && !linkedinUrl) {
+      return res.status(400).json({
+        error: 'bad_request',
+        message: 'Nothing to promote — provide at least one of email, mobile, linkedinUrl.',
+      });
+    }
+    if (!contactsStore.enabled) {
+      return res.status(503).json({ error: 'unavailable', message: 'Contact store not configured.' });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    await contactsStore.upsertContact({
+      npi: npi.trim(),
+      email: typeof email === 'string' ? email.trim().toLowerCase() : null,
+      mobile: typeof mobile === 'string' ? mobile.trim() : null,
+      linkedin_url: typeof linkedinUrl === 'string' ? linkedinUrl.trim() : null,
+      confidence_score: Number.isFinite(confidence) ? confidence : null,
+      last_verified: today,
+      last_refresh: today,
+      // Provenance travels with the row: a later reader can tell this came from
+      // the agent and was accepted by a person, not typed in from nowhere.
+      source: typeof source === 'string' && source.trim()
+        ? `enrichment:${source.trim()} (confirmed by ${organizerEmail(req) || 'user'})`
+        : `enrichment (confirmed by ${organizerEmail(req) || 'user'})`,
+    });
+
+    res.status(201).json({ promoted: true, npi: npi.trim() });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/leads — Lead records read from Dynamics 365 (app-only). Phase 1
  * returns just first/last name. `configured` tells the UI whether the Dynamics
  * env vars are set, so it can show a helpful hint instead of an empty list.

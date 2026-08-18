@@ -34,14 +34,58 @@ function authorTerm(firstName, lastName, middleName) {
 }
 
 /**
- * Publication record for a physician.
- * @returns {Promise<{count:number, recent:Array, searchTerm:string, sourceUrl:string}|null>}
+ * Narrow an author search to this physician.
+ *
+ * A surname plus initials is NOT a person: "Jain A[Author]" matched 10,279
+ * papers during testing, and reporting that as one physician's output is worse
+ * than reporting nothing. Where an affiliation or specialty is known, it is
+ * added as a filter — precision matters more than recall here, because the
+ * number goes in front of a rep as a fact about the person they are meeting.
  */
-async function getPublications({ firstName, lastName, middleName, topic } = {}) {
+function narrowingFilter({ institution, city, state, specialty }) {
+  const affiliations = [institution, city, state]
+    .map((v) => String(v || '').trim())
+    .filter((v) => v.length > 2)
+    .map((v) => `"${v}"[Affiliation]`);
+
+  // Take the leading word of the taxonomy ("Internal Medicine, Gastroenterology"
+  // → "Gastroenterology" is the distinctive half) as a subject filter.
+  const subject = String(specialty || '')
+    .split(',')
+    .pop()
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 4)[0];
+
+  // Affiliations are alternatives (any one of them identifies the place), but
+  // the subject is an additional requirement — OR-ing them together let every
+  // "Jain A" paper about gastroenterology back in, anywhere in the world.
+  const clauses = [];
+  if (affiliations.length) clauses.push(`(${affiliations.join(' OR ')})`);
+  if (subject) clauses.push(`"${subject}"`);
+  return clauses.length ? clauses.join(' AND ') : null;
+}
+
+/**
+ * Publication record for a physician.
+ * @returns {Promise<{count:number, recent:Array, searchTerm:string,
+ *   narrowed:boolean, sourceUrl:string}|null>}
+ */
+async function getPublications({
+  firstName,
+  lastName,
+  middleName,
+  topic,
+  institution,
+  city,
+  state,
+  specialty,
+} = {}) {
   const author = authorTerm(firstName, lastName, middleName);
   if (!author) return null;
 
-  const term = topic ? `${author} AND ${topic}` : author;
+  const filter = topic ? `(${topic})` : narrowingFilter({ institution, city, state, specialty });
+  const term = filter ? `${author} AND ${filter}` : author;
   const search = await getJson(
     buildUrl(`${PUBMED}/esearch.fcgi`, {
       db: 'pubmed',
@@ -81,6 +125,9 @@ async function getPublications({ firstName, lastName, middleName, topic } = {}) 
     count,
     recent,
     searchTerm: term,
+    // Without a narrowing clause the count is a surname's output, not a
+    // person's — callers should present it with that caveat.
+    narrowed: Boolean(filter),
     sourceUrl: `https://pubmed.ncbi.nlm.nih.gov/?term=${encodeURIComponent(term)}`,
   };
 }

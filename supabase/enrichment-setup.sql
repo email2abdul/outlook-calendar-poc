@@ -23,7 +23,11 @@
 create table if not exists app_external_profiles (
   id                  uuid primary key default gen_random_uuid(),
 
-  lookup_email        text not null,          -- what we searched by (lowercased)
+  -- Addressable two ways: by the email the rep is looking at, and by NPI (the
+  -- backfill script enriches known physicians who have no email at all).
+  -- lookup_key is "<email>" or "npi:<npi>"; lookup_email stays null for the latter.
+  lookup_key          text not null,
+  lookup_email        text,                   -- what we searched by (lowercased)
   resolved_npi        text,                   -- from NPPES, when identified
   in_bis              boolean not null default false,
   matched_facility_id text,                   -- bis_facilities hit, when matched
@@ -40,8 +44,10 @@ create table if not exists app_external_profiles (
   refreshed_at        timestamptz default now()
 );
 
--- One cached answer per address; the agent upserts on this key.
-create unique index if not exists app_external_profiles_email_idx
+-- One cached answer per lookup; the agent upserts on this key.
+create unique index if not exists app_external_profiles_key_idx
+  on app_external_profiles (lookup_key);
+create index if not exists app_external_profiles_email_idx
   on app_external_profiles (lower(lookup_email));
 
 -- "Everything we know about this NPI", and TTL sweeps.

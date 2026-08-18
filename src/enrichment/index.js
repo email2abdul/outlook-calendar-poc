@@ -220,8 +220,11 @@ async function enrich(query = {}) {
     !rematch.nameHintsFromEmail(email).generic &&
     (query.useWeb === 'always' || !(query.lastName || query.name));
 
-  if (email && !forceRefresh && !query.npi) {
-    const hit = await cache.get(email, { wantWeb: wantsWebForCache });
+  // Keyed by email when we have one, else by NPI — the backfill enriches
+  // physicians who are already in BIS and have no address at all.
+  const cacheRef = { email, npi: query.npi };
+  if ((email || query.npi) && !forceRefresh) {
+    const hit = await cache.get(cacheRef, { wantWeb: wantsWebForCache });
     if (hit) {
       hit.elapsedMs = Date.now() - startedAt;
       return hit;
@@ -322,7 +325,7 @@ async function enrich(query = {}) {
       result.elapsedMs = Date.now() - startedAt;
       // Worth remembering: without this, the same colleague costs a paid
       // lookup every time they appear on a meeting.
-      if (email) await cache.put(email, result);
+      await cache.put({ email, npi: result.npi }, result);
       return result;
     }
 
@@ -474,6 +477,11 @@ async function enrich(query = {}) {
         firstName: provider?.firstName || identity?.first_name,
         middleName: provider?.middleName,
         lastName: provider?.lastName || identity?.last_name,
+        // Narrowing context — a bare surname + initials is not a person.
+        institution: identity?.institution || domainHit?.facility?.name || null,
+        city: provider?.city || identity?.city || null,
+        state: states.toName(provider?.state || identity?.state) || null,
+        specialty: provider?.specialty || identity?.specialty || null,
       }),
       literature.getTrials(provider?.name || identity?.full_name),
     ]);
@@ -501,7 +509,14 @@ async function enrich(query = {}) {
     if (publications) {
       result.tiers.push('T4:pubmed');
       const pubMeta = { source: literature.SOURCE_PUBMED, sourceUrl: publications.sourceUrl };
-      p.setExtra('publications', fromRegistry(`${publications.count} indexed publication(s)`, pubMeta));
+      p.setExtra(
+        'publications',
+        fromRegistry(
+          `${publications.count} indexed publication(s)` +
+            (publications.narrowed ? '' : ' — surname match only, not verified as this person'),
+          pubMeta
+        )
+      );
       if (publications.recent.length) {
         p.setExtra(
           'recentPublications',
@@ -649,7 +664,7 @@ async function enrich(query = {}) {
 
   result.profile = p.toJSON();
   result.elapsedMs = Date.now() - startedAt;
-  if (email) await cache.put(email, result);
+  await cache.put({ email, npi: result.npi || query.npi }, result);
   return result;
 }
 

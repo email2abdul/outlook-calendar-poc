@@ -1,6 +1,6 @@
 # External Enrichment Agent — Design & Verified Research
 
-**Status:** Phases 1–4 built & tested · design for P5 · **Date:** 2026-08-18  
+**Status:** Phases 1–5 built & tested · **Date:** 2026-08-18  
 **Branch:** `feature/physician-facility-data-enrichment`  
 **Builds on:** the existing outlook-calendar-poc (OAuth/Graph, Supabase `bis_*`
 master data, entity-matcher, analytics, `physicianBriefHtml`, email-ingest).
@@ -334,7 +334,7 @@ resolves:
 | **P2** ✅ | `sources/web-identity.js` (web_search + citations + forced-tool-use JSON), `context.js` (organizer rule + title/description hints), confidence gating — **built and tested 2026-08-18**, see §14 | paid tier begins |
 | **P3** ✅ | `externalBriefHtml()` + badges + Extra Intelligence block; `buildNoMatch()` auto-enrich — **built and tested 2026-08-18**, see §15 | — |
 | **P4** ✅ | `app_external_profiles` cache + TTL; Open Payments, PubMed, ClinicalTrials extras — **built and tested 2026-08-18**, see §16 | — |
-| **P5** | `email-ingest` hook (unknown attendee ⇒ auto brief), `promote` flow, backfill script for the 5,179 email-less physicians | — |
+| **P5** ✅ | `email-ingest` hook (unknown attendee ⇒ auto brief), `promote` flow, backfill script — **built and tested 2026-08-18**, see §17 | — |
 
 P1 and P2 need no new credentials — `ANTHROPIC_API_KEY` is already configured and
 `web_search` is enabled on it.
@@ -684,3 +684,101 @@ of throwing. It also produced the failure that motivated cache rule 3.
 Worth knowing operationally: **the running app depends on this hostname**, so a
 DNS problem on the deployment host degrades enrichment to the web and CMS tiers
 only — without breaking anything.
+
+
+---
+
+## 17. Phase 5 — what shipped
+
+Built and verified 2026-08-18. The agent now runs without being asked, and what
+it finds can become part of the app's own records.
+
+```
+src/email-ingest.js          briefUnknownAttendees() — the hook
+src/graph.js                 + sendExternalBriefing()
+src/routes/api.routes.js     POST /api/enrich/promote
+scripts/enrich-backfill.js   npm run enrich:backfill
+src/enrichment/cache.js      addressable by email OR npi
+```
+
+### The ingest hook — the gap finally closed
+
+A meeting whose attendees were not in `bis_physicians` used to end in silence:
+no activity link, no brief, no meeting-body injection. The rep walked in with
+nothing. `syncActivities` now enriches those attendees, and two outcomes matter:
+
+- **`recovered_in_bis`** — the physician IS in the master; only their email was
+  missing. The meeting is linked to their NPI and briefed through the **normal**
+  path, exactly as if the address had matched. This alone rescues meetings that
+  were previously invisible to the whole platform.
+- **`external`** — genuinely outside BIS. The rep gets the provenance-tagged
+  brief by email (`sendExternalBriefing`), rendered from the same
+  `externalBriefHtml` as the in-app card, so email and app still match.
+
+Guards: never the organizer, once per meeting (dedup key `enrich:<eventId>`),
+and only for meetings not seen before — so a five-minute poll cannot spend
+repeatedly on the same event. Results are cached for 14 days on top of that.
+
+### Promote — how enrichment becomes the app's own data
+
+`POST /api/enrich/promote` writes confirmed contact details into
+`app_contacts`, the Contact Intelligence overlay the brief already reads, with
+provenance recorded in `source` (`enrichment:… (confirmed by <rep>)`).
+
+Deliberately manual. The agent writes to its own cache automatically, but a
+person decides what is trustworthy enough to keep — and `bis_*` is still never
+written to.
+
+### Backfill
+
+```
+npm run enrich:backfill -- --facility HSOP105211 --limit 6
+npm run enrich:backfill -- --missing-email --limit 20 --write
+npm run enrich:backfill -- --npi 1467521757,1508935800 --write
+```
+
+Pre-computes the outside-BIS picture for a set of physicians so the first
+meeting is instant. Defaults are conservative on purpose — free tiers, 20
+physicians, nothing written — because a blanket sweep of all 5,179 email-less
+physicians through the paid tier would cost roughly **$780**. That should be a
+deliberate decision, not the result of running a script with no arguments.
+
+A live run over one facility's six gastroenterologists:
+
+```
+1/6 1508935800 Lisa M Gangarosa — recovered_in_bis · 12 pubs
+2/6 1194760868 Julia W Tang     — recovered_in_bis · $474 from 5 co.
+3/6 1336534387 Andrew J Gilman  — recovered_in_bis · 2 pubs · 1 trial
+4/6 1922234863 Animesh Jain     — recovered_in_bis · 6 pubs
+5/6 1508126079 Craig Reed       — recovered_in_bis · 1 pub
+6/6 1588954457 Neil D Shah      — recovered_in_bis · $26,959 from 5 co. · 4 pubs
+```
+
+The cache is now addressable by **NPI as well as email** (`lookup_key` is either
+the address or `npi:<npi>`), because a physician who is in BIS with no email has
+no address to key on.
+
+### A precision bug the backfill exposed
+
+The first run reported **"Animesh Jain — 10,279 publications"**. `Jain A[Author]`
+is not a person; it is thousands of them. Presenting that to a rep as one
+physician's output is worse than reporting nothing at all.
+
+PubMed author searches are now narrowed by the physician's own affiliation
+**and** specialty, taken from the NPPES record already in hand:
+
+| | Before | After |
+|---|---|---|
+| Animesh Jain (common name) | 10,279 | **18** |
+| Nicholas Shaheen (distinctive name) | 458 | **275** |
+
+Affiliations are alternatives to each other but the specialty is an additional
+requirement — OR-ing them together let every "Jain A" paper about
+gastroenterology back in from anywhere in the world. Where no narrowing signal
+exists the count is still shown, labelled *"surname match only, not verified as
+this person"*, and the exact search term travels with the field so the rep can
+click through and check.
+
+This is the same principle as the confidence bands and the conflict list: the
+brief may say "we don't know", but it must never say something confident and
+wrong.
