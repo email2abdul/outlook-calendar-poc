@@ -52,11 +52,26 @@ function isMissingTable(error) {
   const code = error.code || '';
   const message = error.message || '';
   return (
-    code === '42P01' ||
-    code === 'PGRST205' ||
-    /schema cache/i.test(message) ||
-    /does not exist/i.test(message)
+    code === '42P01' || // Postgres: undefined_table
+    code === 'PGRST205' || // PostgREST: not in the schema cache
+    /could not find the table/i.test(message)
   );
+}
+
+/**
+ * Is this "the table is there, but not the shape this code expects"?
+ *
+ * Distinct from a missing table, and it must NOT be swallowed the same way: it
+ * means an older version of enrichment-setup.sql was applied, so the fix is to
+ * re-run the current one — a message worth printing loudly rather than
+ * degrading to in-process caching in silence.
+ *
+ * (Matching "does not exist" alone conflated the two: Postgres phrases a
+ * missing column as `column … does not exist`, which read as "no table".)
+ */
+function isSchemaDrift(error) {
+  if (!error) return false;
+  return error.code === '42703' || /column .* does not exist/i.test(error.message || '');
 }
 
 function normEmail(email) {
@@ -131,6 +146,12 @@ async function get(emailOrRef, { wantWeb = false } = {}) {
           `[enrichment:cache] ${TABLE} not found — run supabase/enrichment-setup.sql. ` +
             'Falling back to in-process caching only.'
         );
+      } else if (isSchemaDrift(error)) {
+        tableMissing = true;
+        console.error(
+          `[enrichment:cache] ${TABLE} is out of date (${error.message}). ` +
+            'Re-run supabase/enrichment-setup.sql — it upgrades an existing table in place.'
+        );
       }
       return null;
     }
@@ -204,6 +225,12 @@ async function put(emailOrRef, result) {
         console.warn(
           `[enrichment:cache] ${TABLE} not found — run supabase/enrichment-setup.sql. ` +
             'Falling back to in-process caching only.'
+        );
+      } else if (isSchemaDrift(error)) {
+        tableMissing = true;
+        console.error(
+          `[enrichment:cache] ${TABLE} is out of date (${error.message}). ` +
+            'Re-run supabase/enrichment-setup.sql — it upgrades an existing table in place.'
         );
       } else {
         console.warn('[enrichment:cache] write failed:', error.message);

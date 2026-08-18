@@ -44,6 +44,24 @@ create table if not exists app_external_profiles (
   refreshed_at        timestamptz default now()
 );
 
+-- ── Upgrade path ──────────────────────────────────────────────────────────
+-- `create table if not exists` above is a no-op when an earlier version of this
+-- file has already been applied, so bring an existing table up to the current
+-- shape explicitly. Safe to run repeatedly, and safe on a fresh table.
+alter table app_external_profiles add column if not exists lookup_key text;
+alter table app_external_profiles add column if not exists status text;
+alter table app_external_profiles add column if not exists confidence int;
+alter table app_external_profiles add column if not exists web_used boolean not null default false;
+alter table app_external_profiles add column if not exists matched_facility_id text;
+
+-- Older rows were keyed by email alone; adopt them as their own lookup_key.
+update app_external_profiles
+   set lookup_key = lower(lookup_email)
+ where lookup_key is null and lookup_email is not null;
+
+-- Rows keyed by NPI carry no address, so the email column must allow nulls.
+alter table app_external_profiles alter column lookup_email drop not null;
+
 -- One cached answer per lookup; the agent upserts on this key.
 create unique index if not exists app_external_profiles_key_idx
   on app_external_profiles (lookup_key);
