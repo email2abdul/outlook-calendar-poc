@@ -631,6 +631,73 @@ function physicianBriefHtml({ physician, analytics, contact }) {
 // ── External (enriched) brief ────────────────────────────────────────────────
 
 /**
+ * Reading order for the enriched brief.
+ *
+ * The profile is built tier by tier, so its key order reflects which source
+ * answered first — which rendered as "NPI, City, Name, Phone…". A physician's
+ * name belongs at the top, and the facility block belongs together; mirror the
+ * order physicianBriefHtml already uses so the two briefs read alike.
+ * Anything not listed keeps a stable alphabetical position at the end.
+ */
+const FIELD_ORDER = [
+  'name', 'credential', 'npi', 'specialty', 'email', 'phone',
+  'address', 'city', 'state',
+  'facility', 'facilityAddress', 'healthSystem', 'territory',
+];
+
+const EXTRA_ORDER = [
+  'jobTitle', 'institution',
+  'industryPayments', 'payingCompanies', 'paymentProducts',
+  'publications', 'recentPublications', 'clinicalTrials',
+  'facilityType', 'facilityOwnership', 'facilityRating', 'facilityPhone', 'facilityCcn',
+  'licenseNumber', 'licenseState', 'npiEnumerated', 'taxonomies',
+  'evidenceUrls', 'identityReasoning',
+];
+
+/** Field entries in reading order, unlisted keys alphabetical at the end. */
+function orderedEntries(bag, order) {
+  const rank = (key) => {
+    const i = order.indexOf(key);
+    return i === -1 ? order.length : i;
+  };
+  return Object.entries(bag || {}).sort(
+    ([a], [b]) => rank(a) - rank(b) || a.localeCompare(b)
+  );
+}
+
+/**
+ * A link whose TEXT is short and readable, with the full URL on href/title.
+ *
+ * Printing a raw URL as the link text broke the layout: PubMed search URLs
+ * carry the whole narrowing query percent-encoded, which is ~200 characters
+ * with no spaces, so it could not wrap and pushed the card past its container.
+ * A hostname-plus-path label is both un-overflowable and easier to read; the
+ * exact URL is still one hover (or click) away.
+ *
+ * `word-break` is inline as well as in the stylesheet because the same HTML is
+ * emailed, where no stylesheet is loaded.
+ */
+function sourceLink(url, { maxLength = 52 } = {}) {
+  const raw = String(url || '');
+  if (!raw) return '';
+
+  let label = raw.replace(/^https?:\/\//i, '').replace(/^www\./i, '');
+  try {
+    const parsed = new URL(raw);
+    const path = parsed.pathname && parsed.pathname !== '/' ? parsed.pathname : '';
+    label = `${parsed.hostname.replace(/^www\./i, '')}${path}`;
+  } catch {
+    /* not a parseable URL — fall back to the trimmed string */
+  }
+  if (label.length > maxLength) label = `${label.slice(0, maxLength - 1)}…`;
+
+  return (
+    `<a href="${escapeHtml(raw)}" title="${escapeHtml(raw)}" ` +
+    `style="color:#0f6cbd;word-break:break-word">${escapeHtml(label)}</a>`
+  );
+}
+
+/**
  * One provenance-tagged field as a table row: badge, value, source, and — for
  * anything sourced from the open web — a link that proves it.
  */
@@ -642,9 +709,7 @@ function provenanceRow(label, f) {
   const rendered = values
     .map((v) => {
       const text = String(v);
-      return /^https?:\/\//i.test(text)
-        ? `<a href="${escapeHtml(text)}" style="color:#0f6cbd;word-break:break-all">${escapeHtml(text)}</a>`
-        : escapeHtml(text);
+      return /^https?:\/\//i.test(text) ? sourceLink(text) : escapeHtml(text);
     })
     .join(Array.isArray(f.value) ? '<br>' : ', ');
 
@@ -719,7 +784,7 @@ function externalBriefHtml(result) {
   }
 
   // ── Identity ──────────────────────────────────────────────────────────────
-  const fieldRows = Object.entries(profile.fields)
+  const fieldRows = orderedEntries(profile.fields, FIELD_ORDER)
     .map(([key, f]) => provenanceRow(fieldLabel(key), f))
     .join('');
   if (fieldRows) {
@@ -733,7 +798,7 @@ function externalBriefHtml(result) {
   }
 
   // ── Extra Intelligence — no BIS counterpart ──────────────────────────────
-  const extraRows = Object.entries(profile.extra)
+  const extraRows = orderedEntries(profile.extra, EXTRA_ORDER)
     .map(([key, f]) => provenanceRow(fieldLabel(key), f))
     .join('');
   if (extraRows) {
@@ -803,11 +868,11 @@ function externalBriefHtml(result) {
       '<p class="brief-h"><b>Sources</b></p><ul style="margin:4px 0;font-size:13px">' +
         profile.sources
           .map((s) => {
-            const link = s.url
-              ? `<a href="${escapeHtml(s.url)}" style="color:#0f6cbd;text-decoration:none">${escapeHtml(s.url)}</a>`
-              : '<i>no public URL</i>';
-            return `<li>${s.badge} <b>${escapeHtml(s.source)}</b> — ${link}<br>` +
-              `<span style="color:#777">${escapeHtml(s.fields.join(', '))}</span></li>`;
+            const link = s.url ? sourceLink(s.url) : '<i>no public URL</i>';
+            return (
+              `<li style="word-break:break-word">${s.badge} <b>${escapeHtml(s.source)}</b> — ${link}<br>` +
+              `<span style="color:#777">${escapeHtml(s.fields.join(', '))}</span></li>`
+            );
           })
           .join('') +
         '</ul>'
