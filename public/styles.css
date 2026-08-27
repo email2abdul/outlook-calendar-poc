@@ -1734,3 +1734,72 @@ body {
     width: 100%;
   }
 }
+
+/* ── External enrichment (agent lookup for attendees not in BIS) ─────────────
+   Rendered inside a meeting's detail panel when an attendee's email is not in
+   the directory. The brief HTML itself is server-rendered with its own inline
+   styles (badges, source links); these rules only frame the cards. */
+.enrich {
+  margin: 4px 0 14px;
+}
+
+.enrich__title {
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+
+.enrich__card {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid #0f6cbd;
+  border-radius: 6px;
+  background: var(--surface, #fff);
+}
+
+.enrich__who {
+  margin: 0 0 8px;
+  font-weight: 600;
+  font-size: 14px;
+  /* Long addresses must not push the card wide on mobile. */
+  overflow-wrap: anywhere;
+}
+
+/* Nothing inside an enrichment card may push it wider than its container.
+   The content is external and unbounded — registry URLs, encoded PubMed search
+   terms, long facility names — so wrapping is enforced here rather than trusted
+   to each value. A raw PubMed search URL (~200 chars, no spaces) broke out of
+   the card before this. */
+.enrich__body {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.enrich__body table {
+  width: 100%;
+  max-width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed; /* a long unbreakable cell can't widen the table */
+}
+
+.enrich__body td,
+.enrich__body li,
+.enrich__body a {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Label column stays narrow so values get the room. */
+.enrich__body td:first-child {
+  width: 34%;
+}
+
+.enrich__deep {
+  margin-top: 10px;
+}
+
+@media (max-width: 600px) {
+  .enrich__card {
+    padding: 10px;
+  }
+}

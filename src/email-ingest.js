@@ -4,6 +4,8 @@ const auth = require('./auth');
 const graph = require('./graph');
 const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
+const context = require('./enrichment/context');
+const enrichment = require('./enrichment');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
@@ -77,25 +79,24 @@ function cleanBody(text) {
 }
 
 /**
- * Every physician an event is with, deduped by NPI: all attendees whose email
+ * Every physician an event is with, deduped by NPI: the ATTENDEES whose email
  * is an EXACT match in the directory (so a meeting with two physician emails
- * yields two), else a single title match. Empty array when it's not a
- * physician meeting.
+ * yields two). Empty array when it's not a physician meeting.
+ *
+ * Identity comes from the attendee's email address and nothing else. The
+ * organizer — the rep who scheduled the meeting — is never matched, and the
+ * title/description are never used to guess WHO the meeting is with: this
+ * function triggers the automatic brief email and the meeting-body injection,
+ * so a guess here mails the wrong person's data. The title still supplies
+ * facility context elsewhere (src/enrichment/context.js).
  */
-async function physiciansForEvent(ev) {
+async function physiciansForEvent(ev, selfEmail) {
   const found = new Map();
-  for (const a of ev.attendees || []) {
+  for (const a of context.attendeesToEnrich(ev, { selfEmail })) {
     const p = physiciansDir.getByEmail(a.email);
     if (p) found.set(p.npi, p);
   }
-  if (found.size) return [...found.values()];
-
-  const analysis = await entityMatcher.analyze(
-    [ev.title, ev.description].filter(Boolean).join('. ')
-  );
-  const m = analysis.matched_entities.find((x) => x.entity_type === 'person');
-  const p = m ? physiciansDir.getByNpi(m.master_id) : null;
-  return p ? [p] : [];
+  return [...found.values()];
 }
 
 // ── Per-user sync ────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ async function syncActivities(token, user) {
   let synced = 0;
   for (const ev of events) {
     if (ev.isAllDay) continue;
-    const physicians = await physiciansForEvent(ev);
+    const physicians = await physiciansForEvent(ev, user.email);
     // The activity row links to a single physician (schema is one NPI per
     // activity); use the first. All matched physicians are still briefed below.
     const primary = physicians[0] || null;
@@ -136,6 +137,23 @@ async function syncActivities(token, user) {
         await sendInstantBrief(token, user, ev, physicians);
       } catch (err) {
         console.warn('[ingest] instant brief failed:', err.message);
+      }
+    }
+
+    // Nobody on the meeting is in BIS — the case that used to end here in
+    // silence. Look the attendees up outside the master instead.
+    if (!physicians.length && !existed) {
+      try {
+        const recovered = await briefUnknownAttendees(token, user, ev);
+        // An attendee the agent found IS in BIS after all (their email was
+        // simply missing from the master): link and brief them normally.
+        if (recovered.length) {
+          const primary = recovered[0];
+          await crm.upsertActivityFromEvent(user.homeAccountId, ev, primary.npi, primary.facility?.id);
+          await sendInstantBrief(token, user, ev, recovered);
+        }
+      } catch (err) {
+        console.warn('[ingest] enrichment brief failed:', err.message);
       }
     }
 
@@ -224,6 +242,63 @@ async function sendInstantBrief(token, user, ev, physicians) {
   });
   await tokenStore.markReminderSent(user.homeAccountId, key);
   console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}" (${names})`);
+}
+
+/**
+ * Look up the attendees of a meeting that matched nobody in BIS.
+ *
+ * This is the gap the enrichment agent exists to close: before, a meeting whose
+ * attendees were not in bis_physicians produced no activity link, no brief and
+ * no meeting-body injection — the rep walked in with nothing.
+ *
+ * Two outcomes are worth acting on:
+ *   - `recovered_in_bis` — the physician IS in the master, their email just
+ *     wasn't. Returned to the caller so the meeting is linked and briefed
+ *     through the normal path.
+ *   - `external` — genuinely outside BIS; the rep gets the provenance-tagged
+ *     brief by email instead.
+ *
+ * Runs once per meeting (dedup key), never for the organizer, and only for
+ * meetings we have not seen before, so a poll every five minutes cannot spend
+ * repeatedly on the same event.
+ *
+ * @returns {Promise<object[]>} BIS physicians recovered by NPI (usually empty)
+ */
+async function briefUnknownAttendees(token, user, ev) {
+  const attendees = context.attendeesToEnrich(ev, { selfEmail: user.email });
+  if (!attendees.length || !ev.id) return [];
+
+  const key = `enrich:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return [];
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+
+  const meetingContext = [ev.title, ev.description].filter(Boolean).join('. ').slice(0, 500);
+  const recovered = [];
+  const external = [];
+
+  for (const attendee of attendees) {
+    const result = await enrichment.enrich({ email: attendee.email, meetingContext });
+
+    if (result.status === 'recovered_in_bis' && result.physician) {
+      recovered.push(result.physician);
+    } else if (result.status === 'external') {
+      external.push(result);
+    }
+  }
+
+  if (external.length && user.email) {
+    const to = await graph.sendExternalBriefing(token, {
+      toEmail: user.email,
+      enrichments: external,
+      event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
+    });
+    console.log(
+      `[ingest] external brief sent to ${to} — "${ev.title}" ` +
+        `(${external.length} attendee(s) outside BIS)`
+    );
+  }
+
+  return recovered;
 }
 
 async function ingestEmails(token, user) {
