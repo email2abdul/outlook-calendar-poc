@@ -486,12 +486,109 @@ async function searchPhysicians(q, list, onPick) {
 
 // ── The meeting detail region ─────────────────────────────────────────────────
 
-/** No email match → title-based suggestions + a search box to pick a physician. */
+// ── Enrichment: attendees who are not in the BIS directory ───────────────────
+
+/** Meeting title + description, passed to the agent as disambiguating context. */
+function meetingContextOf(ev) {
+  return [ev.title, ev.description].filter(Boolean).join('. ').slice(0, 500);
+}
+
+/**
+ * Run the enrichment agent for one attendee and render the result.
+ *
+ * Two passes on purpose. The free tiers (BIS + NPPES + CMS) answer in 1-5s, so
+ * they run automatically and the rep sees something immediately. The paid web
+ * tier takes ~40s, so it stays behind a button rather than stalling the card.
+ */
+async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) {
+  const deep = useWeb === 'always';
+  box.innerHTML = `<p class="muted">${
+    deep ? 'Searching the web for this person…' : 'Checking public registries…'
+  }</p>`;
+
+  const params = new URLSearchParams({
+    email: attendee.email,
+    context: meetingContextOf(ev),
+    useWeb,
+  });
+
+  let data;
+  try {
+    const res = await fetch(`/api/enrich?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    data = await res.json();
+  } catch {
+    box.innerHTML = '<p class="muted">Enrichment unavailable.</p>';
+    return;
+  }
+
+  box.innerHTML = data.html || '<p class="muted">Nothing found for this address.</p>';
+
+  // Offer the paid lookup only when the free tiers actually fell short.
+  const needsWeb = !deep && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);
+  if (needsWeb) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn btn--ghost enrich__deep';
+    btn.textContent = '🔎 Identify with web search';
+    btn.addEventListener('click', () => {
+      btn.disabled = true;
+      enrichAttendeeInto(box, attendee, ev, { useWeb: 'always' });
+    });
+    box.appendChild(btn);
+  }
+}
+
+/**
+ * Enrichment cards for every attendee who is not the organizer.
+ *
+ * The organizer — the person who scheduled the meeting — is never enriched, so
+ * they are filtered out here as well as on the server.
+ */
+function buildEnrichment(detail, ev) {
+  const targets = (ev.attendees || []).filter((a) => a.email && !a.isOrganizer && a.type !== 'resource');
+  if (!targets.length) return;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'enrich';
+
+  const head = document.createElement('h3');
+  head.className = 'enrich__title';
+  head.textContent = targets.length > 1 ? 'Attendees — external lookup' : 'External lookup';
+  wrap.appendChild(head);
+
+  for (const attendee of targets) {
+    const card = document.createElement('section');
+    card.className = 'enrich__card';
+
+    const who = document.createElement('p');
+    who.className = 'enrich__who';
+    who.textContent = attendee.name ? `${attendee.name} · ${attendee.email}` : attendee.email;
+    card.appendChild(who);
+
+    const body = document.createElement('div');
+    body.className = 'enrich__body physician-analytics';
+    card.appendChild(body);
+
+    wrap.appendChild(card);
+    enrichAttendeeInto(body, attendee, ev);
+  }
+
+  detail.appendChild(wrap);
+}
+
+/** No email match → auto-enrichment, title-based suggestions, and a search box. */
 function buildNoMatch(detail, ev) {
   const intro = document.createElement('p');
   intro.className = 'muted event__detail-intro';
   intro.textContent = 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
   detail.appendChild(intro);
+
+  // Look the attendees up outside BIS straight away — the rep should not have
+  // to ask for it.
+  buildEnrichment(detail, ev);
 
   // Slot that holds the chosen physician's full block.
   const pickedWrap = document.createElement('div');

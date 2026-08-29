@@ -13,6 +13,8 @@ const emailIngest = require('../email-ingest');
 const emailIntelStore = require('../email-intel-store');
 const dynamics = require('../dynamics');
 const leadMatch = require('../lead-match');
+const enrichment = require('../enrichment');
+const meetingContext = require('../enrichment/context');
 
 const router = express.Router();
 
@@ -128,11 +130,16 @@ async function dayHandler(req, res, next) {
     const organizer = organizerEmail(req);
     data.events = await Promise.all(
       data.events.map(async (ev) => {
+        // Only ATTENDEES are matched against the directory — never the person
+        // who scheduled the meeting (nor the signed-in user). They stay on the
+        // list for display, but carry no physician match.
         const attendees = await Promise.all(
           ev.attendees.map(async (a) => {
-            const physician = physicians.getByEmail(a.email);
+            const excluded = meetingContext.isOrganizer(ev, a.email, organizer);
+            const physician = excluded ? null : physicians.getByEmail(a.email);
             return {
               ...a,
+              isOrganizer: excluded,
               physician,
               lastNote: physician ? await callNotes.getLatestNote(physician.npi, organizer) : null,
             };
@@ -153,8 +160,12 @@ async function dayHandler(req, res, next) {
         // master data. Matched physicians (and suggestions, when nothing clears
         // the confidence threshold) become option chips so the user picks who
         // the meeting is actually with.
-        const entityAnalysis = await entityMatcher.analyze(
-          [ev.title, ev.description].filter(Boolean).join('. ')
+        // Title/description give facility and other context — but a person
+        // named there who is really the organizer is filtered out first.
+        const entityAnalysis = meetingContext.stripOrganizerPeople(
+          await entityMatcher.analyze([ev.title, ev.description].filter(Boolean).join('. ')),
+          ev,
+          organizer
         );
         const titleMatches = entityMatcher.physicianProfilesFrom(entityAnalysis, {
           exclude: attendeeNpis,
@@ -455,6 +466,137 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
   try {
     const rows = await emailIntelStore.listIntel(ownerId(req));
     res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/enrich?email=&name=&firstName=&lastName=&state=&city=&npi=&facility=
+ *
+ * Identify someone who is NOT in the BIS directory and build a
+ * provenance-tagged profile for them — every field carrying the source it came
+ * from (see docs/external-enrichment-agent.md).
+ *
+ * Free tiers (BIS + NPPES + CMS) always run. The paid web-identity tier runs
+ * only when there is something to buy — no name supplied and a personal-looking
+ * mailbox; pass `useWeb=never` to force it off or `useWeb=always` to force it
+ * on. `context` passes the meeting title/description for disambiguation.
+ *
+ * `status` tells the caller what happened:
+ *   in_bis            → already in bis_physicians, use the normal brief
+ *   recovered_in_bis  → the email was missing, but the NPI is in the master
+ *   external          → genuinely outside BIS; registry profile returned
+ *   facility_only     → person unresolved, facility identified
+ *   not_physician     → identified, but not a clinician — no brief produced
+ *   unresolved        → nothing confident enough; candidates listed
+ */
+router.get('/enrich', requireAuth, async (req, res, next) => {
+  try {
+    const { email, name, firstName, lastName, state, city, npi, facility, context, useWeb, refresh } =
+      req.query;
+
+    if (!email && !name && !lastName && !npi) {
+      return res.status(400).json({
+        error: 'bad_request',
+        message: 'Provide at least one of: email, name, lastName, npi.',
+      });
+    }
+
+    const result = await enrichment.enrich({
+      email: typeof email === 'string' ? email : undefined,
+      name: typeof name === 'string' ? name : undefined,
+      firstName: typeof firstName === 'string' ? firstName : undefined,
+      lastName: typeof lastName === 'string' ? lastName : undefined,
+      state: typeof state === 'string' ? state : undefined,
+      city: typeof city === 'string' ? city : undefined,
+      npi: typeof npi === 'string' ? npi : undefined,
+      facilityName: typeof facility === 'string' ? facility : undefined,
+      meetingContext: typeof context === 'string' ? context : undefined,
+      useWeb: useWeb === 'never' || useWeb === 'always' ? useWeb : undefined,
+      refresh: refresh === '1' || refresh === 'true',
+    });
+
+    // Render server-side, like /api/physicians/:npi/brief and /api/leads/match:
+    // a physician already in BIS gets the STANDARD brief (nothing is enriched
+    // about them), anyone else gets the provenance-tagged external one.
+    if (result.status === 'in_bis' && result.physician) {
+      const [analyticsData, contact] = await Promise.all([
+        analytics.getLabelledAnalytics(result.physician.npi),
+        contactsStore.getContact(result.physician.npi),
+      ]);
+      result.html = graph.physicianBriefHtml({
+        physician: result.physician,
+        analytics: analyticsData,
+        contact,
+      });
+    } else if (result.status === 'recovered_in_bis' && result.physician) {
+      const [analyticsData, contact] = await Promise.all([
+        analytics.getLabelledAnalytics(result.physician.npi),
+        contactsStore.getContact(result.physician.npi),
+      ]);
+      result.html =
+        graph.externalBriefHtml(result) +
+        graph.physicianBriefHtml({
+          physician: result.physician,
+          analytics: analyticsData,
+          contact,
+        });
+    } else {
+      result.html = graph.externalBriefHtml(result);
+    }
+
+    res.json(result);
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/enrich/promote
+ * Body: { npi, email?, mobile?, linkedinUrl?, confidence?, source? }
+ *
+ * Promote enriched contact details the rep has CONFIRMED into app_contacts,
+ * the Contact Intelligence overlay the brief already reads.
+ *
+ * This is the only path by which enrichment data becomes part of the app's own
+ * records, and it is deliberately manual: the agent writes to its cache
+ * automatically, but a human decides what is trustworthy enough to keep.
+ * bis_* is never written to — the master stays read-only.
+ */
+router.post('/enrich/promote', requireAuth, async (req, res, next) => {
+  try {
+    const { npi, email, mobile, linkedinUrl, confidence, source } = req.body || {};
+    if (typeof npi !== 'string' || !/^\d{10}$/.test(npi.trim())) {
+      return res.status(400).json({ error: 'bad_request', message: 'A 10-digit npi is required.' });
+    }
+    if (!email && !mobile && !linkedinUrl) {
+      return res.status(400).json({
+        error: 'bad_request',
+        message: 'Nothing to promote — provide at least one of email, mobile, linkedinUrl.',
+      });
+    }
+    if (!contactsStore.enabled) {
+      return res.status(503).json({ error: 'unavailable', message: 'Contact store not configured.' });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    await contactsStore.upsertContact({
+      npi: npi.trim(),
+      email: typeof email === 'string' ? email.trim().toLowerCase() : null,
+      mobile: typeof mobile === 'string' ? mobile.trim() : null,
+      linkedin_url: typeof linkedinUrl === 'string' ? linkedinUrl.trim() : null,
+      confidence_score: Number.isFinite(confidence) ? confidence : null,
+      last_verified: today,
+      last_refresh: today,
+      // Provenance travels with the row: a later reader can tell this came from
+      // the agent and was accepted by a person, not typed in from nowhere.
+      source: typeof source === 'string' && source.trim()
+        ? `enrichment:${source.trim()} (confirmed by ${organizerEmail(req) || 'user'})`
+        : `enrichment (confirmed by ${organizerEmail(req) || 'user'})`,
+    });
+
+    res.status(201).json({ promoted: true, npi: npi.trim() });
   } catch (err) {
     next(err);
   }
