@@ -263,4 +263,65 @@ When two candidates are this close, open the proof URLs before trusting either.
 | `[enrichment:cache] app_external_profiles not found` | Setup SQL not run | Run `supabase/enrichment-setup.sql`; caching stays in-process until then |
 | `PAID LOOKUP` never appears | `ANTHROPIC_API_KEY` unset, or the caller supplied a name / used a shared mailbox | Check the key; force with `--web` |
 | Publication count looks implausible | A common surname. The count is narrowed by affiliation **and** specialty, and labelled *"surname match only"* when it cannot be | Open the `searchTerm` in PubMed and check |
-| No enrichment card in the UI | An attendee already matched BIS (nothing to enrich), or the only attendee is the organizer | Check `status` via `npm run enrich:try` |
+| No enrichment card in the UI | An attendee already matched BIS (nothing to enrich), or the meeting has neither an attendee nor a two-word name in its title | Check `status` via `npm run enrich:try`; for the title path see §6 |
+| Brief shows no "Data check" line | NPPES was unreachable for that NPI (DNS, above). The check is skipped, never faked | Same DNS fix; the miss is re-tried after 10 minutes |
+
+
+---
+
+## 6. Trust checks and the title-name path (added 2026-08-31)
+
+Two gaps the 31 Aug test calendar exposed, both now closed.
+
+### 6.1 "The email is wrong"
+
+NPPES has **no email field** — verified against `?version=2.1&number=1508893496`,
+which returns addresses, taxonomies and `endpoints: []`. Every email the app
+shows therefore comes from `bis_physicians.email` (vendor data, unverified) or
+`app_contacts.email` (rep-confirmed). The master also goes stale: a 30-physician
+sample disagreed with NPPES on practice **state** 3 times, and a physician who
+has moved keeps an address on their old employer's domain.
+
+`src/enrichment/verify.js` compares the two by NPI (12 h cache, 10 min on a
+miss) and the brief now says which it is:
+
+```bash
+node -e "
+  require('dns').setServers(['8.8.8.8']);
+  const p = require('./src/physicians'), v = require('./src/enrichment/verify'), g = require('./src/graph');
+  p.ready.then(async () => {
+    const doc = p.getByNpi('1508893496');                 // Tesu Lin — known stale
+    const ver = await v.verifyPhysician(doc);
+    console.log(g.physicianBriefHtml({ physician: doc, verification: ver }).replace(/<[^>]+>/g, ' '));
+  });
+"
+```
+
+Expected: `Email tlin@islandviewgastro.com ⚠️ unverified · likely stale`, then a
+**Data check** block — BIS *Ventura, California* vs NPPES *AIEA, HI (registry
+updated 2021-06-10)*. A physician whose location agrees (try `1114144375`) gets
+a one-line `✅ Practice location matches the NPPES registry` instead, and an
+`app_contacts` row turns the badge green with the verification date.
+
+The same body is emailed, embedded in the meeting and shown in-app — the
+`physicianBriefHtml` invariant is unchanged.
+
+### 6.2 Meetings with a name but no attendee
+
+`context.namesFromEvent()` reads the people named in a title
+("meeting with dr GEOFFREY AARON" → `Geoffrey Aaron`) and the enrichment agent
+runs on the name — no email needed, and the paid tier never fires because a
+name is the only thing it buys. Two tokens minimum, honorifics and credentials
+stripped, cut at any place word, organizer names dropped: `Team sync`,
+`Weekly standup` and `call with steve` all yield nothing on purpose.
+
+```bash
+npm run enrich:try -- --name "Ruma Adams" --state VA --free
+```
+
+In the app this drives the "From the meeting title — external lookup" card; in
+`email-ingest.briefUnknownAttendees` it drives the external brief email **and**
+injects the same notes into the Outlook meeting body (`enriched:<eventId>` key,
+so exactly once). Only `external` (confidence ≥ 70) and `recovered_in_bis`
+results are mailed or injected — `ambiguous` stays in the UI, where a person can
+judge it.

@@ -46,7 +46,7 @@ function parseArgs(argv) {
 
 const STATUS_HELP = {
   in_bis: 'Already in bis_physicians — the standard brief applies, nothing was enriched.',
-  recovered_in_bis: 'IS in BIS by NPI; only the email was missing from the master.',
+  recovered_in_bis: 'IS in BIS by NPI; the email/name on the meeting just did not match the master.',
   external: 'Genuinely outside BIS — profile assembled from public sources.',
   ambiguous: 'Best match is not confident enough to assert — confirm before using.',
   facility_only: 'Person not identified, but the facility was.',

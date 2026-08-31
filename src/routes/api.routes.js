@@ -15,6 +15,7 @@ const dynamics = require('../dynamics');
 const leadMatch = require('../lead-match');
 const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
+const verify = require('../enrichment/verify');
 
 const router = express.Router();
 
@@ -151,7 +152,7 @@ async function dayHandler(req, res, next) {
         // chips compete with the confirmed physician (and save the AI call).
         const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
         if (attendeeNpis.size) {
-          return { ...ev, attendees, titleMatches: [], entityAnalysis: null };
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null };
         }
 
         // No email match — fall back to entity analysis over the WHOLE event
@@ -171,7 +172,18 @@ async function dayHandler(req, res, next) {
           exclude: attendeeNpis,
         });
 
-        return { ...ev, attendees, titleMatches, entityAnalysis };
+        // People NAMED in the title who are NOT in the master. Without this a
+        // meeting booked as "meeting with dr Geoffrey Aaron" — no attendee, no
+        // BIS row — showed nothing at all; the UI enriches these by name.
+        const matchedNames = titleMatches.map((p) => String(p.name || '').toLowerCase());
+        const titlePeople = meetingContext
+          .namesFromEvent(ev, { selfEmail: organizer })
+          .filter((person) => {
+            const tokens = person.name.toLowerCase().split(/\s+/);
+            return !matchedNames.some((n) => tokens.every((t) => n.includes(t)));
+          });
+
+        return { ...ev, attendees, titleMatches, titlePeople, entityAnalysis };
       })
     );
 
@@ -261,13 +273,14 @@ router.get('/physicians/:npi/brief', requireAuth, async (req, res, next) => {
     const physician = physicians.getByNpi(req.params.npi);
     if (!physician) return res.status(404).json({ error: 'physician_not_found' });
 
-    const [analyticsData, contact] = await Promise.all([
+    const [analyticsData, contact, verification] = await Promise.all([
       analytics.getLabelledAnalytics(physician.npi),
       contactsStore.getContact(physician.npi),
+      verify.verifyPhysician(physician),
     ]);
     res.json({
       npi: physician.npi,
-      html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+      html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact, verification }),
     });
   } catch (err) {
     next(err);
@@ -521,19 +534,22 @@ router.get('/enrich', requireAuth, async (req, res, next) => {
     // a physician already in BIS gets the STANDARD brief (nothing is enriched
     // about them), anyone else gets the provenance-tagged external one.
     if (result.status === 'in_bis' && result.physician) {
-      const [analyticsData, contact] = await Promise.all([
+      const [analyticsData, contact, verification] = await Promise.all([
         analytics.getLabelledAnalytics(result.physician.npi),
         contactsStore.getContact(result.physician.npi),
+        verify.verifyPhysician(result.physician),
       ]);
       result.html = graph.physicianBriefHtml({
         physician: result.physician,
         analytics: analyticsData,
         contact,
+        verification,
       });
     } else if (result.status === 'recovered_in_bis' && result.physician) {
-      const [analyticsData, contact] = await Promise.all([
+      const [analyticsData, contact, verification] = await Promise.all([
         analytics.getLabelledAnalytics(result.physician.npi),
         contactsStore.getContact(result.physician.npi),
+        verify.verifyPhysician(result.physician),
       ]);
       result.html =
         graph.externalBriefHtml(result) +
@@ -541,6 +557,7 @@ router.get('/enrich', requireAuth, async (req, res, next) => {
           physician: result.physician,
           analytics: analyticsData,
           contact,
+          verification,
         });
     } else {
       result.html = graph.externalBriefHtml(result);
@@ -636,9 +653,10 @@ router.get('/leads/match', requireAuth, async (req, res, next) => {
       // Re-resolve the full profile by NPI so the brief has every field.
       const physician =
         physicians.getByNpi(result.physician.npi) || result.physician;
-      const [analyticsData, contact] = await Promise.all([
+      const [analyticsData, contact, verification] = await Promise.all([
         analytics.getLabelledAnalytics(physician.npi),
         contactsStore.getContact(physician.npi),
+        verify.verifyPhysician(physician),
       ]);
       return res.json({
         matchedBy: result.matchedBy,
@@ -648,7 +666,7 @@ router.get('/leads/match', requireAuth, async (req, res, next) => {
           specialty: physician.specialty,
           facility: physician.facility || null,
         },
-        html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+        html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact, verification }),
       });
     }
 
