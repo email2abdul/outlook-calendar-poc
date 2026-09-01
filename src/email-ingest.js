@@ -250,13 +250,21 @@ async function injectExternalBrief(token, user, ev, enrichments) {
  * Instant pre-meeting brief — sent the first time a physician meeting is seen
  * (e.g. created directly in Outlook, which never hits the app's schedule route).
  * The same brief body the schedule/reminder emails use, so all three match.
- * Deduped on a distinct `instant:<eventId>` key so it fires independently of
- * the timed reminder and never repeats. All physicians on the meeting go into
- * one email (a section each).
+ * Deduped on a distinct `instant:…` key so it fires independently of the timed
+ * reminder and never repeats. All physicians on the meeting go into one email
+ * (a section each).
+ *
+ * Keyed on the SERIES for a recurring meeting, for the same reason enrichment
+ * is: calendarView hands us one event per occurrence, each with its own id and
+ * (on a first sync) no activity row yet, so an occurrence-keyed instant brief
+ * mailed the rep ~29 identical "🆕 New meeting" briefs for one weekly meeting.
+ * The physicians are folded into the key, so an occurrence edited to be with a
+ * different doctor is still briefed. A non-recurring meeting keeps its
+ * `instant:<eventId>` key exactly as before.
  */
 async function sendInstantBrief(token, user, ev, physicians) {
   if (!user.email || !ev.id || !physicians.length) return;
-  const key = `instant:${ev.id}`;
+  const key = `instant:${context.seriesKey(ev, physicians)}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
 
   const bundles = [];

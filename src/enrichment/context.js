@@ -238,16 +238,19 @@ function namesFromEvent(event, opts = {}) {
 // ── Recurring series identity ───────────────────────────────────────────────
 
 /**
- * A short, stable fingerprint of the people a meeting would enrich.
+ * A short, stable fingerprint of the people a meeting is about.
  *
- * @param {Array<{email?:string|null, name?:string|null}>} subjects
+ * NPI first — a matched BIS physician is the same person whatever address the
+ * invite used — then email, then the bare name a title gave us.
+ *
+ * @param {Array<{npi?:string|number|null, email?:string|null, name?:string|null}>} subjects
  * @returns {string|null}
  */
 function subjectFingerprint(subjects) {
   const parts = [
     ...new Set(
       (subjects || [])
-        .map((s) => String(s?.email || s?.name || '').trim().toLowerCase())
+        .map((s) => String(s?.npi || s?.email || s?.name || '').trim().toLowerCase())
         .filter(Boolean)
     ),
   ].sort();
@@ -259,9 +262,9 @@ function subjectFingerprint(subjects) {
  * The dedupe identity of the MEETING an enrichment belongs to.
  *
  * `calendarView` expands a recurring series into one concrete event per
- * occurrence, each with its own event id. Keying enrichment on that id means a
- * weekly meeting inside the 30-day sync window is enriched ~29 times — 29 paid
- * lookups, 29 external briefs — for one logical meeting with one person. Graph
+ * occurrence, each with its own event id. Keying per-meeting work on that id
+ * means a weekly meeting inside the 30-day sync window is handled ~29 times —
+ * 29 paid lookups, 29 briefs — for one logical meeting with one person. Graph
  * stamps every occurrence of a series (and every edited "exception") with the
  * same `seriesMasterId`, and that, not the title, is the series' identity:
  * two different series never share it, and two unrelated meetings that happen
@@ -272,11 +275,11 @@ function subjectFingerprint(subjects) {
  * already written for past events still match.
  *
  * The subjects are folded in so an occurrence the rep edited to be with someone
- * else (a Graph "exception") is still enriched on its own: same series, but not
+ * else (a Graph "exception") is still handled on its own: same series, but not
  * the same person, so not the same answer.
  *
- * @param {object} event                        normalized event (src/graph.js)
- * @param {Array<{email?, name?}>} [subjects]   who this meeting would enrich
+ * @param {object} event                             normalized event (src/graph.js)
+ * @param {Array<{npi?, email?, name?}>} [subjects]  who this meeting is about
  * @returns {string} the dedupe key body
  */
 function seriesKey(event, subjects = []) {
