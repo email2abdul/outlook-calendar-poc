@@ -35,6 +35,63 @@ function todayYmd() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+/**
+ * What the collapsed meeting card promises is inside it.
+ *
+ * The hint used to stop at BIS: a meeting booked as "JOHN AALBERS" with no
+ * attendee — the exact shape reps use — got the same bare "＋ Physician lookup"
+ * as a meeting with nothing in it at all, even though opening it returns a full
+ * registry profile (NPI, specialty, address, payments). The card looked empty,
+ * so nobody opened it, and the intelligence may as well not have existed.
+ *
+ * Name whoever the detail region is about, so the rep can see there is
+ * something here before clicking. Ordered by how sure we are: a BIS match, a
+ * physician the title matched, a person the title NAMES, an attendee we can
+ * look up outside BIS, then nothing.
+ *
+ * @param {object} ev event from /api/calendar/day
+ * @returns {string}
+ */
+function lookupHint(ev) {
+  if (matchedPhysiciansOf(ev).length) return '🩺 BIS intelligence — click to open';
+  if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
+
+  const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
+  if (titleNames.length) return `🔎 ${listNames(titleNames)} — click for external lookup`;
+
+  const lookupAttendees = (ev.attendees || []).filter(
+    (a) => a.email && !a.isOrganizer && a.type !== 'resource'
+  );
+  if (lookupAttendees.length > 1) {
+    return `🔎 External lookup on ${lookupAttendees.length} attendees — click to open`;
+  }
+  if (lookupAttendees.length) return '🔎 External lookup — click to open';
+
+  return '＋ Physician lookup — click to open';
+}
+
+/**
+ * Is there anything behind this card worth opening?
+ *
+ * The same four sources lookupHint() ranks. Used to decide which meeting the
+ * day view opens on, so the rep lands on the intelligence rather than a row of
+ * identical closed cards.
+ */
+function hasIntel(ev) {
+  return (
+    matchedPhysiciansOf(ev).length > 0 ||
+    (ev.titleMatches || []).length > 0 ||
+    (ev.titlePeople || []).length > 0 ||
+    (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
+  );
+}
+
+/** ["A","B","C"] → "A and 2 others" — kept short enough for a one-line hint. */
+function listNames(names) {
+  if (names.length <= 2) return names.join(' and ');
+  return `${names[0]} and ${names.length - 1} others`;
+}
+
 /** "2027-03-10" → "Wednesday, 10 March 2027" in the browser's own locale. */
 function humanDate(dateStr) {
   if (!dateStr) return '';
@@ -852,15 +909,7 @@ function renderEvents(events) {
       join.hidden = false;
     }
 
-    // The click-to-open hint reflects what the detail region will show.
-    const hasMatch = matchedPhysiciansOf(ev).length > 0;
-    const hasSuggestions = (ev.titleMatches || []).length > 0;
-    const toggle = node.querySelector('.event__toggle');
-    toggle.textContent = hasMatch
-      ? '🩺 BIS intelligence — click to open'
-      : hasSuggestions
-        ? '🔎 Possible physician matches — click to open'
-        : '＋ Physician lookup — click to open';
+    node.querySelector('.event__toggle').textContent = lookupHint(ev);
 
     // Wire the whole card as an accordion. Built lazily on first open so the
     // day view stays fast even with many meetings.
@@ -869,6 +918,8 @@ function renderEvents(events) {
 
     const card = {
       li,
+      ev,
+      expand: () => expand(),
       collapse() {
         li.classList.remove('event--open');
         detail.hidden = true;
@@ -896,6 +947,15 @@ function renderEvents(events) {
     cards.push(card);
     list.appendChild(node);
   }
+
+  // Open the first meeting that actually has something behind it. A rep who
+  // books "JOHN AALBERS" and opens the app should SEE the brief, not a row of
+  // identical closed cards giving no sign that one of them holds a full
+  // registry profile. Only one card opens, and only the free registry tiers
+  // run behind it (~0.5s), so this costs one lookup per page load, not one per
+  // meeting. Everything else stays lazy.
+  const firstWithIntel = cards.find((c) => hasIntel(c.ev));
+  if (firstWithIntel) firstWithIntel.expand();
 }
 
 async function loadCalendar() {
