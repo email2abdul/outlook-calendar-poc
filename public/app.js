@@ -70,6 +70,22 @@ function lookupHint(ev) {
   return '＋ Physician lookup — click to open';
 }
 
+/**
+ * Is there anything behind this card worth opening?
+ *
+ * The same four sources lookupHint() ranks. Used to decide which meeting the
+ * day view opens on, so the rep lands on the intelligence rather than a row of
+ * identical closed cards.
+ */
+function hasIntel(ev) {
+  return (
+    matchedPhysiciansOf(ev).length > 0 ||
+    (ev.titleMatches || []).length > 0 ||
+    (ev.titlePeople || []).length > 0 ||
+    (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
+  );
+}
+
 /** ["A","B","C"] → "A and 2 others" — kept short enough for a one-line hint. */
 function listNames(names) {
   if (names.length <= 2) return names.join(' and ');
@@ -902,6 +918,8 @@ function renderEvents(events) {
 
     const card = {
       li,
+      ev,
+      expand: () => expand(),
       collapse() {
         li.classList.remove('event--open');
         detail.hidden = true;
@@ -929,6 +947,15 @@ function renderEvents(events) {
     cards.push(card);
     list.appendChild(node);
   }
+
+  // Open the first meeting that actually has something behind it. A rep who
+  // books "JOHN AALBERS" and opens the app should SEE the brief, not a row of
+  // identical closed cards giving no sign that one of them holds a full
+  // registry profile. Only one card opens, and only the free registry tiers
+  // run behind it (~0.5s), so this costs one lookup per page load, not one per
+  // meeting. Everything else stays lazy.
+  const firstWithIntel = cards.find((c) => hasIntel(c.ev));
+  if (firstWithIntel) firstWithIntel.expand();
 }
 
 async function loadCalendar() {

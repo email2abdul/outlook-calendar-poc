@@ -389,8 +389,9 @@ body {
   gap: 6px;
 }
 
+/* The hint says "click to open" — once it IS open it is just wrong text. */
 .event--open .event__toggle {
-  color: var(--muted);
+  display: none;
 }
 
 /* ── Meeting detail region (expands under a clicked card) ───── */
