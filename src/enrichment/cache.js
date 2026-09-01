@@ -196,6 +196,10 @@ async function put(emailOrRef, result) {
   // same weak answer.
   const webUsed = (result.tiers || []).includes('T1:web-identity');
   if (result.status === 'unresolved') return;
+  // Same rule, stated for the case where we KNOW it was an outage: a lookup that
+  // never reached the registry has nothing to remember. index.js also skips the
+  // put() for any degraded run; this guards a direct caller.
+  if (result.status === 'lookup_failed' || result.degraded) return;
   if (result.status === 'ambiguous' && !webUsed) return;
 
   const row = {

@@ -14,7 +14,14 @@
  * NPPES additionally returns an empty result set transiently for a query that
  * does moments later, so callers can opt into ONE extra attempt on an
  * "empty but successful" response via `retryIfEmpty`.
+ *
+ * The never-throw contract has a sharp edge: a source that is DOWN and a source
+ * that genuinely has no record both surface as an empty result. So every
+ * transport-level failure is also reported to ./health, which `enrich()` reads
+ * back to label such a result a lookup failure rather than an absence.
  */
+
+const health = require('./health');
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_RETRIES = 2; // total attempts = retries + 1
@@ -40,8 +47,10 @@ function buildUrl(base, params = {}) {
 /**
  * GET a JSON document.
  *
- * Resolves to `{ ok, status, body, error }` — never rejects. `body` is null
- * when the response was not JSON or the request failed.
+ * Resolves to `{ ok, status, body, error, kind }` — never rejects. `body` is
+ * null when the response was not JSON or the request failed. `kind` says WHY it
+ * failed ('dns' | 'network' | 'timeout' | 'tls' | 'upstream' | 'http' | null),
+ * which is what lets a caller tell "no such provider" from "no such network".
  *
  * @param {string} url
  * @param {object} [opts]
@@ -62,6 +71,7 @@ async function getJson(url, opts = {}) {
   let emptyRetryUsed = false;
   let attempt = 0;
   let lastError = null;
+  let lastKind = null;
 
   // `retries` covers hard failures; retryIfEmpty adds at most one more pass.
   while (attempt <= retries) {
@@ -83,9 +93,12 @@ async function getJson(url, opts = {}) {
 
       if (!res.ok) {
         lastError = `HTTP ${res.status}`;
+        // A 5xx or a 429 is the upstream failing us; a plain 4xx is the upstream
+        // answering us, and only the first sort makes the result untrustworthy.
+        lastKind = res.status >= 500 || res.status === 429 ? 'upstream' : 'http';
         // 4xx (other than rate limiting) will not improve on a retry.
         if (res.status < 500 && res.status !== 429) {
-          return { ok: false, status: res.status, body, error: lastError };
+          return { ok: false, status: res.status, body, error: lastError, kind: lastKind };
         }
       } else if (body !== null) {
         if (retryIfEmpty && !emptyRetryUsed && retryIfEmpty(body)) {
@@ -95,12 +108,20 @@ async function getJson(url, opts = {}) {
           await sleep(400);
           continue; // does not consume a retry
         }
-        return { ok: true, status: res.status, body, error: null };
+        return { ok: true, status: res.status, body, error: null, kind: null };
       } else {
+        // A gateway's HTML error page reaches us as a 200 with no JSON in it;
+        // that is the upstream misbehaving, not an answer.
         lastError = 'response was not JSON';
+        lastKind = 'upstream';
       }
     } catch (err) {
-      lastError = err.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : err.message;
+      const classified = health.classifyError(err);
+      lastKind = classified.kind;
+      lastError =
+        classified.kind === 'timeout'
+          ? `timeout after ${timeoutMs}ms`
+          : `${classified.code ? `${classified.code}: ` : ''}${classified.message}`;
     } finally {
       clearTimeout(timer);
     }
@@ -109,8 +130,15 @@ async function getJson(url, opts = {}) {
     if (attempt <= retries) await sleep(300 * 2 ** (attempt - 1)); // 300ms, 600ms
   }
 
-  console.warn(`[enrichment:${label}] giving up after ${attempt} attempt(s): ${lastError}`);
-  return { ok: false, status: 0, body: null, error: lastError };
+  console.warn(
+    `[enrichment:${label}] giving up after ${attempt} attempt(s): ${lastError}` +
+      (lastKind === 'dns'
+        ? ' — this is a DNS failure on this host, not an empty registry;' +
+          ' check the box\'s resolver (npm run enrich:doctor)'
+        : '')
+  );
+  health.record({ label, url, kind: lastKind, error: lastError });
+  return { ok: false, status: 0, body: null, error: lastError, kind: lastKind };
 }
 
 module.exports = { getJson, buildUrl };

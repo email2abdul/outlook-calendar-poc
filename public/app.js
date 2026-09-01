@@ -533,6 +533,21 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
 
   box.innerHTML = data.html || '<p class="muted">Nothing found for this address.</p>';
 
+  // A failed lookup is not a short one: spending the paid tier while this
+  // server cannot reach the free registries buys nothing. Offer a plain retry.
+  if (data.status === 'lookup_failed') {
+    const retry = document.createElement('button');
+    retry.type = 'button';
+    retry.className = 'btn btn--ghost enrich__deep';
+    retry.textContent = '↻ Retry lookup';
+    retry.addEventListener('click', () => {
+      retry.disabled = true;
+      enrichAttendeeInto(box, attendee, ev, { useWeb });
+    });
+    box.appendChild(retry);
+    return;
+  }
+
   // Offer the paid lookup only when the free tiers actually fell short.
   const needsWeb =
     !deep && Boolean(attendee.email) && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);

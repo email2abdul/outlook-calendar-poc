@@ -13,7 +13,8 @@
     "import:accounts": "node scripts/import-accounts.js",
     "intel:backfill": "node scripts/intel-backfill.js",
     "enrich:backfill": "node scripts/enrich-backfill.js",
-    "enrich:try": "node scripts/enrich-try.js"
+    "enrich:try": "node scripts/enrich-try.js",
+    "enrich:doctor": "node scripts/enrich-doctor.js"
   },
   "keywords": [
     "microsoft-graph",
