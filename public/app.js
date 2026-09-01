@@ -72,6 +72,13 @@ function lookupHint(ev) {
       : '🔢 Possible physician matches — click to pick';
   }
 
+  if (m && m.status === 'needs_external') {
+    const who = (m.names || []).map((n) => n.name).filter(Boolean);
+    return who.length
+      ? `🔎 ${listNames(who)} — not in BIS, click for a registry lookup`
+      : '🔎 Not in BIS — click for a registry lookup';
+  }
+
   if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
 
   const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
@@ -833,11 +840,13 @@ function buildNoMatch(detail, ev, { intro: introText } = {}) {
  * @param {object} ev
  * @param {string|null} npi  null clears the choice
  */
-async function saveMeetingChoice(ev, npi) {
+async function saveMeetingChoice(ev, npi, source) {
   const res = await fetch('/api/meetings/choose', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ eventId: ev.id, npi }),
+    // `source` is required for an NPI the master does not have: the server
+    // re-fetches the details from that source rather than trusting the browser.
+    body: JSON.stringify({ eventId: ev.id, npi, source: source || undefined }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.message || 'The choice could not be saved.');
@@ -970,6 +979,182 @@ function buildChoose(detail, ev) {
 }
 
 /**
+ * Nobody on this meeting is in the BIS directory — ask the public sources.
+ *
+ * This is the only path in the panel that leaves the building, so it runs when
+ * the rep OPENS the meeting, never on page load for a whole day of them.
+ *
+ * Three things it must keep straight:
+ *  · a source that could not be reached is not a source that found nobody — the
+ *    first gets a retry, the second gets "not in the registry";
+ *  · a candidate whose NPI turns out to be in BIS is the best possible outcome
+ *    and is labelled as such, not quietly mixed in;
+ *  · nothing is briefed until the rep picks, because a name can belong to
+ *    several real physicians.
+ */
+async function buildOutside(detail, ev) {
+  const head = document.createElement('p');
+  head.className = 'muted event__detail-intro';
+  head.textContent =
+    'Nobody on this meeting is in the BIS directory — checking the public registries…';
+  detail.appendChild(head);
+
+  const list = document.createElement('div');
+  detail.appendChild(list);
+
+  const picked = document.createElement('div');
+  picked.className = 'event__detail-picked';
+
+  async function load() {
+    list.innerHTML = '';
+    try {
+      const res = await fetch(`/api/meetings/outside?eventId=${encodeURIComponent(ev.id)}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'The registry lookup failed.');
+
+      const groups = (data.groups || []).filter((g) => (g.candidates || []).length);
+      const failed = data.failures || [];
+      const names = (data.names || []).length
+        ? data.names
+        : (data.groups || []).map((g) => g.name).filter(Boolean);
+      const who = names.length ? `“${names.join('”, “')}”` : 'that name';
+
+      if (groups.length) {
+        head.textContent =
+          `Not in the BIS directory. ${(data.sources || []).map((x) => x.name).join(', ')} ` +
+          'answered — pick who this meeting is with:';
+      } else if (failed.length) {
+        // The claim "nobody by that name" would be about the PERSON, on evidence
+        // that is only about the network. Say what actually happened.
+        head.textContent =
+          `Not in the BIS directory, and the public registries could not be reached — ` +
+          `so nothing is known yet about ${who}.`;
+      } else {
+        head.textContent = `Not in the BIS directory, and the public registries have nobody by ${who}.`;
+      }
+
+      for (const g of groups) {
+        const line = document.createElement('p');
+        line.className = 'muted event__detail-intro';
+        line.textContent =
+          g.total > 1
+            ? `Due to the name “${g.name}” I have ${g.total} matching records — choose the one ` +
+              'you want the pre-meeting notes for.'
+            : `“${g.name}” — one match in the public registries:`;
+        list.appendChild(line);
+
+        const ul = document.createElement('ul');
+        ul.className = 'physician-results';
+        for (const c of g.candidates) {
+          const li = document.createElement('li');
+          li.className = 'physician-result';
+
+          const name = document.createElement('strong');
+          // A candidate the master turns out to hold is worth saying out loud.
+          name.textContent = `${c.inBis ? '🩺 ' : ''}${c.name || `NPI ${c.npi}`}`;
+
+          const meta = document.createElement('span');
+          meta.className = 'muted';
+          meta.textContent = [
+            c.specialty,
+            [c.city, c.state].filter(Boolean).join(', '),
+            c.npi ? `NPI ${c.npi}` : null,
+            c.inBis ? 'in your BIS directory' : c.externalSource,
+          ]
+            .filter(Boolean)
+            .join(' · ');
+
+          li.append(name, meta);
+          li.addEventListener('click', () => pickOutside(c, ev, picked));
+          ul.appendChild(li);
+        }
+        list.appendChild(ul);
+      }
+
+      // Say which source went missing, and offer the retry — silence here reads
+      // as "this person does not exist".
+      for (const f of data.failures || []) {
+        const warn = document.createElement('p');
+        warn.className = 'muted event__detail-intro';
+        warn.textContent = `📡 ${f.error} — this is not a finding about this person. `;
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'btn btn--ghost';
+        retry.textContent = '↻ Retry';
+        retry.addEventListener('click', () => {
+          retry.disabled = true;
+          load();
+        });
+        warn.appendChild(retry);
+        list.appendChild(warn);
+      }
+    } catch (err) {
+      head.textContent = `⚠️ ${err.message}`;
+    }
+  }
+
+  await load();
+
+  // The rep can always look someone up by hand instead.
+  appendSearchBox(detail, (p) => {
+    picked.innerHTML = '';
+    picked.appendChild(buildPhysicianBlock(p, ev));
+  });
+  detail.appendChild(picked);
+}
+
+/**
+ * The rep picked someone the master does not have.
+ *
+ * The choice is saved (so the next tick and the reminder follow it), and the
+ * notes come back with the save — same sections as a BIS brief, with "Data not
+ * available" wherever the registry had nothing, and the registry's extras
+ * tagged as extra.
+ */
+async function pickOutside(candidate, ev, picked) {
+  picked.innerHTML = '';
+
+  const status = document.createElement('p');
+  status.className = 'muted event__detail-intro';
+  status.textContent = `Remembering ${candidate.name || candidate.npi} for this meeting…`;
+  picked.appendChild(status);
+  picked.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  let saved;
+  try {
+    saved = await saveMeetingChoice(ev, candidate.npi, candidate.externalSource);
+  } catch (err) {
+    status.textContent = `⚠️ ${err.message}`;
+    return;
+  }
+
+  status.textContent =
+    `✔ ${saved.physician?.name || candidate.name} is now the physician for this meeting.` +
+    (saved.storedIn === 'sqlite'
+      ? ' (Kept on this server for now — run supabase/outside-physician-setup.sql to keep it in Supabase.)'
+      : '');
+
+  // In the master after all → the standard block, with everything it carries.
+  if (saved.inBis) {
+    picked.appendChild(buildPhysicianBlock(candidate, ev));
+    return;
+  }
+
+  const box = document.createElement('section');
+  box.className = 'physician-block';
+  const title = document.createElement('h3');
+  title.className = 'physician-block__name';
+  title.textContent = saved.physician?.name || candidate.name || `NPI ${candidate.npi}`;
+  const body = document.createElement('div');
+  body.className = 'physician-analytics';
+  body.innerHTML = saved.html || '<p class="muted">No notes could be assembled.</p>';
+  box.append(title, body);
+  picked.appendChild(box);
+}
+
+/**
  * What the expanded meeting shows, in the ladder's own order: an exact email
  * match, then a name the master resolved to exactly one physician, then a
  * shortlist to pick from, then the gate's "this is a normal meeting", then the
@@ -1034,6 +1219,13 @@ function buildDetail(detail, ev) {
 
   if (m && m.status === 'choose') {
     buildChoose(detail, ev);
+    return;
+  }
+
+  // Gate open, name read, and the master has nobody — the public registries are
+  // the next rung, and they are asked here rather than on page load.
+  if (m && m.status === 'needs_external') {
+    buildOutside(detail, ev);
     return;
   }
 

@@ -736,6 +736,136 @@ function physicianBriefHtml({ physician, analytics, contact, verification }) {
   ].join('');
 }
 
+/**
+ * Pre-meeting notes for a physician who is NOT in the BIS master.
+ *
+ * Same sections, same order, same labels as physicianBriefHtml — that is the
+ * whole point. A rep should not have to learn a second layout for the half of
+ * their calendar that Supabase has never heard of, and a section that silently
+ * disappears reads as "nothing to know here" rather than "we could not find
+ * out". So every row is printed, and a field no source could fill says
+ * "Data not available" in its own place.
+ *
+ * The EXTRA block is intelligence the master has no column for at all — licence,
+ * taxonomies, NPI status today, and (later) CMS volumes and industry payments.
+ * It is labelled as extra and carries the page it came from, because it is NOT
+ * BIS-verified data and must never read as though it were.
+ *
+ * @param {object} opts
+ * @param {object} opts.record        a store record (mirror fields, nulls intact)
+ * @param {object} [opts.extra]       { label: value } the source could add
+ * @param {string} [opts.sourceName]  e.g. "NPPES NPI Registry"
+ * @param {string} [opts.sourceUrl]   the page that proves it
+ */
+function outsideBriefHtml({ record, extra = {}, sourceName, sourceUrl } = {}) {
+  if (!record) return '';
+  const r = record;
+  const td = 'style="padding:2px 12px 2px 0;vertical-align:top"';
+  const NA = '<span style="color:#8a8f98">Data not available</span>';
+
+  const cell = (v) => (v === null || v === undefined || v === '' ? NA : escapeHtml(String(v)));
+  const table = (rows) =>
+    `<table>${rows
+      .map(([k, v]) => `<tr><td ${td}><b>${escapeHtml(k)}</b></td><td>${v && v.html ? v.html : cell(v)}</td></tr>`)
+      .join('')}</table>`;
+
+  const link = sourceUrl
+    ? `<a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourceName || 'source')}</a>`
+    : escapeHtml(sourceName || 'a public registry');
+
+  const out = [];
+
+  // The first thing the rep must know: this is not your data.
+  out.push(
+    '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #8a5700;background:#fff8e6;' +
+      `color:#8a5700"><b>⚠️ Not in the BIS database.</b> The notes below were assembled from ` +
+      `${link}. Anything BIS would normally supply and this source could not is marked ` +
+      '"Data not available".</p>'
+  );
+
+  // NPPES already returns a full "street, city, ST zip" string, so appending the
+  // parts again produced "1 Main St, Houston, TX 77002, Houston, TX, 77002".
+  // Add only what the address does not already say.
+  const said = String(r.facilityAddress || '').toLowerCase();
+  const address =
+    [r.facilityAddress, ...[r.city, r.state, r.zip].filter((v) => v && !said.includes(String(v).toLowerCase()))]
+      .filter(Boolean)
+      .join(', ') || null;
+
+  out.push(
+    '<p class="brief-h"><b>Physician details</b></p>',
+    table([
+      ['Name', r.name],
+      ['NPI', r.npi],
+      ['Specialty', r.specialty],
+      ['Email', r.email],
+      ['Phone', r.phone],
+      // null means "we do not know", which is not the same as "No".
+      ['ESD Procedure', r.esdProcedure === null || r.esdProcedure === undefined ? null : r.esdProcedure ? 'Yes' : 'No'],
+      ['Facility', r.facilityName],
+      ['Facility Address', address],
+      ['Health System', r.healthSystem],
+      ['Territory', r.territory],
+      ['LinkedIn', r.linkedinUrl],
+    ])
+  );
+
+  out.push(
+    '<p class="brief-h"><b>Contact intelligence</b></p>',
+    table([
+      ['Verified email', r.contactEmail],
+      ['Mobile', r.contactMobile],
+      ['LinkedIn (verified)', r.contactLinkedinUrl],
+      ['Contactability', r.contactConfidenceScore === null ? null : `${r.contactConfidenceScore}/100`],
+      ['Last verified', r.contactLastVerified],
+    ])
+  );
+
+  // Volumes and everything derived from them (families, commercial signals,
+  // product fit, talking points) come from bis_procedure_volumes, which has no
+  // row for this physician. Say so once, in the section's own place, rather
+  // than dropping four sections and leaving the brief looking complete.
+  out.push(
+    '<p class="brief-h"><b>Procedure intelligence</b></p>',
+    table([
+      ['CPT volumes', null],
+      ['Procedure families', null],
+      ['Commercial signals', null],
+      ['Best-fit product', null],
+    ]),
+    '<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">' +
+      'Volume-based sections need this physician in <code>bis_procedure_volumes</code>. ' +
+      'Public claims data (CMS, by year) is not connected yet.</p>'
+  );
+
+  out.push(
+    '<p class="brief-h"><b>Account</b></p>',
+    table([
+      ['Lumendi product', r.accountProduct],
+      ['Account status', r.accountStatus],
+      ['Since', r.accountSinceDate],
+    ])
+  );
+
+  // ── EXTRA — no BIS column exists for any of this ──────────────────────────
+  const extraRows = Object.entries(extra || {})
+    .filter(([, v]) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))
+    .map(([k, v]) => [fieldLabel(k), Array.isArray(v) ? v.join('; ') : v]);
+
+  if (extraRows.length) {
+    out.push(
+      '<p class="brief-h"><b>Extra intelligence</b> ' +
+        '<span style="font-size:11px;color:#5b21b6;border:1px solid #c4b5fd;background:#f6f2ff;' +
+        'border-radius:9px;padding:1px 6px">EXTRA · not in BIS</span></p>',
+      table(extraRows),
+      `<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">Source: ${link}. ` +
+        'Extra fields are shown for context and are not stored in your database.</p>'
+    );
+  }
+
+  return out.join('');
+}
+
 // ── External (enriched) brief ────────────────────────────────────────────────
 
 /**
@@ -1427,6 +1557,7 @@ async function getMe(accessToken) {
 
 module.exports = {
   getEventById,
+  outsideBriefHtml,
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,

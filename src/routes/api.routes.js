@@ -17,6 +17,7 @@ const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
 const meetingMatch = require('../meeting-match');
 const outsideStore = require('../outside-physician-store');
+const outsideSources = require('../outside-sources');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -591,6 +592,109 @@ router.get('/meetings/match', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * GET /api/meetings/outside?eventId=… — who this meeting could be with, from the
+ * public sources, when the BIS master has nobody.
+ *
+ * Deliberately NOT part of the day view: this leaves the building (NPPES today,
+ * whatever is registered tomorrow), so it runs when a rep opens the meeting, not
+ * for twelve meetings on page load.
+ *
+ * The NAME is not taken from the request. It is re-derived server-side from the
+ * current event through the same ladder — the "Dr"/"Doctor" gate, the organizer
+ * exclusion, the conservative title reader — because a client-supplied name
+ * would walk straight past all three.
+ *
+ * A candidate whose NPI turns out to be in bis_physicians is flagged `inBis`:
+ * the physician WAS in the master all along, under a name or address the meeting
+ * never carried, and that is the best outcome this endpoint can report.
+ */
+router.get('/meetings/outside', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.query.eventId === 'string' ? req.query.eventId.trim() : '';
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    const organizer = organizerEmail(req);
+    const match = meetingMatch.matchMeeting(event, { selfEmail: organizer });
+
+    // Only a meeting the ladder could not resolve inside BIS has anything to
+    // look up outside it.
+    if (match.status !== 'needs_external') {
+      return res.json({
+        eventId,
+        status: match.status,
+        searched: false,
+        reason: match.reason,
+        groups: [],
+        failures: [],
+        sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+      });
+    }
+
+    // Geography is what separates same-named providers, and the meeting usually
+    // carries it (title, description, location).
+    let hints = {};
+    try {
+      hints = await meetingContext.hintsFromEvent(event, { selfEmail: organizer });
+    } catch {
+      /* context is a bonus, never a blocker */
+    }
+
+    const groups = [];
+    const failures = [];
+    for (const name of match.unresolvedNames) {
+      const { firstName, lastName } = enrichment.splitName(name);
+      const found = await outsideSources.searchByName(
+        { firstName, lastName, state: hints.state || undefined, city: hints.city || undefined },
+        { limit: meetingMatch.MAX_CANDIDATES }
+      );
+      failures.push(...found.failures);
+
+      const candidates = found.candidates.map((c) => {
+        // Free, and the most valuable check there is: does the master already
+        // hold this NPI under a different name/address?
+        const bis = c.npi ? physicians.getByNpi(c.npi) : null;
+        return bis
+          ? { ...c, ...outsideStore.mirrorFromPhysician(bis), inBis: true, extra: c.extra }
+          : { ...c, inBis: false };
+      });
+
+      groups.push({ name, source: 'title', total: candidates.length, candidates });
+    }
+
+    res.json({
+      eventId,
+      status: match.status,
+      searched: true,
+      reason: match.reason,
+      // The names that were looked up — needed by the UI even when a source was
+      // unreachable and there is no candidate to carry them.
+      names: match.unresolvedNames,
+      hints: { city: hints.city || null, state: hints.state || null, facility: hints.facilityName || null },
+      groups,
+      // A source that could not be reached is NOT a source that said "nobody" —
+      // the UI has to be able to say which happened.
+      failures,
+      sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * POST /api/meetings/choose — remember which physician this meeting is with.
  * Body: { eventId, npi }   ·   npi: null clears the choice
  *
@@ -624,14 +728,38 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       });
     }
 
-    // The physician must be one we can actually brief; a stale or mistyped NPI
-    // would otherwise be stored and quietly brief nobody.
+    // In the master? Then the brief is the standard one.
     const physician = npi ? physicians.getByNpi(npi) : null;
+
+    // Not in the master — the NPI must then belong to a registered source, and
+    // it is re-fetched FROM that source rather than taken from the request: the
+    // browser is not allowed to decide what a physician's details are.
+    const sourceId = typeof req.body?.source === 'string' ? req.body.source.trim() : '';
+    let outside = null;
     if (npi && !physician) {
-      return res.status(400).json({
-        error: 'bad_request',
-        message: `NPI ${npi} is not in the BIS directory.`,
-      });
+      const src = sourceId ? outsideSources.byId(sourceId) : null;
+      if (!src) {
+        return res.status(400).json({
+          error: 'bad_request',
+          message: `NPI ${npi} is not in the BIS directory. Pass \`source\` (one of: ` +
+            `${outsideSources.list().map((x) => x.id).join(', ')}) to record an outside physician.`,
+        });
+      }
+      try {
+        outside = src.getByNpi ? await src.getByNpi(npi) : null;
+      } catch (err) {
+        return res.status(502).json({
+          error: 'source_unreachable',
+          message: `${src.name} could not be reached, so this choice was not recorded. Try again.`,
+          detail: err.message,
+        });
+      }
+      if (!outside) {
+        return res.status(400).json({
+          error: 'bad_request',
+          message: `${src.name} has no provider with NPI ${npi}.`,
+        });
+      }
     }
 
     const token = await auth.getAccessToken(req);
@@ -649,20 +777,29 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
     // Monday, B on Tuesday") is the point, and the latest row is what counts.
     // The store keeps this in SQLite until the Supabase table exists, so the
     // flow is testable before anybody runs the setup SQL.
+    // The mirror fields, from whichever side has them. `extra` is left out on
+    // purpose: it is shown in the notes, not stored (a separate decision).
+    const mirror = physician
+      ? outsideStore.mirrorFromPhysician(physician)
+      : outside
+        ? { ...outside, extra: undefined, inBis: false }
+        : {};
+    delete mirror.extra;
+
+    const who = physician?.name || outside?.name || npi;
     const record = await outsideStore.record({
       ownerUserId: ownerId(req),
       ownerEmail: organizerEmail(req),
       event,
-      // A snapshot of the master's own fields, in the same names an outside
-      // source fills — so a BIS physician and an outside one render alike.
-      ...outsideStore.mirrorFromPhysician(physician),
+      ...mirror,
       npi,
       source: 'user',
       decidedBy: 'user',
       confidence: 100,
       status: npi ? 'briefed' : 'needs_confirm',
       reason: npi
-        ? `${physician?.name || npi} confirmed by ${organizerEmail(req) || 'the rep'}.`
+        ? `${who} confirmed by ${organizerEmail(req) || 'the rep'}` +
+          (outside ? ` (from ${outsideSources.byId(sourceId)?.name || sourceId}; not in BIS).` : '.')
         : `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`,
     });
 
@@ -682,6 +819,18 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       details: { eventId, npi, title: event.title, by: organizerEmail(req) },
     });
 
+    // An outside physician has no /api/physicians/:npi/brief to fetch, so the
+    // notes come back with the save — same sections as the BIS brief, with
+    // "Data not available" wherever the source had nothing.
+    const html = outside
+      ? graph.outsideBriefHtml({
+          record,
+          extra: outside.extra || {},
+          sourceName: outsideSources.byId(sourceId)?.name || sourceId,
+          sourceUrl: outside.externalSourceUrl || outsideSources.byId(sourceId)?.url || null,
+        })
+      : null;
+
     res.json({
       saved: true,
       eventId,
@@ -689,9 +838,13 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       // 'sqlite' means the Supabase table has not been created yet — the choice
       // is kept locally so it can be tested, and the UI says so.
       storedIn: outsideStore.backendName(),
+      inBis: Boolean(physician),
       physician: physician
         ? { npi: physician.npi, name: physician.name, specialty: physician.specialty || null }
-        : null,
+        : outside
+          ? { npi: outside.npi, name: outside.name, specialty: outside.specialty || null }
+          : null,
+      html,
     });
   } catch (err) {
     next(err);
