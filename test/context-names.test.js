@@ -34,6 +34,15 @@ test('a meeting/chat title is not a person', () => {
   assert.deepStrictEqual(names('Pipeline Review'), []);
 });
 
+test('a run of capitalised words is a project, not a person', () => {
+  // Found end-to-end on a live calendar: every word is capitalised, so the
+  // capitalisation rule alone let it through as a person and the UI offered
+  // "Medtech Decision Map Prototype" as someone to look up.
+  assert.deepStrictEqual(names('MedTech Decision Map Prototype Chat'), []);
+  assert.deepStrictEqual(names('Q3 Territory Expansion Planning'), []);
+  assert.deepStrictEqual(names('Lumendi DiLumen Launch Readiness'), []);
+});
+
 test('lowercase words are not a name without an honorific', () => {
   assert.deepStrictEqual(names('quick vivek discussion'), []);
   assert.deepStrictEqual(names('budget planning'), []);
@@ -46,9 +55,10 @@ test('real person names still resolve', () => {
   assert.deepStrictEqual(names('GEOFFREY AARON'), ['Geoffrey Aaron']);
   assert.deepStrictEqual(names('Demo for Adam Smith'), ['Adam Smith']);
   assert.deepStrictEqual(names('Dr. Nicholas Shaheen, MD'), ['Nicholas Shaheen']);
-  // Lowercase particles survive the capitalisation check (titleCase's existing
-  // rendering of them is unchanged by this fix).
-  assert.deepStrictEqual(names('Meeting with Maria de Souza'), ['Maria De Souza']);
+  assert.deepStrictEqual(names('Meeting with Maria de Souza'), ['Maria de Souza']);
+  // Three capitalised words is still a person; particles don't count toward it.
+  assert.deepStrictEqual(names('Meeting with Mary Jane Smith'), ['Mary Jane Smith']);
+  assert.deepStrictEqual(names('Dr Juan Carlos de la Cruz'), ['Juan Carlos de la Cruz']);
 });
 
 test('a name followed by a meeting word keeps the name', () => {

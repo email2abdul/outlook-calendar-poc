@@ -108,31 +108,42 @@ const NAME_PARTICLE = new Set([
  * any case, and titleCase() then dressed the result up as a name, so a plain
  * lowercase title ("quick vivek sync") came back looking like a person.
  *
- * An honorific is proof enough on its own ("dr geoffrey aaron" is a name however
- * the rep typed it). Without one we need two words that are capitalised as a
+ * An honorific is proof enough that the words are a name however the rep typed
+ * them ("dr geoffrey aaron"). Without one we need two words capitalised as a
  * name is, ignoring the lowercase particles above.
+ *
+ * Four or more capitalised words is the other direction of the same mistake:
+ * "MedTech Decision Map Prototype" is a project, not a person, but every word
+ * in it is capitalised. A person's name in a meeting title is two or three
+ * words — particles don't count, so "Juan Carlos de la Cruz" still passes.
  */
+const MAX_NAME_WORDS = 3;
+
 function looksLikeAName(tokens, hadHonorific) {
-  if (hadHonorific) return true;
   let capitals = 0;
   for (const t of tokens) {
     if (/^[A-Z]/.test(t)) {
       capitals++;
       continue;
     }
-    if (!NAME_PARTICLE.has(t.toLowerCase())) return false;
+    if (NAME_PARTICLE.has(t.toLowerCase())) continue;
+    // A lowercase word that is not a particle is only a name on an honorific's
+    // word ("meeting with dr geoffrey aaron").
+    if (!hadHonorific) return false;
   }
-  return capitals >= 2;
+  if (capitals > MAX_NAME_WORDS) return false;
+  return hadHonorific || capitals >= 2;
 }
 
 /** "GEOFFREY AARON" / "geoffrey aaron" → "Geoffrey Aaron". */
 function titleCase(tokens) {
   return tokens
-    .map((t) =>
-      t.length <= 2 && t.endsWith('.')
-        ? t.toUpperCase() // initials: "a." → "A."
-        : t[0].toUpperCase() + t.slice(1).toLowerCase()
-    )
+    .map((t, i) => {
+      if (t.length <= 2 && t.endsWith('.')) return t.toUpperCase(); // initials: "a." → "A."
+      // "de la" stays lowercase inside a name — never as its first word.
+      if (i > 0 && NAME_PARTICLE.has(t.toLowerCase())) return t.toLowerCase();
+      return t[0].toUpperCase() + t.slice(1).toLowerCase();
+    })
     .join(' ');
 }
 
@@ -172,7 +183,10 @@ function nameFromSegment(segment, skipTokens) {
     if (PLACE_WORD.has(bare) || NOT_A_NAME.has(bare)) break;
     if (!/^[A-Za-z][A-Za-z'’.-]*$/.test(word)) break;
     tokens.push(word);
-    if (tokens.length === 4) break;
+    // A guard against a runaway title, not the name-length rule — that is
+    // looksLikeAName's cap on capitalised words, which lets the particles in
+    // "Juan Carlos de la Cruz" through instead of truncating the surname off.
+    if (tokens.length === 6) break;
   }
 
   // Two tokens minimum: a bare surname is not enough to look anybody up, and a
