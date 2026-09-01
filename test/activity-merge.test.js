@@ -11,6 +11,9 @@ const stub = require('./helpers/stub');
  * and minutes later the ingest tick — which matches on attendee EMAIL only, and
  * this meeting has none — upserts physician_npi = null straight over it. The
  * choice was gone, the reminder brief had nobody, and nothing said why.
+ *
+ * The confirmed NPI arrives as the THIRD argument: the decision itself lives in
+ * app_meeting_physician (src/meeting-store.js), not on this row.
  */
 stub('src/supabase', null); // pure function; no database needed
 
@@ -18,16 +21,18 @@ const { mergeActivityRow } = require('../src/crm-store');
 
 test("a rep's confirmed choice outranks anything the sync derived", () => {
   const merged = mergeActivityRow(
-    { chosen_npi: '2000000002', physician_npi: '2000000002', facility_id: 'F2' },
-    { physician_npi: '1111111111', facility_id: 'F9' }
+    { physician_npi: '2000000002', facility_id: 'F2' },
+    { physician_npi: '1111111111', facility_id: 'F9' },
+    '2000000002'
   );
   assert.strictEqual(merged.physician_npi, '2000000002');
 });
 
 test('a sync that matched nobody never blanks a confirmed choice', () => {
   const merged = mergeActivityRow(
-    { chosen_npi: '2000000002', physician_npi: '2000000002', facility_id: 'F2' },
-    { physician_npi: null, facility_id: null }
+    { physician_npi: '2000000002', facility_id: 'F2' },
+    { physician_npi: null, facility_id: null },
+    '2000000002'
   );
   assert.strictEqual(merged.physician_npi, '2000000002', 'the original bug');
   assert.strictEqual(merged.facility_id, 'F2');

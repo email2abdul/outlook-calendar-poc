@@ -51,12 +51,18 @@ async function audit(entry) {
  * So: a REP's confirmed choice outranks anything automatic, and an automatic
  * match never overwrites a known link with nothing.
  *
- * @param {object|null} existing  the app_activities row already stored, if any
- * @param {object} incoming       { physician_npi, facility_id } this sync derived
+ * The confirmed NPI is passed in rather than read off the row: the decision
+ * lives in app_meeting_physician (src/meeting-store.js), not in this table —
+ * app_activities stays the meeting, and only its existing physician_npi column
+ * is kept in step so every current reader follows the choice unchanged.
+ *
+ * @param {object|null} existing   the app_activities row already stored, if any
+ * @param {object} incoming        { physician_npi, facility_id } this sync derived
+ * @param {string|null} chosenNpi  the physician the rep confirmed, if any
  * @returns {{physician_npi: string|null, facility_id: string|null}}
  */
-function mergeActivityRow(existing, incoming) {
-  const chosen = existing && existing.chosen_npi ? String(existing.chosen_npi) : null;
+function mergeActivityRow(existing, incoming, chosenNpi) {
+  const chosen = chosenNpi ? String(chosenNpi) : null;
   return {
     physician_npi: chosen || incoming.physician_npi || existing?.physician_npi || null,
     facility_id: incoming.facility_id || existing?.facility_id || null,
@@ -67,11 +73,10 @@ function mergeActivityRow(existing, incoming) {
  * Upsert a CRM activity from a calendar event (idempotent on
  * calendar_event_id). Returns the activity row.
  *
- * Reads the stored row first so mergeActivityRow() can protect a rep's choice
- * (and any physician already linked) from an automatic sync that no longer sees
- * them — pass `{ existing }` when the caller has already read it. Only the
- * columns in `row` are written, so chosen_npi / chosen_by / brief_status set
- * elsewhere survive untouched.
+ * Reads the stored row first so mergeActivityRow() can protect a physician
+ * already linked from an automatic sync that no longer sees them — pass
+ * `{ existing }` when the caller has already read it, and `{ chosenNpi }` when
+ * the rep has confirmed someone (that record lives in app_meeting_physician).
  */
 async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId, opts = {}) {
   const db = ensure();
@@ -87,10 +92,11 @@ async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId
       existing = null;
     }
   }
-  const merged = mergeActivityRow(existing, {
-    physician_npi: physicianNpi || null,
-    facility_id: facilityId || null,
-  });
+  const merged = mergeActivityRow(
+    existing,
+    { physician_npi: physicianNpi || null, facility_id: facilityId || null },
+    opts.chosenNpi || null
+  );
 
   const row = {
     owner_user_id: ownerUserId,
@@ -132,75 +138,30 @@ async function findActivityByEventId(ownerUserId, calendarEventId) {
 }
 
 /**
- * Every stored activity for a set of calendar events, as eventId → row.
- *
- * The day view needs "has this meeting already been decided?" for a dozen
- * meetings at once; one query with `in (…)` keeps that a single round-trip
- * instead of a dozen.
+ * Point a meeting at a physician, using only the column app_activities already
+ * has. Called when the rep confirms someone: the decision itself is recorded in
+ * app_meeting_physician, and this keeps the existing readers — the reminder
+ * brief, reply→note linking, the activity list — pointing at the same person
+ * without any of them learning a new table.
  */
-async function findActivitiesByEventIds(ownerUserId, eventIds) {
-  const ids = [...new Set((eventIds || []).filter(Boolean).map(String))];
-  const byEventId = new Map();
-  if (!ids.length) return byEventId;
-
+async function setActivityPhysician(ownerUserId, ev, npi) {
+  const now = new Date().toISOString();
   const { data, error } = await ensure()
     .from('app_activities')
-    .select('*')
-    .eq('owner_user_id', ownerUserId)
-    .in('calendar_event_id', ids);
-  if (error) throw new Error(`findActivitiesByEventIds failed: ${error.message}`);
-
-  for (const row of data || []) byEventId.set(String(row.calendar_event_id), row);
-  return byEventId;
-}
-
-/**
- * Record (or clear) the physician the REP confirmed for one meeting.
- *
- * `physician_npi` is written in step with `chosen_npi` on purpose: every
- * existing reader — the reminder brief, reply→note linking, the activity list —
- * already reads physician_npi, so the choice reaches all of them without any of
- * them learning a new column. Clearing (npi = null) drops both, which puts the
- * meeting back on the ladder.
- *
- * Throws MISSING_CHOICE_COLUMNS when supabase/meeting-choice-setup.sql has not
- * been run on this project — the caller turns that into a readable message
- * instead of a 500.
- */
-async function setChosenPhysician(ownerUserId, ev, npi, { by = 'user', briefStatus, gateReason } = {}) {
-  const db = ensure();
-  const clearing = !npi;
-  const now = new Date().toISOString();
-
-  const row = {
-    owner_user_id: ownerUserId,
-    calendar_event_id: ev.id,
-    title: ev.title || null,
-    meeting_date: ev.start ? ev.start.slice(0, 10) : null,
-    chosen_npi: clearing ? null : String(npi),
-    chosen_by: clearing ? null : by,
-    chosen_at: clearing ? null : now,
-    physician_npi: clearing ? null : String(npi),
-    brief_status: briefStatus || (clearing ? null : 'briefed'),
-    gate_reason: gateReason || null,
-    updated_at: now,
-  };
-
-  const { data, error } = await db
-    .from('app_activities')
-    .upsert(row, { onConflict: 'calendar_event_id' })
+    .upsert(
+      {
+        owner_user_id: ownerUserId,
+        calendar_event_id: ev.id,
+        title: ev.title || null,
+        meeting_date: ev.start ? String(ev.start).slice(0, 10) : null,
+        physician_npi: npi ? String(npi) : null,
+        updated_at: now,
+      },
+      { onConflict: 'calendar_event_id' }
+    )
     .select()
     .single();
-
-  if (error) {
-    // PostgREST reports an unknown column as PGRST204 / "column … does not exist".
-    if (/chosen_npi|chosen_by|brief_status|gate_reason/.test(error.message)) {
-      const e = new Error('MISSING_CHOICE_COLUMNS');
-      e.detail = error.message;
-      throw e;
-    }
-    throw new Error(`setChosenPhysician failed: ${error.message}`);
-  }
+  if (error) throw new Error(`setActivityPhysician failed: ${error.message}`);
   return data;
 }
 
@@ -319,8 +280,7 @@ module.exports = {
   audit,
   upsertActivityFromEvent,
   mergeActivityRow,
-  findActivitiesByEventIds,
-  setChosenPhysician,
+  setActivityPhysician,
   findActivityByThread,
   findActivityByPhysician,
   findActivityBySubject,

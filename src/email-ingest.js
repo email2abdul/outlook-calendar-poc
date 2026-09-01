@@ -14,6 +14,8 @@ const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
 const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
+const meetingMatch = require('./meeting-match');
+const meetingStore = require('./meeting-store');
 const intelStore = require('./email-intel-store');
 
 /**
@@ -108,10 +110,27 @@ async function syncActivities(token, user) {
   // added later if replies arrive long after a meeting.
   const events = await graph.getUpcomingEvents(token, ACTIVITY_WINDOW_MAX);
 
+  // Every decision already on record for this window, in ONE query rather than
+  // one per meeting per tick. A choice the rep made is the reason this tick
+  // must not re-derive (and overwrite) who the meeting is with.
+  let decisions = new Map();
+  if (meetingStore.enabled) {
+    try {
+      decisions = await meetingStore.latestForEvents(
+        user.homeAccountId,
+        events.map((e) => e.id)
+      );
+    } catch (err) {
+      console.warn('[ingest] meeting decisions unavailable:', err.message);
+    }
+  }
+
   let synced = 0;
   for (const ev of events) {
     if (ev.isAllDay) continue;
     const physicians = await physiciansForEvent(ev, user.email);
+    const decision = decisions.get(String(ev.id)) || null;
+    const chosenNpi = decision?.decidedBy === 'user' ? decision.npi : null;
     // The activity row links to a single physician (schema is one NPI per
     // activity); use the first. All matched physicians are still briefed below.
     const primary = physicians[0] || null;
@@ -128,11 +147,15 @@ async function syncActivities(token, user) {
       ev,
       primary?.npi,
       primary?.facility?.id,
-      // Already read above; hand it over so the merge (which protects a rep's
-      // confirmed physician from being overwritten) costs no second query.
-      { existing: existed }
+      // `existing` was already read above, so the merge costs no second query;
+      // `chosenNpi` is what stops this sync writing null over the rep's choice.
+      { existing: existed, chosenNpi }
     );
     if (activity) synced++;
+
+    // Keep the record of WHO this meeting is with (and when that was decided,
+    // for which rep) up to date on its own, without anybody opening the app.
+    await recordDecision(user, ev, physicians, decision);
 
     // Instant-brief the matched physician(s) in ONE email (a two-physician
     // meeting → a single brief with both), only the first time it's seen.
@@ -181,6 +204,113 @@ async function syncActivities(token, user) {
     }
   }
   return synced;
+}
+
+/**
+ * Write down who this meeting is with — automatically, every tick.
+ *
+ * The app used to know this only for as long as a request lasted: the day view
+ * worked it out, showed it, and forgot it. Nothing could answer "which data do
+ * we hold for this meeting, when was it made, and for which rep" — and a
+ * shortlist the rep had already answered was re-asked on the next page load.
+ *
+ * A row is written only when the answer CHANGES (see meetingStore
+ * .isWorthRecording), so a calendar that has not moved does not grow a row per
+ * tick, and a decision the REP made is never overwritten by an automatic one.
+ *
+ * Best-effort by design: this is bookkeeping, and it must never break the sync
+ * that briefs the rep.
+ */
+async function recordDecision(user, ev, emailMatched, latest) {
+  if (!meetingStore.enabled) return;
+
+  let next;
+  if (emailMatched.length) {
+    const p = emailMatched[0];
+    next = {
+      npi: p.npi,
+      name: p.name || null,
+      specialty: p.specialty || null,
+      facilityName: p.facility?.name || null,
+      city: p.facility?.city || null,
+      state: p.facility?.state || null,
+      inBis: true,
+      source: 'email',
+      status: 'briefed',
+      confidence: 100,
+      reason:
+        emailMatched.length > 1
+          ? `${emailMatched.length} attendee emails matched the BIS master exactly.`
+          : 'Attendee email matched the BIS master exactly.',
+    };
+  } else {
+    const chosenNpi = latest?.decidedBy === 'user' ? latest.npi : null;
+    const m = meetingMatch.matchMeeting(ev, { selfEmail: user.email, chosenNpi });
+
+    // The rep's own answer is already on record; re-recording it says nothing.
+    if (m.via === 'rep-choice') return;
+
+    const first = m.physicians[0] || null;
+    const candidates = (m.groups || []).flatMap((g) =>
+      (g.candidates || []).map((c) => ({ ...c, forName: g.name, total: g.total }))
+    );
+
+    const STATUS = {
+      matched: 'briefed',
+      choose: 'needs_confirm',
+      needs_external: 'no_physician',
+      gate_blocked: 'skipped',
+      no_name: 'no_physician',
+    };
+    // `source` says where the answer came from, so "gate" is the honest value
+    // for a meeting the gate stopped: nothing was looked up at all.
+    const SOURCE = {
+      matched: 'name',
+      choose: 'name',
+      needs_external: 'name',
+      gate_blocked: 'gate',
+      no_name: 'gate',
+    };
+
+    next = {
+      npi: first?.npi || null,
+      name: first?.name || null,
+      specialty: first?.specialty || null,
+      facilityName: first?.facility?.name || null,
+      city: first?.facility?.city || null,
+      state: first?.facility?.state || null,
+      inBis: Boolean(first),
+      source: SOURCE[m.status] || 'name',
+      status: STATUS[m.status] || null,
+      reason: m.reason,
+      candidates,
+      // Named so a brief can print "Data is not available" for them in the same
+      // layout, rather than dropping the row and changing shape.
+      dataMissing: m.status === 'needs_external' ? ['npi', 'specialty', 'facility', 'cpt_volumes'] : [],
+    };
+  }
+
+  if (!meetingStore.isWorthRecording(latest, { ...next, decidedBy: 'system' })) return;
+
+  try {
+    await meetingStore.record({
+      ownerUserId: user.homeAccountId,
+      ownerEmail: user.email || null,
+      event: ev,
+      decidedBy: 'system',
+      ...next,
+    });
+  } catch (err) {
+    if (err.message === meetingStore.MISSING_TABLE) {
+      // One line, once per tick — not once per meeting.
+      if (!recordDecision.warned) {
+        console.warn('[ingest] app_meeting_physician missing — run supabase/meeting-physician-setup.sql');
+        recordDecision.warned = true;
+      }
+      return;
+    }
+    console.warn('[ingest] decision record failed:', err.message);
+  }
 }
 
 /**
@@ -716,7 +846,7 @@ function start() {
 }
 
 module.exports = {
-  start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
+  start, tick, cleanBody, syncActivities, recordDecision, ingestEmails, ingestSentReplies,
   reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
   briefUnknownAttendees,
 };

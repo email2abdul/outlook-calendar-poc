@@ -16,6 +16,7 @@ const leadMatch = require('../lead-match');
 const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
 const meetingMatch = require('../meeting-match');
+const meetingStore = require('../meeting-store');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -138,20 +139,21 @@ async function dayHandler(req, res, next) {
     // organizer's latest meeting note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
 
-    // What has already been DECIDED for these meetings — one query for the
-    // whole day, not one per meeting. A physician the rep confirmed outranks
-    // every automatic guess below, and is why a shortlist is asked once and
-    // not on every page load.
+    // What has already been DECIDED for these meetings — the latest record per
+    // meeting, one query for the whole day. A physician the rep confirmed
+    // outranks every automatic guess below, and is why a shortlist is asked
+    // once rather than on every page load.
     let decided = new Map();
-    if (crm.enabled) {
+    if (meetingStore.enabled) {
       try {
-        decided = await crm.findActivitiesByEventIds(
+        decided = await meetingStore.latestForEvents(
           ownerId(req),
           data.events.map((e) => e.id)
         );
       } catch (err) {
-        // No decision history is a worse day view, not a broken one.
-        console.warn('[api] activity lookup failed:', err.message);
+        // No decision history is a worse day view, not a broken one — and a
+        // missing table is a setup step, not an error worth 500-ing over.
+        console.warn('[api] meeting decisions unavailable:', err.message);
       }
     }
 
@@ -185,10 +187,13 @@ async function dayHandler(req, res, next) {
         // any title analysis, because it decides whether a name path is even
         // allowed: the title must say "Dr"/"Doctor", and then the name has to
         // be in the master. Its answer is what the UI renders.
-        const activity = decided.get(String(ev.id)) || null;
+        // Only a decision the REP made pins the meeting; an automatic record is
+        // just history, and must not stop the ladder re-deriving (and improving)
+        // its own answer.
+        const decision = decided.get(String(ev.id)) || null;
         const match = meetingMatch.matchMeeting(ev, {
           selfEmail: organizer,
-          chosenNpi: activity?.chosen_npi || null,
+          chosenNpi: decision?.decidedBy === 'user' ? decision.npi : null,
         });
 
         // Resolved by name, or narrowed to a shortlist the rep picks from:
@@ -590,13 +595,14 @@ router.get('/meetings/match', requireAuth, async (req, res, next) => {
  * Body: { eventId, npi }   ·   npi: null clears the choice
  *
  * The shortlist asks a question only the rep can answer; this is where the
- * answer is kept. It is written to app_activities as BOTH chosen_npi (the
- * decision, with who made it and when) and physician_npi (the column every
- * existing reader already uses), so the reminder brief and reply→note linking
- * follow the choice without learning anything new.
+ * answer is kept — as a new row in app_meeting_physician, stamped with the rep
+ * and the moment, so the history survives a correction. app_activities is then
+ * pointed at the same physician through the column it already has, so the
+ * reminder brief and reply→note linking follow the choice with no change of
+ * their own.
  *
- * 503 with a plain message when supabase/meeting-choice-setup.sql has not been
- * run on the project yet — the UI shows the brief regardless and says the
+ * 503 with a plain message when supabase/meeting-physician-setup.sql has not
+ * been run on the project yet — the UI shows the brief regardless and says the
  * choice was not saved, which is honest rather than silent.
  */
 router.post('/meetings/choose', requireAuth, async (req, res, next) => {
@@ -639,30 +645,55 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       throw err;
     }
 
-    let row;
+    let record;
     try {
-      row = await crm.setChosenPhysician(ownerId(req), event, npi, {
-        by: 'user',
-        briefStatus: npi ? 'briefed' : null,
+      // Append a new row rather than editing one: the correction history ("A on
+      // Monday, B on Tuesday") is the point, and the latest row is what counts.
+      record = await meetingStore.record({
+        ownerUserId: ownerId(req),
+        ownerEmail: organizerEmail(req),
+        event,
+        npi,
+        name: physician?.name || null,
+        specialty: physician?.specialty || null,
+        facilityName: physician?.facility?.name || null,
+        city: physician?.facility?.city || null,
+        state: physician?.facility?.state || null,
+        inBis: Boolean(physician),
+        source: 'user',
+        decidedBy: 'user',
+        confidence: 100,
+        status: npi ? 'briefed' : 'needs_confirm',
+        reason: npi
+          ? `${physician?.name || npi} confirmed by ${organizerEmail(req) || 'the rep'}.`
+          : `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`,
       });
     } catch (err) {
-      if (err.message === 'MISSING_CHOICE_COLUMNS') {
-        console.warn('[api] choice columns missing:', err.detail);
+      if (err.message === meetingStore.MISSING_TABLE) {
+        console.warn('[api] app_meeting_physician missing:', err.detail);
         return res.status(503).json({
           error: 'setup_required',
           message:
-            'This Supabase project has no chosen_npi column yet — run ' +
-            'supabase/meeting-choice-setup.sql, then the choice will stick.',
+            'This Supabase project has no app_meeting_physician table yet — run ' +
+            'supabase/meeting-physician-setup.sql, then the choice will stick.',
         });
       }
       throw err;
     }
 
+    // Keep the meeting row pointing at the same physician, using the column it
+    // already has, so the reminder brief and reply→note linking follow along.
+    try {
+      if (crm.enabled) await crm.setActivityPhysician(ownerId(req), event, npi);
+    } catch (err) {
+      console.warn('[api] activity physician update failed:', err.message);
+    }
+
     await crm.audit({
       actor: 'user',
       action: npi ? 'meeting.physician_chosen' : 'meeting.physician_choice_cleared',
-      entityType: 'activity',
-      entityId: row?.id || null,
+      entityType: 'meeting_physician',
+      entityId: record?.id ? String(record.id) : null,
       details: { eventId, npi, title: event.title, by: organizerEmail(req) },
     });
 

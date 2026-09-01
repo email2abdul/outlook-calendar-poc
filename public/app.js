@@ -919,15 +919,17 @@ function buildChoose(detail, ev) {
 
     const head = document.createElement('p');
     head.className = 'muted event__detail-intro';
+    // One line, in the rep's own words: say the name, say how many records it
+    // brought back, and ask which one the pre-meeting notes are for.
     if (g.total > g.candidates.length) {
       head.textContent =
-        `“${g.name}” (from the meeting ${g.source}) matches ${g.total} physicians in the ` +
-        `BIS directory — the closest ${g.candidates.length} are below. Add the city, the ` +
-        'specialty or a fuller name to the meeting and this narrows down.';
+        `Due to the name “${g.name}” I have ${g.total} matching records ` +
+        `(closest ${g.candidates.length} shown) — choose the one you want the ` +
+        'pre-meeting notes for.';
     } else if (g.total > 1) {
       head.textContent =
-        `“${g.name}” (from the meeting ${g.source}) matches ${g.total} physicians in the ` +
-        'BIS directory. Pick who the meeting is with:';
+        `Due to the name “${g.name}” I have ${g.total} matching records — choose the ` +
+        'one you want the pre-meeting notes for.';
     } else {
       head.textContent = `“${g.name}” — one match in the BIS directory:`;
     }
