@@ -1,5 +1,7 @@
 'use strict';
 
+const crypto = require('crypto');
+
 const physicians = require('../physicians');
 const entityMatcher = require('../entity-matcher');
 
@@ -69,6 +71,7 @@ const LEAD_WORDS = new Set([
   'followup', 'follow', 'checkin', 'check', 'in', 'review', 'touchpoint',
   'touch', 'base', 'quick', 'weekly', 'monthly', 'daily', 'onsite', 'on', 'site',
   'brief', 'briefing', 'training', 'case', 'observation', 'evaluation',
+  'chat', 'huddle', 'session', 'standup', 'debrief',
 ]);
 
 const HONORIFIC = /^(dr|doctor|prof|professor|mr|mrs|ms|miss|sir)[.,]?$/i;
@@ -87,6 +90,40 @@ const NOT_A_NAME = new Set([
   'products', 'demo', 'training', 'onboarding', 'interview', 'standup',
   'retro', 'planning', 'budget', 'q1', 'q2', 'q3', 'q4', 'poc', 'bis', 'lumendi',
 ]);
+
+/**
+ * Lowercase words that are legitimately part of a surname ("Maria de Souza"),
+ * so requiring capitalisation does not throw those names away.
+ */
+const NAME_PARTICLE = new Set([
+  'de', 'del', 'della', 'da', 'das', 'dos', 'di', 'du', 'van', 'von', 'der',
+  'den', 'ter', 'ten', 'la', 'le', 'bin', 'ibn', 'al',
+]);
+
+/**
+ * Is this run of words capitalised the way a person's name is?
+ *
+ * The rule this module documents — "an honorific or two capitalised words in a
+ * row" — was never actually enforced: the token test (`/^[A-Za-z].../`) accepts
+ * any case, and titleCase() then dressed the result up as a name, so a plain
+ * lowercase title ("quick vivek sync") came back looking like a person.
+ *
+ * An honorific is proof enough on its own ("dr geoffrey aaron" is a name however
+ * the rep typed it). Without one we need two words that are capitalised as a
+ * name is, ignoring the lowercase particles above.
+ */
+function looksLikeAName(tokens, hadHonorific) {
+  if (hadHonorific) return true;
+  let capitals = 0;
+  for (const t of tokens) {
+    if (/^[A-Z]/.test(t)) {
+      capitals++;
+      continue;
+    }
+    if (!NAME_PARTICLE.has(t.toLowerCase())) return false;
+  }
+  return capitals >= 2;
+}
 
 /** "GEOFFREY AARON" / "geoffrey aaron" → "Geoffrey Aaron". */
 function titleCase(tokens) {
@@ -113,13 +150,23 @@ function nameFromSegment(segment, skipTokens) {
 
   const raw = who.split(/\s+/).filter(Boolean);
   const tokens = [];
+  let hadHonorific = false;
   for (const t of raw) {
     const word = t.replace(/[,;:]+$/, '');
     const bare = word.toLowerCase().replace(/[.]/g, '');
     if (!word) continue;
-    if (HONORIFIC.test(word)) continue;
+    if (HONORIFIC.test(word)) {
+      hadHonorific = true;
+      continue;
+    }
     if (CREDENTIAL.test(word)) continue;
-    if (LEAD_WORDS.has(bare)) continue;
+    // A meeting word BEFORE the name is a prefix to drop ("Demo Adam Smith").
+    // AFTER one, it is where the name ended: "Vivek Chat" is a chat, not a
+    // Mr Chat, and "Adam Smith Sync" is Adam Smith.
+    if (LEAD_WORDS.has(bare)) {
+      if (!tokens.length) continue;
+      break;
+    }
     // A place word (or an obvious non-name) ends the name — "Adam Smith
     // Hospital Boston" is Adam Smith, and nothing after it.
     if (PLACE_WORD.has(bare) || NOT_A_NAME.has(bare)) break;
@@ -131,6 +178,7 @@ function nameFromSegment(segment, skipTokens) {
   // Two tokens minimum: a bare surname is not enough to look anybody up, and a
   // single first name ("call with Steve") would produce confident nonsense.
   if (tokens.length < 2) return null;
+  if (!looksLikeAName(tokens, hadHonorific)) return null;
   if (tokens.every((t) => skipTokens.has(t.toLowerCase()))) return null; // the organizer
   return titleCase(tokens);
 }
@@ -185,6 +233,60 @@ function namesFromEvent(event, opts = {}) {
     if (out.length >= (opts.limit || 3)) break;
   }
   return out;
+}
+
+// ── Recurring series identity ───────────────────────────────────────────────
+
+/**
+ * A short, stable fingerprint of the people a meeting is about.
+ *
+ * NPI first — a matched BIS physician is the same person whatever address the
+ * invite used — then email, then the bare name a title gave us.
+ *
+ * @param {Array<{npi?:string|number|null, email?:string|null, name?:string|null}>} subjects
+ * @returns {string|null}
+ */
+function subjectFingerprint(subjects) {
+  const parts = [
+    ...new Set(
+      (subjects || [])
+        .map((s) => String(s?.npi || s?.email || s?.name || '').trim().toLowerCase())
+        .filter(Boolean)
+    ),
+  ].sort();
+  if (!parts.length) return null;
+  return crypto.createHash('sha1').update(parts.join('|')).digest('hex').slice(0, 12);
+}
+
+/**
+ * The dedupe identity of the MEETING an enrichment belongs to.
+ *
+ * `calendarView` expands a recurring series into one concrete event per
+ * occurrence, each with its own event id. Keying per-meeting work on that id
+ * means a weekly meeting inside the 30-day sync window is handled ~29 times —
+ * 29 paid lookups, 29 briefs — for one logical meeting with one person. Graph
+ * stamps every occurrence of a series (and every edited "exception") with the
+ * same `seriesMasterId`, and that, not the title, is the series' identity:
+ * two different series never share it, and two unrelated meetings that happen
+ * to be called the same thing never collide.
+ *
+ * A single, non-recurring event has no `seriesMasterId` and keeps its own id
+ * verbatim — so distinct one-off meetings stay distinct, and dedupe keys
+ * already written for past events still match.
+ *
+ * The subjects are folded in so an occurrence the rep edited to be with someone
+ * else (a Graph "exception") is still handled on its own: same series, but not
+ * the same person, so not the same answer.
+ *
+ * @param {object} event                             normalized event (src/graph.js)
+ * @param {Array<{npi?, email?, name?}>} [subjects]  who this meeting is about
+ * @returns {string} the dedupe key body
+ */
+function seriesKey(event, subjects = []) {
+  const master = String(event?.seriesMasterId || '').trim();
+  if (!master) return String(event?.id || '');
+  const who = subjectFingerprint(subjects);
+  return who ? `series:${master}:${who}` : `series:${master}`;
 }
 
 /** True when this address is the meeting's organizer (or the signed-in user). */
@@ -324,6 +426,7 @@ function stripOrganizerPeople(analysis, event, selfEmail) {
 module.exports = {
   attendeesToEnrich,
   namesFromEvent,
+  seriesKey,
   isOrganizer,
   hintsFromEvent,
   organizerTokens,

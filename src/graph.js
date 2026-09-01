@@ -96,6 +96,14 @@ function normalizeEvent(event) {
     end: event.end?.dateTime || null,
     timeZone: event.start?.timeZone || null,
     isAllDay: Boolean(event.isAllDay),
+    // Recurrence identity. `calendarView` expands a recurring series into one
+    // event per occurrence, each with its OWN id — so an occurrence-keyed
+    // dedupe reads a weekly meeting as N unrelated meetings. Every occurrence
+    // (and every edited "exception") carries the same `seriesMasterId`; that is
+    // what tells "29 occurrences of one meeting" from "29 meetings". Null on a
+    // single, non-recurring event.
+    type: event.type || 'singleInstance', // singleInstance|occurrence|exception|seriesMaster
+    seriesMasterId: event.seriesMasterId || null,
     location: event.location?.displayName || null,
     // bodyPreview is plain text — safe and concise for a list view.
     description: event.bodyPreview?.trim() || null,
@@ -138,7 +146,7 @@ async function getEventsForDay(accessToken, timeZone, dateYmd) {
     .query({ startDateTime, endDateTime })
     // Return start/end times already converted to the user's time zone.
     .header('Prefer', `outlook.timezone="${tz}"`)
-    .select('subject,start,end,location,bodyPreview,isAllDay,organizer,attendees,onlineMeeting,webLink')
+    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
     .orderby('start/dateTime')
     .top(100)
     .get();
@@ -1202,7 +1210,7 @@ async function getUpcomingEvents(accessToken, withinMinutes = 180) {
     .api('/me/calendarView')
     .query({ startDateTime: now.toISOString(), endDateTime: until.toISOString() })
     .header('Prefer', 'outlook.timezone="UTC"')
-    .select('subject,start,end,location,bodyPreview,isAllDay,organizer,attendees,onlineMeeting,webLink')
+    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
     .orderby('start/dateTime')
     .top(50)
     .get();
