@@ -1,0 +1,203 @@
+'use strict';
+
+const test = require('node:test');
+const assert = require('node:assert');
+const stub = require('./helpers/stub');
+
+/**
+ * The decision ladder in src/meeting-match.js — the rep's own rule set:
+ *
+ *   attendee email in the master  →  "Dr"/"Doctor" in the title  →  that name
+ *   in the master  →  one hit (brief) / several (rep picks) / none (registries).
+ *
+ * The directory is a hand-made fake, so these tests are offline and exact: the
+ * point is the ORDER and the GATE, not Supabase.
+ */
+
+// A tiny master: two Aarons (so a name is genuinely ambiguous), one unique name.
+const DIRECTORY = [
+  {
+    npi: '1000000001',
+    name: 'Geoffrey A Aaron',
+    specialty: 'Gastroenterology',
+    email: 'gaaron@bis-example.org',
+    phone: '555-0100',
+    facility: { id: 'F1', name: 'UNC Hospitals', city: 'Chapel Hill', state: 'NC' },
+  },
+  {
+    npi: '1000000002',
+    name: 'Geoffrey Aaron',
+    specialty: 'Internal Medicine',
+    email: null,
+    phone: null,
+    facility: { id: 'F2', name: 'Duke Health', city: 'Durham', state: 'NC' },
+  },
+  {
+    npi: '1000000003',
+    name: 'Nicholas J Shaheen',
+    specialty: 'Gastroenterology',
+    email: null,
+    phone: null,
+    facility: { id: 'F1', name: 'UNC Hospitals', city: 'Chapel Hill', state: 'NC' },
+  },
+];
+
+const tokens = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .split(/[^a-z0-9'’-]+/)
+    .filter((t) => t.length >= 2);
+
+stub('src/physicians', {
+  getByEmail: (email) =>
+    DIRECTORY.find((p) => p.email && p.email.toLowerCase() === String(email || '').toLowerCase()) || null,
+  getByNpi: (npi) => DIRECTORY.find((p) => p.npi === String(npi)) || null,
+  searchByNameTokens: (query, limit) => {
+    const want = tokens(query);
+    if (want.length < 2) return [];
+    return DIRECTORY.filter((p) => want.every((t) => p.name.toLowerCase().includes(t))).slice(0, limit);
+  },
+  getFacilityById: () => null,
+  matchInText: () => [],
+});
+
+const { matchMeeting, titleGate, cleanPersonName } = require('../src/meeting-match');
+
+const REP = 'rep@lumendi-example.com';
+const event = (over = {}) => ({
+  id: 'EV1',
+  title: '',
+  start: '2026-09-02T14:00:00',
+  timeZone: 'UTC',
+  organizer: { name: 'Sales Rep', email: REP },
+  attendees: [],
+  ...over,
+});
+
+// ── The gate ────────────────────────────────────────────────────────────────
+
+test('the gate reads "Dr" as a word, not as three letters inside one', () => {
+  assert.strictEqual(titleGate('Meeting with Dr Geoffrey Aaron').pass, true);
+  assert.strictEqual(titleGate('Call with Doctor Aaron').pass, true);
+  assert.strictEqual(titleGate('Drs Aaron & Shaheen').pass, true);
+  assert.strictEqual(titleGate('dr. geoffrey aaron').pass, true);
+
+  assert.strictEqual(titleGate('Drainage review').pass, false, '"Drainage" is not a doctor');
+  assert.strictEqual(titleGate('1:1 with Andrew').pass, false, '"Andrew" contains "dr"');
+  assert.strictEqual(titleGate('Pipeline review').pass, false);
+  assert.strictEqual(titleGate('').pass, false);
+});
+
+test('an honorific and credentials are not part of the name', () => {
+  assert.strictEqual(cleanPersonName('Dr Geoffrey Aaron, MD'), 'Geoffrey Aaron');
+  assert.strictEqual(cleanPersonName('Nicholas Shaheen MD, MPH'), 'Nicholas Shaheen');
+  assert.strictEqual(cleanPersonName('Michael (Brian) Fennerty'), 'Michael Fennerty');
+});
+
+// ── Rung 1: the email always wins ───────────────────────────────────────────
+
+test('an exact attendee email resolves the meeting without touching the gate', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Pipeline review', // no "Dr" anywhere — must not matter
+      attendees: [{ name: 'G Aaron', email: 'gaaron@bis-example.org', type: 'required' }],
+    }),
+    { selfEmail: REP }
+  );
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'attendee-email');
+  assert.deepStrictEqual(
+    r.physicians.map((p) => p.npi),
+    ['1000000001']
+  );
+});
+
+test('the organizer is never matched, however the meeting is titled', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Meeting with Dr Geoffrey Aaron',
+      // The rep's own address is in the directory in this fixture; it must
+      // still be excluded, because the organizer is never the subject.
+      organizer: { name: 'G Aaron', email: 'gaaron@bis-example.org' },
+      attendees: [{ name: 'G Aaron', email: 'gaaron@bis-example.org', type: 'required' }],
+    }),
+    { selfEmail: 'gaaron@bis-example.org' }
+  );
+
+  assert.notStrictEqual(r.via, 'attendee-email', 'the organizer must not resolve the meeting');
+});
+
+// ── Rung 2: the gate stops everything else ──────────────────────────────────
+
+test('no email match and no "Dr" in the title = normal meeting, no lookup', () => {
+  const r = matchMeeting(event({ title: 'Coffee with Geoffrey Aaron' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'gate_blocked');
+  assert.deepStrictEqual(r.physicians, []);
+  assert.deepStrictEqual(r.names, [], 'nothing was even read as a name');
+});
+
+// ── Rung 3: the name, against the master ────────────────────────────────────
+
+test('a gated title whose name matches exactly one physician is resolved', () => {
+  const r = matchMeeting(event({ title: 'Case obs with Dr Nicholas Shaheen' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'bis-name');
+  assert.deepStrictEqual(
+    r.physicians.map((p) => p.npi),
+    ['1000000003']
+  );
+});
+
+test('a name matching several physicians is handed back for the rep to pick', () => {
+  const r = matchMeeting(event({ title: 'Meeting with Dr Geoffrey Aaron' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'choose');
+  assert.strictEqual(r.groups.length, 1);
+  assert.strictEqual(r.groups[0].total, 2);
+  assert.deepStrictEqual(
+    r.groups[0].candidates.map((p) => p.npi),
+    ['1000000001', '1000000002']
+  );
+  // Each card carries what a rep needs to tell two same-named doctors apart.
+  assert.strictEqual(r.groups[0].candidates[0].facility.city, 'Chapel Hill');
+  assert.strictEqual(r.groups[0].candidates[1].facility.city, 'Durham');
+});
+
+test('an attendee display name is used when their address is not in the master', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Dr visit — endoscopy unit',
+      attendees: [
+        // The name is right; the address is simply not the one BIS holds.
+        { name: 'Dr Nicholas Shaheen, MD', email: 'nshaheen@med.unc.edu', type: 'required' },
+      ],
+    }),
+    { selfEmail: REP }
+  );
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'bis-name');
+  assert.strictEqual(r.names[0].source, 'attendee');
+  assert.deepStrictEqual(
+    r.physicians.map((p) => p.npi),
+    ['1000000003']
+  );
+});
+
+test('a gated name in nobody\'s master is handed to the registries, not dropped', () => {
+  const r = matchMeeting(event({ title: 'Meeting with Dr John Abernathy' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'needs_external');
+  assert.deepStrictEqual(r.unresolvedNames, ['John Abernathy']);
+  assert.match(r.reason, /NPPES/);
+});
+
+test('"Dr" with no readable full name asks for nothing', () => {
+  const r = matchMeeting(event({ title: 'Dr rounds' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'no_name');
+  assert.deepStrictEqual(r.physicians, []);
+});

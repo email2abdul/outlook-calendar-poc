@@ -566,7 +566,11 @@ module.exports = {
   matchInText,
   ready,
   isLoaded,
-  // Exported for tests: the name-matching rule behind the multi-word search.
+  // The name-matching rule behind the multi-word search. searchByNameTokens is
+  // the whole-directory, First-Last lookup src/meeting-match.js runs when a
+  // meeting has no attendee email to match — free, and complete where the RPC
+  // (which pages) is not.
+  searchByNameTokens,
   nameTokens,
   nameHasAllTokens,
 };

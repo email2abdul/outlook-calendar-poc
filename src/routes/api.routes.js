@@ -15,6 +15,7 @@ const dynamics = require('../dynamics');
 const leadMatch = require('../lead-match');
 const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
+const meetingMatch = require('../meeting-match');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -159,7 +160,29 @@ async function dayHandler(req, res, next) {
         // chips compete with the confirmed physician (and save the AI call).
         const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
         if (attendeeNpis.size) {
-          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null };
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match: null };
+        }
+
+        // No email match — run the rep's ladder (src/meeting-match.js) BEFORE
+        // any title analysis, because it decides whether a name path is even
+        // allowed: the title must say "Dr"/"Doctor", and then the name has to
+        // be in the master. Its answer is what the UI renders.
+        const match = meetingMatch.matchMeeting(ev, { selfEmail: organizer });
+
+        // Resolved by name, or narrowed to a shortlist the rep picks from:
+        // either way the person is IN the master, so title chips and external
+        // lookups would only compete with the answer we already have.
+        if (match.status === 'matched' || match.status === 'choose') {
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match };
+        }
+
+        // The gate said no: the title never calls anyone a doctor. Person
+        // chips from the title are exactly what the gate withholds, so they
+        // are not computed at all (nor is the analysis that produces them).
+        // An attendee who HAS an address is still looked up outside BIS — that
+        // is an email path, not a name path, and the gate does not govern it.
+        if (match.status === 'gate_blocked') {
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match };
         }
 
         // No email match — fall back to entity analysis over the WHOLE event
@@ -190,7 +213,7 @@ async function dayHandler(req, res, next) {
             return !matchedNames.some((n) => tokens.every((t) => n.includes(t)));
           });
 
-        return { ...ev, attendees, titleMatches, titlePeople, entityAnalysis };
+        return { ...ev, attendees, titleMatches, titlePeople, entityAnalysis, match };
       })
     );
 
@@ -486,6 +509,55 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
   try {
     const rows = await emailIntelStore.listIntel(ownerId(req));
     res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/meetings/match?eventId=… — who is this meeting with?
+ *
+ * The cheap ladder only (src/meeting-match.js): attendee email in the master →
+ * the "Dr"/"Doctor" gate on the title → that name in the master. Nothing paid
+ * and nothing external runs here, so the UI can call it for any meeting.
+ *
+ * `status` tells the caller what to render:
+ *   matched         → `physicians` — show the brief(s)
+ *   choose          → `groups[].candidates` — the rep picks (≤ 5 each)
+ *   needs_external  → nobody in BIS; the registries are the next step
+ *   gate_blocked    → normal meeting; no lookup was run (title has no "Dr")
+ *   no_name         → gate passed but no readable full name
+ *
+ * The event is re-read from Graph rather than taken from the request, so a
+ * meeting the rep just edited is judged on its CURRENT title and attendees.
+ */
+router.get('/meetings/match', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.query.eventId === 'string' ? req.query.eventId.trim() : '';
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      // A deleted/moved event is a client mistake, not a server fault.
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    const result = meetingMatch.matchMeeting(event, { selfEmail: organizerEmail(req) });
+    res.json({
+      eventId,
+      title: event.title,
+      start: event.start,
+      timeZone: event.timeZone,
+      ...result,
+    });
   } catch (err) {
     next(err);
   }

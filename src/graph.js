@@ -1218,6 +1218,24 @@ async function getUpcomingEvents(accessToken, withinMinutes = 180) {
   return (response.value || []).map(normalizeEvent);
 }
 
+/**
+ * One event by id, normalized like every other event this module returns.
+ *
+ * The calendar list the browser already holds is a snapshot; a meeting the rep
+ * has just edited (added the real attendee, fixed the title) is only current in
+ * Graph. Anything that decides WHO a meeting is with reads it from here, so the
+ * decision is never made on a stale title.
+ */
+async function getEventById(accessToken, eventId) {
+  const client = getGraphClient(accessToken);
+  const event = await client
+    .api(`/me/events/${eventId}`)
+    .header('Prefer', 'outlook.timezone="UTC"')
+    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
+    .get();
+  return normalizeEvent(event);
+}
+
 // Hidden marker that makes brief injection idempotent (never inject twice).
 const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
 
@@ -1408,6 +1426,7 @@ async function getMe(accessToken) {
 }
 
 module.exports = {
+  getEventById,
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,

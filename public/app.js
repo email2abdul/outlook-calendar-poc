@@ -54,6 +54,21 @@ function todayYmd() {
  */
 function lookupHint(ev) {
   if (matchedPhysiciansOf(ev).length) return '🩺 BIS intelligence — click to open';
+
+  // The server's ladder (src/meeting-match.js) has usually already answered
+  // this, and its answer is more specific than anything guessed here: it either
+  // NAMES the physician it resolved, or says how many people share the name.
+  const m = ev.match;
+  if (m && m.status === 'matched' && (m.physicians || []).length) {
+    return `🩺 ${listNames(m.physicians.map((p) => p.name).filter(Boolean))} — BIS intelligence, click to open`;
+  }
+  if (m && m.status === 'choose') {
+    const g = (m.groups || []).find((x) => x.total > 1);
+    return g
+      ? `🔢 ${g.total} possible matches for “${g.name}” — click to pick`
+      : '🔢 Possible physician matches — click to pick';
+  }
+
   if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
 
   const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
@@ -78,8 +93,10 @@ function lookupHint(ev) {
  * identical closed cards.
  */
 function hasIntel(ev) {
+  const m = ev.match;
   return (
     matchedPhysiciansOf(ev).length > 0 ||
+    (m && (m.status === 'matched' || m.status === 'choose')) ||
     (ev.titleMatches || []).length > 0 ||
     (ev.titlePeople || []).length > 0 ||
     (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
@@ -759,10 +776,11 @@ function buildEnrichment(detail, ev) {
 }
 
 /** No email match → auto-enrichment, title-based suggestions, and a search box. */
-function buildNoMatch(detail, ev) {
+function buildNoMatch(detail, ev, { intro: introText } = {}) {
   const intro = document.createElement('p');
   intro.className = 'muted event__detail-intro';
-  intro.textContent = 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
+  intro.textContent =
+    introText || 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
   detail.appendChild(intro);
 
   // Look the attendees up outside BIS straight away — the rep should not have
@@ -797,6 +815,13 @@ function buildNoMatch(detail, ev) {
   }
 
   // Free-text search — start blank, let the rep type who they're looking for.
+  appendSearchBox(detail, pick);
+
+  detail.appendChild(pickedWrap);
+}
+
+/** A free-text physician search, wired to `onPick`. Used by more than one path. */
+function appendSearchBox(detail, onPick) {
   const searchWrap = physSearchTpl.content.firstElementChild.cloneNode(true);
   const input = searchWrap.querySelector('.physician-inline__search');
   const results = searchWrap.querySelector('.physician-results');
@@ -804,21 +829,132 @@ function buildNoMatch(detail, ev) {
   input.addEventListener('input', (e) => {
     clearTimeout(deb);
     const q = e.target.value;
-    deb = setTimeout(() => searchPhysicians(q, results, pick), 250);
+    deb = setTimeout(() => searchPhysicians(q, results, onPick), 250);
   });
   detail.appendChild(searchWrap);
+}
 
+/**
+ * Several physicians in the master share the name the meeting gives.
+ *
+ * This is a question, not an answer: the rep is the only one who knows which
+ * "Abdul Khan" they are seeing, so nothing is briefed until they pick. The
+ * cards lead with facility and city because that — not the name — is what
+ * tells same-named physicians apart, and the true total is stated even though
+ * only the first few are listed: "3 of 12" is honest, "3" is not.
+ */
+function buildChoose(detail, ev) {
+  const m = ev.match || {};
+
+  const pickedWrap = document.createElement('div');
+  pickedWrap.className = 'event__detail-picked';
+
+  function pick(p) {
+    pickedWrap.innerHTML = '';
+    pickedWrap.appendChild(buildPhysicianBlock(p, ev));
+    pickedWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  for (const g of m.groups || []) {
+    if (!(g.candidates || []).length) continue;
+
+    const head = document.createElement('p');
+    head.className = 'muted event__detail-intro';
+    if (g.total > g.candidates.length) {
+      head.textContent =
+        `“${g.name}” (from the meeting ${g.source}) matches ${g.total} physicians in the ` +
+        `BIS directory — the closest ${g.candidates.length} are below. Add the city, the ` +
+        'specialty or a fuller name to the meeting and this narrows down.';
+    } else if (g.total > 1) {
+      head.textContent =
+        `“${g.name}” (from the meeting ${g.source}) matches ${g.total} physicians in the ` +
+        'BIS directory. Pick who the meeting is with:';
+    } else {
+      head.textContent = `“${g.name}” — one match in the BIS directory:`;
+    }
+    detail.appendChild(head);
+
+    const ul = document.createElement('ul');
+    ul.className = 'physician-results';
+    // City/state ride along as the match hint — the renderer already shows it.
+    renderPhysicianResults(
+      ul,
+      g.candidates.map((p) => ({
+        ...p,
+        matchHint: [p.facility && p.facility.city, p.facility && p.facility.state]
+          .filter(Boolean)
+          .join(', ') || null,
+      })),
+      pick
+    );
+    detail.appendChild(ul);
+  }
+
+  if ((m.unresolvedNames || []).length) {
+    const note = document.createElement('p');
+    note.className = 'muted event__detail-intro';
+    note.textContent = `${m.unresolvedNames.join(', ')} — not in the BIS directory by that name.`;
+    detail.appendChild(note);
+  }
+
+  // Nothing above is binding: the rep can always search for someone else.
+  appendSearchBox(detail, pick);
   detail.appendChild(pickedWrap);
 }
 
+/**
+ * What the expanded meeting shows, in the ladder's own order: an exact email
+ * match, then a name the master resolved to exactly one physician, then a
+ * shortlist to pick from, then the gate's "this is a normal meeting", then the
+ * old no-match path (external lookup + search).
+ */
 function buildDetail(detail, ev) {
   detail.innerHTML = '';
+
   const matched = matchedPhysiciansOf(ev);
   if (matched.length) {
     for (const p of matched) detail.appendChild(buildPhysicianBlock(p, ev));
-  } else {
-    buildNoMatch(detail, ev);
+    return;
   }
+
+  const m = ev.match;
+
+  if (m && m.status === 'matched' && (m.physicians || []).length) {
+    // Say HOW this person was identified. A name match is weaker evidence than
+    // an email match, and the rep is entitled to know which one they are
+    // looking at before they act on the brief.
+    const via = document.createElement('p');
+    via.className = 'muted event__detail-intro';
+    const names = m.names || [];
+    const named = names.map((n) => `“${n.name}” (${n.source})`).join(', ');
+    via.textContent =
+      `Matched by name: ${named} — ` +
+      (names.length > 1
+        ? 'each resolves to exactly one physician in the BIS directory. '
+        : 'exactly one physician in the BIS directory. ') +
+      'No attendee email on this meeting is in the directory.';
+    detail.appendChild(via);
+
+    for (const p of m.physicians) detail.appendChild(buildPhysicianBlock(p, ev));
+    return;
+  }
+
+  if (m && m.status === 'choose') {
+    buildChoose(detail, ev);
+    return;
+  }
+
+  if (m && m.status === 'gate_blocked') {
+    buildNoMatch(detail, ev, {
+      intro:
+        'Normal meeting: no attendee email is in the BIS directory, and the title does not ' +
+        'say “Dr” or “Doctor” — so no physician lookup was run. Add “Dr” to the title (or the ' +
+        'physician as an attendee), or search below.',
+    });
+    return;
+  }
+
+  buildNoMatch(detail, ev);
 }
 
 // ── Event list ───────────────────────────────────────────────────────────────
