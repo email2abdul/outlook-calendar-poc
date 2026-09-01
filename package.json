@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
+    "test": "node --test test/*.test.js",
     "dev": "node --watch server.js",
     "ingest": "node scripts/ingest.js",
     "ingest:products": "node scripts/ingest-products.js",
