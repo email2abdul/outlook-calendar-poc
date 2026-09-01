@@ -860,7 +860,7 @@ function outsideBriefHtml({
       ['Email', r.email],
       ['Phone', r.phone],
       // null means "we do not know", which is not the same as "No".
-      ['ESD Procedure', r.esdProcedure === null || r.esdProcedure === undefined ? null : r.esdProcedure ? 'Yes' : 'No'],
+      ['ESD Procedure', r.esdProcedure == null ? null : r.esdProcedure ? 'Yes' : 'No'],
       ['Facility', r.facilityName],
       ['Facility Address', address],
       ['Health System', r.healthSystem],
@@ -875,7 +875,9 @@ function outsideBriefHtml({
       ['Verified email', r.contactEmail],
       ['Mobile', r.contactMobile],
       ['LinkedIn (verified)', r.contactLinkedinUrl],
-      ['Contactability', r.contactConfidenceScore === null ? null : `${r.contactConfidenceScore}/100`],
+      // `== null` on purpose: a record assembled from a source has these keys
+      // UNDEFINED, not null, and a strict check printed "undefined/100".
+      ['Contactability', r.contactConfidenceScore == null ? null : `${r.contactConfidenceScore}/100`],
       ['Last verified', r.contactLastVerified],
     ])
   );
@@ -913,7 +915,13 @@ function outsideBriefHtml({
             .map(
               (l) =>
                 `<tr><td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${cell(l.hcpcs)}</td>` +
-                `<td ${td}>${cell(l.description)}</td>` +
+                // CMS reports the same code twice when it was billed in both a
+                // facility and an office, and the two are commercially
+                // different (a hospital endoscopy suite is not a clinic room).
+                // Labelling the row is why the repetition makes sense.
+                `<td ${td}>${cell(l.description)}` +
+                (l.placeOfService ? ` <span style="color:#5a6672">(${escapeHtml(l.placeOfService)})</span>` : '') +
+                '</td>' +
                 `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.services)}</td>` +
                 `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.beneficiaries)}</td>` +
                 `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${money(l.avgAllowed)}</td></tr>`

@@ -15,7 +15,8 @@
     "intel:backfill": "node scripts/intel-backfill.js",
     "enrich:backfill": "node scripts/enrich-backfill.js",
     "enrich:try": "node scripts/enrich-try.js",
-    "enrich:doctor": "node scripts/enrich-doctor.js"
+    "enrich:doctor": "node scripts/enrich-doctor.js",
+    "flow:try": "node scripts/flow-try.js"
   },
   "keywords": [
     "microsoft-graph",
