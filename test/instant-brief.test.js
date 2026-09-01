@@ -71,6 +71,7 @@ stub('src/graph', {
   },
   async sendPhysiciansBriefing(token, opts) {
     calls.briefs.push({ title: opts.event.title, subject: opts.subject });
+
   },
   buildBriefingContent: () => '<p>brief</p>',
   externalBriefHtml: () => '<p>brief</p>',
@@ -78,6 +79,19 @@ stub('src/graph', {
     calls.injected.push(eventId);
     return true;
   },
+});
+
+// The decision store is not what these tests are about, and letting the real one
+// run would write test rows into data/outside-physicians.db (the SQLite fallback
+// the store uses until the Supabase table exists).
+stub('src/outside-physician-store', {
+  enabled: false, // recordDecision() and the batched read both no-op
+  latestForEvents: async () => new Map(),
+  latestForEvent: async () => null,
+  record: async () => null,
+  isWorthRecording: () => false,
+  mirrorFromPhysician: () => ({}),
+  backendName: () => 'stub',
 });
 
 const ingest = require('../src/email-ingest');

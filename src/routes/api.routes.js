@@ -16,7 +16,7 @@ const leadMatch = require('../lead-match');
 const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
 const meetingMatch = require('../meeting-match');
-const meetingStore = require('../meeting-store');
+const outsideStore = require('../outside-physician-store');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -144,9 +144,9 @@ async function dayHandler(req, res, next) {
     // outranks every automatic guess below, and is why a shortlist is asked
     // once rather than on every page load.
     let decided = new Map();
-    if (meetingStore.enabled) {
+    if (outsideStore.enabled) {
       try {
-        decided = await meetingStore.latestForEvents(
+        decided = await outsideStore.latestForEvents(
           ownerId(req),
           data.events.map((e) => e.id)
         );
@@ -601,9 +601,9 @@ router.get('/meetings/match', requireAuth, async (req, res, next) => {
  * reminder brief and reply→note linking follow the choice with no change of
  * their own.
  *
- * 503 with a plain message when supabase/meeting-physician-setup.sql has not
- * been run on the project yet — the UI shows the brief regardless and says the
- * choice was not saved, which is honest rather than silent.
+ * Until supabase/outside-physician-setup.sql is run, the store keeps the row in
+ * a local SQLite file instead and `storedIn` says so, so the whole flow can be
+ * tested before the table exists.
  */
 router.post('/meetings/choose', requireAuth, async (req, res, next) => {
   try {
@@ -645,41 +645,26 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       throw err;
     }
 
-    let record;
-    try {
-      // Append a new row rather than editing one: the correction history ("A on
-      // Monday, B on Tuesday") is the point, and the latest row is what counts.
-      record = await meetingStore.record({
-        ownerUserId: ownerId(req),
-        ownerEmail: organizerEmail(req),
-        event,
-        npi,
-        name: physician?.name || null,
-        specialty: physician?.specialty || null,
-        facilityName: physician?.facility?.name || null,
-        city: physician?.facility?.city || null,
-        state: physician?.facility?.state || null,
-        inBis: Boolean(physician),
-        source: 'user',
-        decidedBy: 'user',
-        confidence: 100,
-        status: npi ? 'briefed' : 'needs_confirm',
-        reason: npi
-          ? `${physician?.name || npi} confirmed by ${organizerEmail(req) || 'the rep'}.`
-          : `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`,
-      });
-    } catch (err) {
-      if (err.message === meetingStore.MISSING_TABLE) {
-        console.warn('[api] app_meeting_physician missing:', err.detail);
-        return res.status(503).json({
-          error: 'setup_required',
-          message:
-            'This Supabase project has no app_meeting_physician table yet — run ' +
-            'supabase/meeting-physician-setup.sql, then the choice will stick.',
-        });
-      }
-      throw err;
-    }
+    // Append a new row rather than editing one: the correction history ("A on
+    // Monday, B on Tuesday") is the point, and the latest row is what counts.
+    // The store keeps this in SQLite until the Supabase table exists, so the
+    // flow is testable before anybody runs the setup SQL.
+    const record = await outsideStore.record({
+      ownerUserId: ownerId(req),
+      ownerEmail: organizerEmail(req),
+      event,
+      // A snapshot of the master's own fields, in the same names an outside
+      // source fills — so a BIS physician and an outside one render alike.
+      ...outsideStore.mirrorFromPhysician(physician),
+      npi,
+      source: 'user',
+      decidedBy: 'user',
+      confidence: 100,
+      status: npi ? 'briefed' : 'needs_confirm',
+      reason: npi
+        ? `${physician?.name || npi} confirmed by ${organizerEmail(req) || 'the rep'}.`
+        : `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`,
+    });
 
     // Keep the meeting row pointing at the same physician, using the column it
     // already has, so the reminder brief and reply→note linking follow along.
@@ -692,7 +677,7 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
     await crm.audit({
       actor: 'user',
       action: npi ? 'meeting.physician_chosen' : 'meeting.physician_choice_cleared',
-      entityType: 'meeting_physician',
+      entityType: 'outside_physician',
       entityId: record?.id ? String(record.id) : null,
       details: { eventId, npi, title: event.title, by: organizerEmail(req) },
     });
@@ -701,6 +686,9 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       saved: true,
       eventId,
       cleared: !npi,
+      // 'sqlite' means the Supabase table has not been created yet — the choice
+      // is kept locally so it can be tested, and the UI says so.
+      storedIn: outsideStore.backendName(),
       physician: physician
         ? { npi: physician.npi, name: physician.name, specialty: physician.specialty || null }
         : null,

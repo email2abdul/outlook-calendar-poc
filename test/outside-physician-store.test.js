@@ -15,7 +15,7 @@ const stub = require('./helpers/stub');
  */
 stub('src/supabase', null); // pure function; no database needed
 
-const meetingStore = require('../src/meeting-store');
+const meetingStore = require('../src/outside-physician-store');
 const { isWorthRecording } = meetingStore;
 
 test('the first answer for a meeting is always worth recording', () => {

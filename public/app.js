@@ -905,10 +905,16 @@ function buildChoose(detail, ev) {
     pickedWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
     try {
-      await saveMeetingChoice(ev, p.npi);
+      const saved = await saveMeetingChoice(ev, p.npi);
       status.textContent =
         `✔ ${p.name || p.npi} is now the physician for this meeting — the reminder brief ` +
-        'will use them too.';
+        'will use them too.' +
+        // Be specific about WHERE it was kept: until the setup SQL is run the
+        // store falls back to a local file, which is fine for testing but is
+        // not shared with anything else.
+        (saved.storedIn === 'sqlite'
+          ? ' (Kept on this server for now — run supabase/outside-physician-setup.sql to keep it in Supabase.)'
+          : '');
     } catch (err) {
       status.textContent = `⚠️ ${err.message} The brief below is still correct; the choice was not saved.`;
     }

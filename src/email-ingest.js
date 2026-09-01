@@ -15,7 +15,7 @@ const contactsStore = require('./contacts-store');
 const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
 const meetingMatch = require('./meeting-match');
-const meetingStore = require('./meeting-store');
+const outsideStore = require('./outside-physician-store');
 const intelStore = require('./email-intel-store');
 
 /**
@@ -114,9 +114,9 @@ async function syncActivities(token, user) {
   // one per meeting per tick. A choice the rep made is the reason this tick
   // must not re-derive (and overwrite) who the meeting is with.
   let decisions = new Map();
-  if (meetingStore.enabled) {
+  if (outsideStore.enabled) {
     try {
-      decisions = await meetingStore.latestForEvents(
+      decisions = await outsideStore.latestForEvents(
         user.homeAccountId,
         events.map((e) => e.id)
       );
@@ -222,19 +222,14 @@ async function syncActivities(token, user) {
  * that briefs the rep.
  */
 async function recordDecision(user, ev, emailMatched, latest) {
-  if (!meetingStore.enabled) return;
+  if (!outsideStore.enabled) return;
 
   let next;
   if (emailMatched.length) {
     const p = emailMatched[0];
     next = {
-      npi: p.npi,
-      name: p.name || null,
-      specialty: p.specialty || null,
-      facilityName: p.facility?.name || null,
-      city: p.facility?.city || null,
-      state: p.facility?.state || null,
-      inBis: true,
+      // The master's own fields, snapshotted in the shared shape.
+      ...outsideStore.mirrorFromPhysician(p),
       source: 'email',
       status: 'briefed',
       confidence: 100,
@@ -273,27 +268,21 @@ async function recordDecision(user, ev, emailMatched, latest) {
     };
 
     next = {
-      npi: first?.npi || null,
-      name: first?.name || null,
-      specialty: first?.specialty || null,
-      facilityName: first?.facility?.name || null,
-      city: first?.facility?.city || null,
-      state: first?.facility?.state || null,
-      inBis: Boolean(first),
+      // A name match resolves a BIS physician, so the master's fields apply;
+      // for every other status these are simply null — which is what makes the
+      // brief print "Data not available" in that field's own place.
+      ...(first ? outsideStore.mirrorFromPhysician(physiciansDir.getByNpi(first.npi) || first) : {}),
       source: SOURCE[m.status] || 'name',
       status: STATUS[m.status] || null,
       reason: m.reason,
       candidates,
-      // Named so a brief can print "Data is not available" for them in the same
-      // layout, rather than dropping the row and changing shape.
-      dataMissing: m.status === 'needs_external' ? ['npi', 'specialty', 'facility', 'cpt_volumes'] : [],
     };
   }
 
-  if (!meetingStore.isWorthRecording(latest, { ...next, decidedBy: 'system' })) return;
+  if (!outsideStore.isWorthRecording(latest, { ...next, decidedBy: 'system' })) return;
 
   try {
-    await meetingStore.record({
+    await outsideStore.record({
       ownerUserId: user.homeAccountId,
       ownerEmail: user.email || null,
       event: ev,
@@ -301,14 +290,6 @@ async function recordDecision(user, ev, emailMatched, latest) {
       ...next,
     });
   } catch (err) {
-    if (err.message === meetingStore.MISSING_TABLE) {
-      // One line, once per tick — not once per meeting.
-      if (!recordDecision.warned) {
-        console.warn('[ingest] app_meeting_physician missing — run supabase/meeting-physician-setup.sql');
-        recordDecision.warned = true;
-      }
-      return;
-    }
     console.warn('[ingest] decision record failed:', err.message);
   }
 }
