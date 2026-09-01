@@ -10,6 +10,7 @@ const webIdentity = require('./sources/web-identity');
 const openPayments = require('./sources/open-payments');
 const literature = require('./sources/literature');
 const cache = require('./cache');
+const health = require('./health');
 const { createProfile, fromBis, fromRegistry, fromWeb, inferred } = require('./provenance');
 
 /**
@@ -154,6 +155,22 @@ function pickBestProvider(results, hints) {
 }
 
 /**
+ * getJson labels → the source name a rep would recognise, for outage messages.
+ */
+const SOURCE_NAMES = {
+  nppes: nppes.SOURCE_NAME,
+  'nppes-org': nppes.SOURCE_NAME,
+  'open-payments': 'CMS Open Payments',
+  cms: 'CMS Provider Data',
+  pubmed: 'PubMed',
+  'pubmed-summary': 'PubMed',
+  clinicaltrials: 'ClinicalTrials.gov',
+};
+
+/** The tiers that decide WHO this person is; the rest only decorate a profile. */
+const IDENTITY_LABELS = ['nppes', 'nppes-org'];
+
+/**
  * Enrich one unknown attendee.
  *
  * @param {object} query
@@ -169,7 +186,7 @@ function pickBestProvider(results, hints) {
  * @param {'auto'|'always'|'never'} [query.useWeb='auto'] paid identity tier
  * @param {boolean} [query.refresh] bypass the cache and look everything up again
  */
-async function enrich(query = {}) {
+async function runEnrich(query = {}) {
   const startedAt = Date.now();
   const email = (query.email || '').trim().toLowerCase();
   const p = createProfile();
@@ -613,6 +630,29 @@ async function enrich(query = {}) {
       .map((c) => ({ npi: c.npi, name: c.name, specialty: c.specialty, email: c.email }));
   }
 
+  // ── Source outages ───────────────────────────────────────────────────────
+  // Read the ledger BEFORE deciding the status: a tier that never answered must
+  // not be reported as a tier that answered "no". Without this, a resolver that
+  // could not look up npiregistry.cms.hhs.gov produced a confident
+  // "could not resolve this address from the free registries" — a claim about
+  // the physician, made on evidence about the network.
+  const outages = health.outages().filter((o) => o.blind);
+  result.sourcesDown = outages.map((o) => ({
+    source: SOURCE_NAMES[o.label] || o.label,
+    label: o.label,
+    host: o.host,
+    kind: o.kind,
+    error: o.error,
+  }));
+  result.degraded = outages.length > 0;
+  // Only an identity-tier outage can turn a real person into an "unresolved";
+  // losing PubMed just costs a publications list.
+  const identityBlind = outages.filter((o) => IDENTITY_LABELS.includes(o.label));
+
+  for (const o of outages) {
+    p.note(`⚠️ ${health.describe(o, SOURCE_NAMES[o.label])}. Fields it supplies are missing from this profile, not absent from the registry.`);
+  }
+
   // ── Final status ─────────────────────────────────────────────────────────
   if (result.status !== 'recovered_in_bis') {
     if (result.npi && result.confidence >= CONFIDENCE_ACCEPT) {
@@ -656,6 +696,17 @@ async function enrich(query = {}) {
       result.status = 'facility_only';
       result.confidence = Math.max(result.confidence, domainHit?.confidence || 40);
       p.note('Person could not be resolved; facility identified.');
+    } else if (identityBlind.length) {
+      // Nothing was found because nothing was asked. Saying "not in the
+      // registries" here would be a fabrication.
+      result.status = 'lookup_failed';
+      result.confidence = 0;
+      p.note(
+        'This lookup did not fail to find the physician — it failed to reach the ' +
+          'registry. Retry once ' +
+          identityBlind.map((o) => o.host || o.label).join(', ') +
+          ' resolves again (npm run enrich:doctor diagnoses it).'
+      );
     } else {
       result.status = 'unresolved';
       p.note(
@@ -667,8 +718,29 @@ async function enrich(query = {}) {
 
   result.profile = p.toJSON();
   result.elapsedMs = Date.now() - startedAt;
-  await cache.put({ email, npi: result.npi || query.npi }, result);
+
+  // cache.js already refuses to store an `unresolved` result for exactly this
+  // reason; an outage can also produce a THIN but non-empty profile (NPPES down,
+  // facility still matched from the email domain), and caching that would pin a
+  // half-answer in front of the rep for the cache's whole TTL.
+  if (result.degraded) {
+    console.warn(
+      `[enrichment] not caching ${email || query.npi || 'lookup'} — degraded run: ` +
+        result.sourcesDown.map((o) => `${o.source} (${o.kind})`).join(', ')
+    );
+  } else {
+    await cache.put({ email, npi: result.npi || query.npi }, result);
+  }
   return result;
+}
+
+/**
+ * Public entry point. The ledger is per-call because enrichments run
+ * concurrently — the reminder engine briefs several meetings at once, and one
+ * meeting's DNS failure must not be reported on another meeting's brief.
+ */
+function enrich(query = {}) {
+  return health.run(() => runEnrich(query));
 }
 
 module.exports = { enrich, splitName, pickBestProvider, cache };

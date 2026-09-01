@@ -503,6 +503,8 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
  *   facility_only     → person unresolved, facility identified
  *   not_physician     → identified, but not a clinician — no brief produced
  *   unresolved        → nothing confident enough; candidates listed
+ *   lookup_failed     → a registry was unreachable (DNS/network) — no conclusion
+ *                       was reached about this person; `sourcesDown` says which
  */
 router.get('/enrich', requireAuth, async (req, res, next) => {
   try {

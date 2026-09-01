@@ -259,12 +259,14 @@ When two candidates are this close, open the proof URLs before trusting either.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Everything returns `unresolved`, log shows `[enrichment:nppes] giving up … fetch failed` | **DNS**, not the app. `npiregistry.cms.hhs.gov` intermittently `SERVFAIL`s on the local router (192.168.31.1) while 8.8.8.8 resolves it fine — seen twice during development | `nslookup npiregistry.cms.hhs.gov 8.8.8.8` to confirm, then point the router/host at 8.8.8.8 or 1.1.1.1. The agent degrades safely meanwhile and never caches the failure |
+| Status is `lookup_failed`, brief shows **📡 Lookup could not run** | **DNS or egress**, not the app — the registry was never reached, so nothing is known about this person either way | `npm run enrich:doctor` names the host and the failure. The result is never cached, so a retry after the fix is clean |
+| Status is `external` but the brief shows **📡 Incomplete — source unreachable** | A decorating tier (PubMed, Open Payments, CMS) was down. Identity is sound; only that tier's fields are missing | `npm run enrich:doctor`; re-run once the host is back |
+| Everything returns `unresolved`, log shows `[enrichment:nppes] giving up … fetch failed` | Historic form of the above, before outages were distinguished. `npiregistry.cms.hhs.gov` intermittently `SERVFAIL`s on the local router (192.168.31.1) while 8.8.8.8 resolves it fine — seen twice during development, and again on a deployment host | `nslookup npiregistry.cms.hhs.gov 8.8.8.8` to confirm, then point the router/host at 8.8.8.8 or 1.1.1.1. A genuine `unresolved` now means the registries answered and had nothing |
 | `[enrichment:cache] app_external_profiles not found` | Setup SQL not run | Run `supabase/enrichment-setup.sql`; caching stays in-process until then |
 | `PAID LOOKUP` never appears | `ANTHROPIC_API_KEY` unset, or the caller supplied a name / used a shared mailbox | Check the key; force with `--web` |
 | Publication count looks implausible | A common surname. The count is narrowed by affiliation **and** specialty, and labelled *"surname match only"* when it cannot be | Open the `searchTerm` in PubMed and check |
 | No enrichment card in the UI | An attendee already matched BIS (nothing to enrich), or the meeting has neither an attendee nor a two-word name in its title | Check `status` via `npm run enrich:try`; for the title path see §6 |
-| Brief shows no "Data check" line | NPPES was unreachable for that NPI (DNS, above). The check is skipped, never faked | Same DNS fix; the miss is re-tried after 10 minutes |
+| Brief shows no "Data check" line | NPPES was unreachable for that NPI (the DNS rows above). The check is skipped, never faked | `npm run enrich:doctor`; the miss is re-tried after 10 minutes |
 
 
 ---
@@ -325,3 +327,51 @@ injects the same notes into the Outlook meeting body (`enriched:<eventId>` key,
 so exactly once). Only `external` (confidence ≥ 70) and `recovered_in_bis`
 results are mailed or injected — `ambiguous` stays in the UI, where a person can
 judge it.
+
+---
+
+## 7. Before you trust a deployment — `npm run enrich:doctor`
+
+Run this on the server (EC2, container, laptop) **before** reading anything into a
+thin enrichment result:
+
+```bash
+npm run enrich:doctor    # exits 0 when every source answered, 1 otherwise
+```
+
+It resolves and connects to all five source hosts and prints, per source, the A/AAAA
+records, whether IPv6 egress works, and the live HTTPS status. NPPES additionally has
+its response body checked, so a captive portal returning `200 text/html` is caught
+rather than counted as healthy.
+
+Why it exists: an unreachable source and a source with no record are both empty. On a
+router that would not resolve `npiregistry.cms.hhs.gov`, `enrich()` reported
+`unresolved` — a confident claim that the physician did not exist, produced without a
+packet leaving the box. That class of failure is now split three ways:
+
+| | Meaning |
+|---|---|
+| `unresolved` | The registries answered. They have nothing matching this address. |
+| `lookup_failed` | The registries were never reached. **No conclusion about this person.** |
+| `degraded: true` on any status | Some tier was unreachable; the profile is thin, not final. Never cached. |
+
+`result.sourcesDown[]` carries `{ source, host, kind, error }` — `kind` is `dns`,
+`network`, `timeout`, `tls` or `upstream`, which is usually enough to tell a resolver
+problem from a firewall one without leaving the log.
+
+### The IPv6 trap
+
+Every one of these hosts publishes AAAA records, and most EC2 subnets have no IPv6
+route. Name resolution "succeeds", then each connection stalls. Node's Happy Eyeballs
+(`autoSelectFamily`, on by default since Node 20) falls back to IPv4 fast enough that
+nothing shows — but if it is ever disabled, or a host goes IPv6-only, the doctor flags
+it explicitly instead of leaving you with slow, empty results.
+
+### On EC2 specifically
+
+A public-zone lookup failing usually means one of: `enableDnsSupport` off on the VPC, a
+security group or NACL blocking 443 egress, or a DHCP option set pointing at a resolver
+that will not answer for public zones. Hand-editing `/etc/resolv.conf` is a workaround
+only — `systemd-resolved` owns that file (it is a stub pointing at `127.0.0.53`) and
+rewrites it on restart. Fix it at the VPC/DHCP layer, or via
+`/etc/systemd/resolved.conf`.
