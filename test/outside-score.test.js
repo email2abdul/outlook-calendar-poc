@@ -13,7 +13,13 @@ const assert = require('node:assert');
  *  · two candidates neck and neck means we cannot tell them apart, so NOTHING
  *    is auto-shown, however high they score.
  */
-const { scoreCandidate, rankCandidates, splitFullName, CONFIDENCE_SHOW } = require('../src/outside-sources/score');
+const {
+  scoreCandidate,
+  rankCandidates,
+  splitFullName,
+  CONFIDENCE_SHOW,
+  CONFIDENCE_OFFER,
+} = require('../src/outside-sources/score');
 
 const cand = (over = {}) => ({
   npi: '1234567890',
@@ -109,4 +115,67 @@ test('a full name splits into first and last however it is written', () => {
   assert.deepStrictEqual(splitFullName('John R Abernathy'), { first: 'john', last: 'abernathy' });
   assert.deepStrictEqual(splitFullName('  ABERNATHY '), { first: '', last: 'abernathy' });
   assert.deepStrictEqual(splitFullName(''), { first: '', last: '' });
+});
+
+// ── The details that separate same-named providers ───────────────────────────
+
+test('what the MEETING mentions is what separates nine people with one surname', () => {
+  // Real NPPES data: nine AAGAARDs, one of each kind. A rep who writes the
+  // taxonomy or the practice address into the invite has told us which one.
+  const charlotte = {
+    name: 'CHARLOTTE SUE AAGAARD', firstName: 'CHARLOTTE', lastName: 'AAGAARD',
+    primaryTaxonomy: 'Behavior Technician', city: 'SEATTLE', state: 'WA', zip: '98105',
+    facilityAddress: '4800 SAND POINT WAY NE, SEATTLE, WA, 98105',
+  };
+  const jeffrey = {
+    name: 'JEFFREY LYNN AAGAARD', firstName: 'JEFFREY', lastName: 'AAGAARD',
+    primaryTaxonomy: 'Dentist', city: 'WEST DES MOINES', state: 'IA', zip: '50266',
+    facilityAddress: '1601 22ND ST, WEST DES MOINES, IA, 50266',
+  };
+
+  const surnameOnly = { lastName: 'Aagaard', text: 'Meeting with Dr Aagaard' };
+  assert.ok(scoreCandidate(charlotte, surnameOnly).confidence < CONFIDENCE_OFFER);
+  assert.ok(scoreCandidate(jeffrey, surnameOnly).confidence < CONFIDENCE_OFFER,
+    'a surname alone must not offer anybody');
+
+  const saysDentist = { lastName: 'Aagaard', text: 'Meeting with Dr Aagaard (Dentist)' };
+  assert.ok(scoreCandidate(jeffrey, saysDentist).confidence >= CONFIDENCE_SHOW);
+  assert.ok(scoreCandidate(charlotte, saysDentist).confidence < CONFIDENCE_OFFER);
+  assert.ok(
+    scoreCandidate(jeffrey, saysDentist).reasons.includes('the meeting mentions this taxonomy')
+  );
+
+  const saysAddress = { lastName: 'Aagaard', text: 'Dr Aagaard at 4800 Sand Point Way NE Seattle' };
+  assert.ok(scoreCandidate(charlotte, saysAddress).confidence >= CONFIDENCE_SHOW);
+  assert.ok(scoreCandidate(jeffrey, saysAddress).confidence < CONFIDENCE_OFFER);
+
+  const saysZip = { lastName: 'Aagaard', text: 'Dr Aagaard · 98105' };
+  assert.ok(scoreCandidate(charlotte, saysZip).reasons.includes('the meeting mentions this ZIP'));
+});
+
+test('an explicit taxonomy hint is used, and a wrong one counts against', () => {
+  const c = { name: 'KATIE DIBLIN AAGAARD', firstName: 'KATIE', lastName: 'AAGAARD',
+    primaryTaxonomy: 'Counselor, Mental Health', city: 'CONCORD', state: 'NC' };
+
+  // "Counselor" against "Counselor, Mental Health": the registry qualifies what
+  // a rep writes plainly, so a containment match still counts.
+  const right = scoreCandidate(c, { lastName: 'Aagaard', taxonomy: 'Counselor' });
+  assert.ok(right.reasons.includes('primary taxonomy matches'));
+  assert.ok(right.confidence >= CONFIDENCE_SHOW);
+
+  const wrong = scoreCandidate(c, { lastName: 'Aagaard', taxonomy: 'Dentist' });
+  assert.ok(wrong.reasons.includes('primary taxonomy differs'));
+  assert.ok(wrong.confidence < CONFIDENCE_OFFER);
+});
+
+test('nothing under the offer bar is handed to the rep, but it is counted', () => {
+  const nine = Array.from({ length: 9 }, (_, i) => ({
+    npi: `${1000000000 + i}`, name: `X${i} AAGAARD`, firstName: `X${i}`, lastName: 'AAGAARD',
+    primaryTaxonomy: 'Social Worker', city: 'JANESVILLE', state: 'WI',
+  }));
+  const r = rankCandidates(nine, { lastName: 'Aagaard', text: 'Dr Aagaard' }, { max: 5 });
+
+  assert.deepStrictEqual(r.offered, [], 'a list of 55% guesses teaches clicking through noise');
+  assert.strictEqual(r.dropped, 9, 'the silence still has to be explained');
+  assert.strictEqual(r.primary, null);
 });

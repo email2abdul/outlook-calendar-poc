@@ -217,13 +217,21 @@ async function getByNpi(npi) {
       });
     }
 
-    // Nothing at all AND every year unreachable → this is a network answer, not
-    // a finding about the physician. Say which years were blind and let the
-    // caller decide what to show.
+    // Nothing at all: still an ANSWER, and a different one depending on why.
+    // Returning null for both made the brief say "volume sections need this
+    // physician in bis_procedure_volumes" — as though CMS had never been asked
+    // — when in fact it had been asked and had nothing (a behaviour technician
+    // bills no Medicare fee-for-service). The renderer needs to be able to tell
+    // "asked, nothing there" from "could not ask".
     if (!found.length && !provider) {
-      return unreachableYears.length
-        ? { npi: clean, years: [], unreachableYears, externalSource: ID, externalSourceUrl: HUMAN_URL, extra: {} }
-        : null;
+      return {
+        npi: clean,
+        years: [],
+        unreachableYears,
+        externalSource: ID,
+        externalSourceUrl: HUMAN_URL,
+        extra: {},
+      };
     }
 
     return {

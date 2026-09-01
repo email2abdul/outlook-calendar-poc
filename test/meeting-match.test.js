@@ -63,7 +63,13 @@ stub('src/physicians', {
   matchInText: () => [],
 });
 
-const { matchMeeting, titleGate, cleanPersonName, isValidNpi } = require('../src/meeting-match');
+const {
+  matchMeeting,
+  titleGate,
+  cleanPersonName,
+  isValidNpi,
+  nameSearchKey,
+} = require('../src/meeting-match');
 
 const REP = 'rep@lumendi-example.com';
 const event = (over = {}) => ({
@@ -326,4 +332,65 @@ test('a labelled NPI is preferred over a bare ten-digit run', () => {
     { selfEmail: REP }
   );
   assert.strictEqual(r.npi, '1508935800');
+});
+
+// ── The gate reads the attendee's name too ───────────────────────────────────
+
+test('an attendee called "Dr …" opens the gate even when the title does not', () => {
+  // The case this exists for: the address is not in the master (so the email
+  // path is dead) and the title is "Endoscopy sync" — but the invite says
+  // "Dr Nicholas Shaheen" in as many words, and that is the only name there is.
+  const r = matchMeeting(
+    event({
+      title: 'Endoscopy sync',
+      attendees: [{ name: 'Dr Nicholas Shaheen', email: 'nshaheen@med.unc.edu', type: 'required' }],
+    }),
+    { selfEmail: REP }
+  );
+
+  assert.notStrictEqual(r.status, 'gate_blocked');
+  assert.strictEqual(r.gate.pass, true);
+  assert.strictEqual(r.gate.where, 'attendee name');
+  assert.strictEqual(r.status, 'matched', 'and the name resolves in the master');
+});
+
+test('an attendee with no honorific still does not open the gate', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Quarterly review',
+      attendees: [{ name: 'Nicholas Shaheen', email: 'nshaheen@med.unc.edu', type: 'required' }],
+    }),
+    { selfEmail: REP }
+  );
+  assert.strictEqual(r.status, 'gate_blocked');
+});
+
+// ── Which field a half name is searched on ───────────────────────────────────
+
+test('a half name is searched on the field it actually belongs to', () => {
+  // "Dr Katie" — the master says the LAST name is missing, so "Katie" is a
+  // first name and must be sent as first_name. Sent as last_name (the old
+  // behaviour) NPPES returns nobody at all.
+  assert.deepStrictEqual(nameSearchKey('Katie', { name: 'Katie', missing: 'last' }), {
+    firstName: 'Katie',
+    lastName: '',
+  });
+
+  // "Dr Khan" — the first name is missing, so this is a surname.
+  assert.deepStrictEqual(nameSearchKey('Khan', { name: 'Khan', missing: 'first' }), {
+    firstName: '',
+    lastName: 'Khan',
+  });
+
+  // Cannot tell → the surname, which is the field the registry indexes.
+  assert.deepStrictEqual(nameSearchKey('Aagaard', { name: 'Aagaard', missing: 'unknown' }), {
+    firstName: '',
+    lastName: 'Aagaard',
+  });
+
+  // A whole name splits the obvious way, whatever the ladder said.
+  assert.deepStrictEqual(nameSearchKey('John R Abernathy', null), {
+    firstName: 'John',
+    lastName: 'Abernathy',
+  });
 });

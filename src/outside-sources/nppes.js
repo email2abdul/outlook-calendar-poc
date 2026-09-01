@@ -98,7 +98,10 @@ function assertReached(what) {
 }
 
 async function searchByName({ firstName, lastName, state, city, limit = 5 } = {}) {
-  if (!lastName) return [];
+  // Either half is searchable, though a first name alone returns strangers who
+  // merely share it — which is why the scorer scores it low and the notes ask
+  // for the rest of the name.
+  if (!lastName && !(firstName && firstName.replace(/[.]/g, '').length > 1)) return [];
 
   return health.run(async () => {
     const hits = await registry.searchIndividuals({

@@ -126,6 +126,20 @@ test('a city hint narrows the list, but never empties it', async () => {
   assert.deepStrictEqual(nowhere.map((c) => c.npi), ['1111111111', '2222222222']);
 });
 
-test('no last name means no lookup', async () => {
-  assert.deepStrictEqual(await nppes.searchByName({ firstName: 'John' }), []);
+test('either half of the name is searchable; neither is not', async () => {
+  providers.length = 0;
+  providers.push(provider());
+
+  // Verified against the live API 2026-09-01: first_name alone returns results
+  // (`first_name=KATIE&state=CA` → the Salinas counselor), so a meeting that
+  // only says "Dr Katie" is not a dead end — it just scores low, and the notes
+  // ask for the surname.
+  const byFirst = await nppes.searchByName({ firstName: 'John' });
+  assert.strictEqual(byFirst.length, 1);
+  assert.strictEqual(lastQuery.firstName, 'John');
+  assert.strictEqual(lastQuery.lastName, undefined);
+
+  // An initial is not a name, and NPPES rejects a one-character wildcard.
+  assert.deepStrictEqual(await nppes.searchByName({ firstName: 'J.' }), []);
+  assert.deepStrictEqual(await nppes.searchByName({}), []);
 });

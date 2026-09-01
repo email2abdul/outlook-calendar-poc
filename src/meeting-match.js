@@ -43,12 +43,18 @@ const MAX_CANDIDATES = 5;
 const COUNT_LIMIT = 50;
 
 /**
- * The gate: the title must call the person a doctor.
+ * The gate: the meeting must call the person a doctor.
  *
  * This is the rep's own rule, and it is what keeps a name lookup (and later a
  * paid external lookup) off "Pipeline review" and "1:1 with Sam". It matches
  * "Dr", "Dr.", "Drs" and "Doctor" as whole words, so "Drainage", "Andrew" and
  * "Dr" inside another word never open the gate.
+ *
+ * The title is the usual place, but not the only one: an invite whose ATTENDEE
+ * is "Dr Nicholas Shaheen <nshaheen@med.unc.edu>" has said it just as plainly,
+ * and that address failing to match the master is precisely when the name path
+ * is needed. Requiring the honorific in the title alone left those meetings
+ * with nothing (found while testing, 2026-09-01).
  */
 const GATE_RE = /\b(dr|doctor)s?\b\.?/i;
 
@@ -115,6 +121,21 @@ function npiFromEvent(ev) {
 function titleGate(title) {
   const m = GATE_RE.exec(String(title || ''));
   return { pass: Boolean(m), matched: m ? m[0].trim() : null };
+}
+
+/**
+ * The gate over the whole meeting: the title, or any attendee's display name.
+ * `where` says which, so the reason a lookup ran is never a mystery.
+ */
+function meetingGate(ev, selfEmail) {
+  const fromTitle = titleGate(ev?.title);
+  if (fromTitle.pass) return { ...fromTitle, where: 'title' };
+
+  for (const a of context.attendeesToEnrich(ev, { selfEmail })) {
+    const g = titleGate(a.name);
+    if (g.pass) return { ...g, where: 'attendee name' };
+  }
+  return { pass: false, matched: null, where: null };
 }
 
 /**
@@ -259,6 +280,35 @@ function bisBySurname(word) {
   return hits;
 }
 
+/**
+ * Which registry field a name should be searched on.
+ *
+ * A whole name splits the obvious way. A HALF name does not: "Dr Katie" was
+ * being sent as `last_name=Katie`, which is the wrong field for a given name and
+ * returns nobody — while the ladder had already worked out (from the master's
+ * own name distribution) that it is the LAST name that is missing, i.e. that
+ * "Katie" is a first name. That answer is used here rather than thrown away.
+ *
+ * @param {string} name
+ * @param {{name: string, missing: string}|null} [nameIncomplete]
+ * @returns {{firstName: string, lastName: string}}
+ */
+function nameSearchKey(name, nameIncomplete = null) {
+  const words = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (words.length > 1) {
+    return { firstName: words[0], lastName: words[words.length - 1] };
+  }
+
+  const only = words[0] || '';
+  const isThisName =
+    nameIncomplete && String(nameIncomplete.name || '').toLowerCase() === only.toLowerCase();
+  // "the last name is missing" ⇒ what we have is the FIRST name.
+  if (isThisName && nameIncomplete.missing === 'last') return { firstName: only, lastName: '' };
+  // Otherwise treat it as a surname: it is the field the registry indexes, and
+  // the master said so (missing === 'first') or could not tell.
+  return { firstName: '', lastName: only };
+}
+
 /** The lean physician shape the UI and the briefs need. */
 function toCard(p) {
   return {
@@ -295,7 +345,7 @@ function toCard(p) {
  */
 function matchMeeting(ev, opts = {}) {
   const selfEmail = opts.selfEmail || null;
-  const gate = titleGate(ev?.title);
+  const gate = meetingGate(ev, selfEmail);
 
   const base = {
     status: 'no_name',
@@ -387,8 +437,9 @@ function matchMeeting(ev, opts = {}) {
       ...base,
       status: 'gate_blocked',
       reason:
-        'No attendee email is in the master and the title does not say "Dr" or ' +
-        '"Doctor", so this is treated as a normal meeting — no name lookup was run.',
+        'No attendee email is in the master, and neither the title nor any attendee name ' +
+        'says "Dr" or "Doctor" — so this is treated as a normal meeting and no name ' +
+        'lookup was run.',
     };
   }
 
@@ -517,6 +568,8 @@ function matchMeeting(ev, opts = {}) {
 
 module.exports = {
   matchMeeting,
+  meetingGate,
+  nameSearchKey,
   partialNamesFrom,
   missingPartOf,
   npiFromEvent,

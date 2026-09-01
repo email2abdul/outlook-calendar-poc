@@ -27,6 +27,16 @@ const states = require('../enrichment/states');
 /** At or above this, a candidate's data is shown rather than offered. */
 const CONFIDENCE_SHOW = 70;
 
+/**
+ * Below this a candidate is not even offered.
+ *
+ * Nine people share a surname; listing all nine at 55% teaches a rep to click
+ * through noise. So only the ones a meeting's own details actually support are
+ * shown, and when nothing clears this bar the answer is the ASK — add the first
+ * name, the taxonomy, the city — not a longer list.
+ */
+const CONFIDENCE_OFFER = 60;
+
 /** A second candidate this close to the best means we cannot tell them apart. */
 const AMBIGUOUS_MARGIN = 10;
 
@@ -47,8 +57,10 @@ function splitFullName(name) {
 /**
  * Score one candidate.
  *
- * @param {object} candidate  a source candidate (name/firstName/lastName/city/state)
- * @param {object} wanted     what the meeting said: { firstName, lastName, city, state }
+ * @param {object} candidate  a source candidate (name/firstName/lastName/city/state/
+ *                            primaryTaxonomy/facilityAddress/zip/phone)
+ * @param {object} wanted     what the meeting said: { firstName, lastName, city,
+ *                            state, taxonomy, address, zip, phone }
  * @param {object} [opts]
  * @param {number} [opts.total=1]      how many candidates came back at all
  * @param {boolean} [opts.confirmed]   a second source agrees on this NPI's identity
@@ -121,6 +133,78 @@ function scoreCandidate(candidate, wanted = {}, opts = {}) {
     reasons.push('city matches the meeting');
   }
 
+  // ── The details that actually separate same-named providers ───────────────
+  // A surname alone cannot clear the bar; a surname plus "Dentist", or plus a
+  // street, can — because only one of nine Aagaards is a dentist. These are the
+  // fields NPPES prints next to the name, so they are the ones a rep can copy
+  // into the meeting to get an exact answer.
+
+  // The meeting's own words, searched for the CANDIDATE's values rather than the
+  // other way round. Extracting "the taxonomy" from a free-text title is a
+  // guessing game; asking "does this meeting mention 'Dentist'?" is not, and it
+  // is exactly how a rep disambiguates by hand.
+  const text = norm(wanted.text);
+  const mentions = (value, minWordLength = 5) => {
+    const v = norm(value);
+    if (!text || !v) return false;
+    if (text.includes(v)) return true;
+    const head = v.split(/[\s,]+/)[0];
+    return head.length >= minWordLength && new RegExp(`\\b${head}\\b`).test(text);
+  };
+
+  const wantTax = norm(wanted.taxonomy);
+  const gotTax = norm(candidate.primaryTaxonomy || candidate.specialty);
+  if (!wantTax && gotTax && mentions(gotTax)) {
+    score += 20;
+    reasons.push('the meeting mentions this taxonomy');
+  }
+  if (wantTax && gotTax) {
+    if (wantTax === gotTax) {
+      score += 25;
+      reasons.push('primary taxonomy matches exactly');
+    } else if (gotTax.includes(wantTax) || wantTax.includes(gotTax)) {
+      // "Counselor" against "Counselor, Mental Health" — the registry qualifies
+      // a taxonomy that a rep would write plainly.
+      score += 20;
+      reasons.push('primary taxonomy matches');
+    } else {
+      score -= 15;
+      reasons.push('primary taxonomy differs');
+    }
+  }
+
+  const zip5 = (v) => String(v || '').replace(/\D/g, '').slice(0, 5);
+  if (zip5(wanted.zip) && zip5(candidate.zip) && zip5(wanted.zip) === zip5(candidate.zip)) {
+    score += 20;
+    reasons.push('ZIP matches');
+  } else if (!wanted.zip && zip5(candidate.zip) && String(wanted.text || '').includes(zip5(candidate.zip))) {
+    score += 20;
+    reasons.push('the meeting mentions this ZIP');
+  }
+
+  // Street, not the whole line: the registry writes "200 CASENTINI ST" where a
+  // rep may have typed the city and state after it.
+  const street = (v) => norm(String(v || '').split(',')[0]);
+  if (street(wanted.address) && street(candidate.facilityAddress)) {
+    const a = street(wanted.address);
+    const b = street(candidate.facilityAddress);
+    if (a === b || b.startsWith(a) || a.startsWith(b)) {
+      score += 20;
+      reasons.push('practice address matches');
+    }
+  } else if (!wanted.address && street(candidate.facilityAddress) && mentions(street(candidate.facilityAddress), 99)) {
+    // The whole street line has to appear — a lone house number would match
+    // half the registry.
+    score += 20;
+    reasons.push('the meeting mentions this practice address');
+  }
+
+  const digits = (v) => String(v || '').replace(/\D/g, '').slice(-10);
+  if (digits(wanted.phone).length === 10 && digits(wanted.phone) === digits(candidate.phone)) {
+    score += 20;
+    reasons.push('phone matches');
+  }
+
   if (opts.total === 1) {
     score += 10;
     reasons.push('the only candidate any source returned');
@@ -159,12 +243,26 @@ function rankCandidates(candidates, wanted = {}, opts = {}) {
   );
 
   const primary = best && best.confidence >= CONFIDENCE_SHOW && !ambiguous ? best : null;
+  const offered = ranked.filter((c) => c.confidence >= CONFIDENCE_OFFER);
   return {
+    // Everything, scored — callers that need the full picture (diagnostics) can
+    // still see it.
     ranked,
+    // What a rep should be shown: nothing under the offer bar, at most a
+    // handful, best first.
+    offered: offered.slice(0, opts.max || 5),
+    dropped: ranked.length - offered.length,
     primary,
     ambiguous,
     cleared: ranked.filter((c) => c.confidence >= CONFIDENCE_SHOW).length,
   };
 }
 
-module.exports = { scoreCandidate, rankCandidates, splitFullName, CONFIDENCE_SHOW, AMBIGUOUS_MARGIN };
+module.exports = {
+  scoreCandidate,
+  rankCandidates,
+  splitFullName,
+  CONFIDENCE_SHOW,
+  CONFIDENCE_OFFER,
+  AMBIGUOUS_MARGIN,
+};

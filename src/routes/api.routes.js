@@ -705,10 +705,16 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
     }
 
     for (const name of match.unresolvedNames) {
-      const { firstName, lastName } = enrichment.splitName(name);
+      // A half name is searched on the field it actually belongs to — see
+      // meetingMatch.nameSearchKey.
+      const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
+      // Fetch WIDE, then score and trim. Asking the registry for only five
+      // meant the one candidate the meeting actually described could be absent
+      // from the set entirely: "Dr Aagaard (Dentist)" has nine Aagaards to
+      // choose from, and the dentist is not among the first five.
       const found = await outsideSources.searchByName(
         { firstName, lastName, state: hints.state || undefined, city: hints.city || undefined },
-        { limit: meetingMatch.MAX_CANDIDATES }
+        { limit: 20 }
       );
       failures.push(...found.failures);
 
@@ -725,17 +731,30 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       // number they can act on instead of a list. Below the bar a candidate is
       // an option they open on purpose; at or above it, and clearly ahead of
       // the runner-up, its data is put in front of them.
-      const { ranked, primary, ambiguous, cleared } = outsideScore.rankCandidates(
+      const { offered, dropped, primary, ambiguous, cleared } = outsideScore.rankCandidates(
         candidates,
-        { firstName, lastName, city: hints.city, state: hints.state },
-        {}
+        {
+          firstName,
+          lastName,
+          city: hints.city,
+          state: hints.state,
+          // The meeting's own words, so a candidate whose taxonomy, street or
+          // ZIP the rep wrote down scores for it. This is what turns "nine
+          // Aagaards" into "the dentist one".
+          text: [event.title, event.description, event.location].filter(Boolean).join(' · '),
+        },
+        { max: meetingMatch.MAX_CANDIDATES }
       );
 
       groups.push({
         name,
         source: match.nameIncomplete ? match.nameIncomplete.source : 'title',
-        total: ranked.length,
-        candidates: ranked,
+        total: offered.length,
+        candidates: offered,
+        // Below the offer bar nothing is shown: a list of 55% guesses teaches a
+        // rep to click through noise. The count is stated so the silence is not
+        // mistaken for "the registry has nobody".
+        dropped,
         cleared,
         ambiguous,
         primaryNpi: primary?.npi || null,

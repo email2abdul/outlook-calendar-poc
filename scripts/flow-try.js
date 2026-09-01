@@ -10,6 +10,9 @@ const assembleProfile = require('../src/outside-sources/profile');
 const store = require('../src/outside-physician-store');
 const graph = require('../src/graph');
 const enrichment = require('../src/enrichment');
+const analytics = require('../src/analytics');
+const contactsStore = require('../src/contacts-store');
+const verify = require('../src/enrichment/verify');
 
 /**
  * Drive the WHOLE "who is this meeting with" flow from the command line.
@@ -30,8 +33,16 @@ const enrichment = require('../src/enrichment');
  * Flags:
  *   --email <addr>   add an attendee, as an invite would
  *   --city / --state hints the meeting would otherwise carry in its title
+ *   --taxonomy <t>   e.g. "Dentist" — what NPPES calls the primary taxonomy
+ *   --address <a>    e.g. "200 CASENTINI ST" — the primary practice address
+ *   --zip / --phone  the other two fields that separate same-named providers
+ *   --body <text>    put anything in the meeting description instead of a flag
  *   --save           write the decision (Supabase if the table exists, else SQLite)
  *   --brief          print the whole brief as text, not just its shape
+ *
+ * Anything the meeting TEXT mentions counts on its own — "Dr Aagaard (Dentist)"
+ * needs no --taxonomy — because the scorer looks for each candidate's own values
+ * in the meeting rather than trying to parse fields out of a title.
  */
 
 const argv = process.argv.slice(2);
@@ -95,9 +106,12 @@ async function main() {
   console.log(`status : ${match.status}${match.via ? `  (via ${match.via})` : ''}`);
   if (match.npi) console.log(`npi    : ${match.npi} (written on the meeting)`);
   if (match.nameIncomplete) {
-    console.log(
-      `⚠️  half a name: “${match.nameIncomplete.name}” — the ${match.nameIncomplete.missing} name is missing`
-    );
+    const which = {
+      first: 'the FIRST name is missing',
+      last: 'the LAST name is missing',
+      unknown: 'the full name is not written out',
+    }[match.nameIncomplete.missing];
+    console.log(`⚠️  half a name: “${match.nameIncomplete.name}” — ${which}`);
   }
   console.log(`reason : ${match.reason}`);
   for (const p of match.physicians) {
@@ -108,6 +122,29 @@ async function main() {
     console.log(`\nBIS candidates for “${g.name}” — ${g.total} total, showing ${g.candidates.length}:`);
     for (const c of g.candidates) {
       console.log(`   · ${c.name} · ${c.specialty || '—'} · ${c.facility?.city || '?'}, ${c.facility?.state || '?'} · NPI ${c.npi}`);
+    }
+  }
+
+  // A physician the master holds gets the STANDARD brief — the same one the
+  // email and the meeting body carry. Printing it here is the point of the
+  // exercise: "in Supabase" has to mean "all the details are there".
+  if (match.status === 'matched' && match.physicians.length) {
+    for (const card of match.physicians) {
+      const p = physicians.getByNpi(card.npi);
+      const [a, contact, verification] = await Promise.all([
+        analytics.getLabelledAnalytics(p.npi),
+        contactsStore.getContact(p.npi),
+        verify.verifyPhysician(p),
+      ]);
+      const html = graph.physicianBriefHtml({ physician: p, analytics: a, contact, verification });
+      h(`PRE-MEETING NOTES (from Supabase) — ${p.name}`);
+      const text = asText(html);
+      console.log(flag('brief') ? text : text.split('\n').slice(0, 30).join('\n'));
+      console.log(
+        `\n… brief is ${html.length} bytes · ` +
+          `${(text.match(/Data not available/g) || []).length} "Data not available" · ` +
+          `analytics: ${a ? `${(a.byFamily || []).length} procedure families, ${(a.facilities || []).length} facilities` : 'none'}`
+      );
     }
   }
 
@@ -132,11 +169,12 @@ async function main() {
     best = { npi: match.npi, confidence: 100, matchReasons: ['the NPI was written on the meeting itself'] };
   } else {
     for (const name of names) {
-      const { firstName, lastName } = enrichment.splitName(name);
+      const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
       h(`SOURCES — searching “${name}” (first: ${firstName || '—'}, last: ${lastName})`);
+      // Wide fetch, then score and trim — see the note in api.routes.js.
       const found = await sources.searchByName(
         { firstName, lastName, city: hints.city, state: hints.state },
-        { limit: meetingMatch.MAX_CANDIDATES }
+        { limit: 20 }
       );
       for (const f of found.failures) console.log(`📡 ${f.name}: ${f.error}`);
 
@@ -145,18 +183,35 @@ async function main() {
           const bis = c.npi ? physicians.getByNpi(c.npi) : null;
           return bis ? { ...c, ...store.mirrorFromPhysician(bis), inBis: true } : c;
         }),
-        { firstName, lastName, city: hints.city, state: hints.state }
+        {
+          firstName,
+          lastName,
+          city: hints.city,
+          state: hints.state,
+          taxonomy: flag('taxonomy'),
+          address: flag('address'),
+          zip: flag('zip'),
+          phone: flag('phone'),
+          text: [ev.title, ev.description].filter(Boolean).join(' · '),
+        },
+        { max: meetingMatch.MAX_CANDIDATES }
       );
 
       if (!ranked.ranked.length) {
-        console.log('no candidates');
+        console.log(found.failures.length ? 'no candidates (see the outage above)' : 'no candidates — the registry answered and has nobody by that name');
         continue;
       }
-      console.log(`${ranked.ranked.length} candidate(s), bar is ${score.CONFIDENCE_SHOW}%${ranked.ambiguous ? ' — AMBIGUOUS, nothing auto-shown' : ''}:`);
-      for (const c of ranked.ranked) {
-        const mark = c.confidence >= score.CONFIDENCE_SHOW ? '✅' : '  ';
+      console.log(
+        `${found.candidates.length} returned by the source(s) · show bar ${score.CONFIDENCE_SHOW}% · offer bar ` +
+          `${score.CONFIDENCE_OFFER}%${ranked.ambiguous ? ' · AMBIGUOUS, nothing auto-shown' : ''}`
+      );
+      for (const c of ranked.offered) {
+        const mark = c.confidence >= score.CONFIDENCE_SHOW ? '✅' : '👀';
         console.log(`${mark} ${String(c.confidence).padStart(3)}%  ${c.name} · ${c.primaryTaxonomy || c.specialty || '—'} · ${c.city || '?'}, ${c.state || '?'} · NPI ${c.npi}${c.inBis ? ' · IN BIS' : ''}`);
         console.log(`        ${c.matchReasons.join(', ')}`);
+      }
+      if (ranked.dropped) {
+        console.log(`   … ${ranked.dropped} more under ${score.CONFIDENCE_OFFER}% — not shown (add the first name, taxonomy, city or address)`);
       }
       if (ranked.primary && !best) best = ranked.primary;
     }

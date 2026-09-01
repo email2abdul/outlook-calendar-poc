@@ -1125,6 +1125,16 @@ async function buildOutside(detail, ev) {
           list.appendChild(ul);
         }
 
+        if (g.dropped > 0) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          note.textContent =
+            `${g.dropped} further match${g.dropped > 1 ? 'es were' : ' was'} under ` +
+            `${threshold - 10}% and not shown — add the first name, the taxonomy, the city or ` +
+            'the practice address to the meeting to narrow it down.';
+          list.appendChild(note);
+        }
+
         if (weak.length) {
           const box = document.createElement('details');
           const sum = document.createElement('summary');
