@@ -198,6 +198,51 @@ if (supabase) {
 // ── Public API ───────────────────────────────────────────────────────────────
 
 /**
+ * The words of a typed name, minus anything too short to identify anybody.
+ *
+ * Single characters are dropped on purpose: a middle initial the rep DID type
+ * ("Barry J Pronold") must not become a token the master row has to carry.
+ */
+function nameTokens(query) {
+  return String(query || '')
+    .toLowerCase()
+    .split(/[^a-z0-9'’-]+/)
+    .filter((t) => t.length >= 2);
+}
+
+/** Does this row's name carry every word the rep typed, in any order? */
+function nameHasAllTokens(name, tokens) {
+  const n = String(name || '').toLowerCase();
+  return tokens.every((t) => n.includes(t));
+}
+
+/**
+ * Second pass for a multi-word name the one-string search could not match.
+ *
+ * `bis_search_physicians` matches the query as a single string, so "Barry
+ * Pronold" misses the stored "Barry J Pronold" — and 72% of the directory
+ * (15,350 of 21,274) carries a middle name or initial. First-Last is exactly
+ * how a rep types a name, so most of the master was unreachable from the
+ * search box.
+ *
+ * Matched against the in-memory index rather than the RPC: the whole directory
+ * is already loaded, so this is complete and free, where paging the RPC is
+ * neither — "Thomas" alone matches 271 physicians and ranks "Paul D Thomas"
+ * below the cut however deep the page goes.
+ *
+ * @returns {object[]} normalized physicians carrying every word that was typed
+ */
+function searchByNameTokens(query, limit) {
+  const tokens = nameTokens(query);
+  if (tokens.length < 2) return [];
+
+  const hits = physicians.filter((p) => nameHasAllTokens(p.name, tokens));
+  // Same rule as the RPC: the ones we can actually email come first.
+  hits.sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)));
+  return hits.slice(0, limit);
+}
+
+/**
  * Search physicians by free text — matches name, NPI, email, specialty,
  * facility name or facility city. Best matches first (ranked in Supabase by
  * the bis_search_physicians function: exact email/NPI > name > email >
@@ -217,16 +262,25 @@ async function search(query, limit = 20) {
       p_limit: limit,
     });
     if (error) throw new Error(`search RPC failed: ${error.message}`);
-    // No physician hits, but the query names a facility we know? It's an
-    // unlinked (orphan) facility — offer same-city physicians instead.
-    if (data.length === 0) {
+
+    // Everyone whose stored name carries every word that was typed. Runs
+    // alongside the RPC, not only when it comes back empty: "Michael Fenner"
+    // matches "Michael (Brian) B Fennerty" as a substring, which would
+    // otherwise hide "Michael N Fenner" entirely, and both "Ammar Hassan" and
+    // "Ammar Z Hassan" are real, distinct physicians the rep may mean.
+    const byName = searchByNameTokens(q, limit);
+
+    // No physician hits at all, but the query names a facility we know? It's
+    // an unlinked (orphan) facility — offer same-city physicians instead.
+    if (data.length === 0 && byName.length === 0) {
       const ql = q.toLowerCase();
       const fac = [...facilitiesById.values()].find(
         (f) => f.name && f.name.toLowerCase().includes(ql)
       );
       if (fac) return getNearbyForFacility(fac, limit);
     }
-    return data.map((p) => ({
+
+    const mapped = data.map((p) => ({
       npi: String(p.npi),
       name: nullable(p.name),
       specialty: nullable(p.specialty),
@@ -243,6 +297,12 @@ async function search(query, limit = 20) {
           }
         : null,
     }));
+
+    if (!byName.length) return mapped;
+    // Name matches lead — they are what the rep asked for. The RPC's own hits
+    // (facility, city, specialty) follow, deduped by NPI.
+    const seen = new Set(byName.map((p) => p.npi));
+    return [...byName, ...mapped.filter((p) => !seen.has(p.npi))].slice(0, limit);
   }
 
   // Local fallback: filter the in-memory index (also matches facility).
@@ -264,6 +324,15 @@ async function search(query, limit = 20) {
   }
 
   matches.sort((a, b) => Number(Boolean(b.email)) - Number(Boolean(a.email)));
+
+  // Same multi-word name problem as the Supabase path: a substring match on
+  // the whole query cannot see past a middle initial.
+  const byName = searchByNameTokens(q, limit);
+  if (byName.length) {
+    const seen = new Set(byName.map((p) => p.npi));
+    return [...byName, ...matches.filter((p) => !seen.has(p.npi))].slice(0, limit);
+  }
+
   if (matches.length === 0) {
     // Same orphan-facility fallback as the Supabase path.
     const fac = [...facilitiesById.values()].find((f) => f.name && f.name.toLowerCase().includes(ql));
@@ -420,4 +489,7 @@ module.exports = {
   getNearbyForFacility,
   matchInText,
   ready,
+  // Exported for tests: the name-matching rule behind the multi-word search.
+  nameTokens,
+  nameHasAllTokens,
 };
