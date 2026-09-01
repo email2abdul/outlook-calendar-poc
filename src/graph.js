@@ -1468,9 +1468,11 @@ async function sendPhysiciansBriefing(accessToken, { toEmail, physicians, event,
  * @param {string} opts.html       the rendered brief
  * @param {object[]} [opts.notes]  this rep's meeting notes for them
  * @param {object} [opts.event]    { title, start, timeZone }
+ * @param {string} [opts.subject]  overrides the default (the reminder sets it)
+ * @param {string} [opts.intro]    overrides the first line
  * @returns {Promise<string|null>} the address it actually went to
  */
-async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, event }) {
+async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, event, subject, intro }) {
   if (!toEmail || !html) return null;
   const client = getGraphClient(accessToken);
 
@@ -1479,8 +1481,9 @@ async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, ev
 
   const content = [
     `<p>${escapeHtml(
-      `${who} is not in the BIS directory. Everything below was assembled from public ` +
-        'sources, and anything those sources could not supply is marked "Data not available".'
+      intro ||
+        `${who} is not in the BIS directory. Everything below was assembled from public ` +
+          'sources, and anything those sources could not supply is marked "Data not available".'
     )}</p>`,
     event?.title
       ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${meetingWhen ? ` — ${escapeHtml(meetingWhen)}` : ''}</p>`
@@ -1494,7 +1497,7 @@ async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, ev
   const sendTo = config.briefingToEmail || toEmail;
   await client.api('/me/sendMail').post({
     message: {
-      subject: `🔎 Outside BIS: ${who}${event?.title ? ` — ${event.title}` : ''}`,
+      subject: subject || `🔎 Outside BIS: ${who}${event?.title ? ` — ${event.title}` : ''}`,
       body: { contentType: 'HTML', content },
       toRecipients: [{ emailAddress: { address: sendTo } }],
     },

@@ -16,6 +16,7 @@ const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
 const meetingMatch = require('./meeting-match');
 const outsideStore = require('./outside-physician-store');
+const assembleProfile = require('./outside-sources/profile');
 const intelStore = require('./email-intel-store');
 
 /**
@@ -174,6 +175,24 @@ async function syncActivities(token, user) {
     // `enrich:<series-or-event>` key, so it still runs exactly once per
     // meeting — and exactly once per recurring SERIES, not once per occurrence.
     if (!physicians.length) {
+      // The rep has already answered "who is this meeting with" for this event,
+      // with someone the master does not hold. Their answer outranks anything
+      // the agent would go and guess, so it is what goes on the meeting — and
+      // the agent is not run at all (nothing to look up, nothing to spend).
+      const outsideChoice =
+        decision?.decidedBy === 'user' && decision.npi && !physiciansDir.getByNpi(decision.npi)
+          ? decision
+          : null;
+
+      if (outsideChoice) {
+        try {
+          await injectOutsideBrief(token, user, ev, outsideChoice);
+        } catch (err) {
+          console.warn('[ingest] outside brief injection failed:', err.message);
+        }
+        continue;
+      }
+
       try {
         const recovered = await briefUnknownAttendees(token, user, ev);
         // An attendee the agent found IS in BIS after all (their email was
@@ -358,6 +377,56 @@ async function injectExternalBrief(token, user, ev, enrichments) {
   if (injected) {
     console.log(`[ingest] external brief embedded in meeting "${ev.title}" (${names.join(', ')})`);
   }
+}
+
+/**
+ * Put the brief for a physician OUTSIDE the master onto the meeting itself.
+ *
+ * The rep did the work of identifying someone the master has never heard of;
+ * that answer belongs on the event, where they will actually be when the meeting
+ * starts — not only in the app they were in when they found it. Same idempotency
+ * key as the BIS injection (`enriched:<eventId>`) and the same in-body marker, so
+ * a meeting carries exactly one brief and attendees are never notified.
+ *
+ * Only a decision the REP made is injected. Writing an automatic guess into the
+ * meeting body would put a name in front of them, in Outlook, with no way to
+ * tell it was a guess.
+ *
+ * @returns {Promise<boolean>} true when something was injected
+ */
+async function injectOutsideBrief(token, user, ev, decision) {
+  if (!ev.id || !decision?.npi) return false;
+  const key = `enriched:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
+
+  const profile = await assembleProfile(decision.npi, decision.externalSource);
+  if (!profile) {
+    // A source outage must not burn the one-shot key — try again next tick.
+    console.warn(`[ingest] no source could describe NPI ${decision.npi} — not injecting yet`);
+    return false;
+  }
+
+  const name = profile.record.name || decision.name || `NPI ${decision.npi}`;
+  const content = [
+    `<p>${name} is <b>not in the BIS directory</b>. You confirmed them for this meeting; ` +
+      'the notes below were assembled from public sources, and anything those sources could ' +
+      'not supply is marked "Data not available".</p>',
+    graph.outsideBriefHtml({
+      record: profile.record,
+      extra: profile.extra,
+      cms: profile.cms,
+      agreement: profile.agreement,
+      confidence: decision.confidence,
+      matchReasons: ['confirmed by you for this meeting'],
+      sourceName: profile.sourceName,
+      sourceUrl: profile.sourceUrl,
+    }),
+  ].join('');
+
+  const injected = await graph.injectBriefIntoEvent(token, ev.id, content);
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  if (injected) console.log(`[ingest] outside brief embedded in meeting "${ev.title}" (${name})`);
+  return injected;
 }
 
 /**
@@ -827,7 +896,7 @@ function start() {
 }
 
 module.exports = {
-  start, tick, cleanBody, syncActivities, recordDecision, ingestEmails, ingestSentReplies,
+  start, tick, cleanBody, syncActivities, recordDecision, injectOutsideBrief, ingestEmails, ingestSentReplies,
   reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
   briefUnknownAttendees,
 };
