@@ -35,15 +35,18 @@ function todayYmd() {
   return new Date().toLocaleDateString('en-CA');
 }
 
+/** "2027-03-10" → "Wednesday, 10 March 2027" in the browser's own locale. */
+function humanDate(dateStr) {
+  if (!dateStr) return '';
+  // Midday, so a timezone shift can never move it onto the previous day.
+  const d = new Date(`${dateStr}T12:00:00`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  return d.toLocaleDateString([], { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+}
+
 function renderHeaderDate(dateStr, timeZone) {
   const label = document.getElementById('dateLabel');
-  const d = dateStr ? new Date(`${dateStr}T12:00:00`) : new Date();
-  label.textContent = d.toLocaleDateString([], {
-    weekday: 'long',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric',
-  });
+  label.textContent = dateStr ? humanDate(dateStr) : humanDate(todayYmd());
   if (timeZone) label.textContent += ` · ${timeZone}`;
 }
 
@@ -918,8 +921,17 @@ async function loadCalendar() {
     renderHeaderDate(data.date, data.timeZone);
 
     if (!data.events || data.events.length === 0) {
+      // A future date the rep picked deserves a plain sentence, not a raw ISO
+      // string — "No meetings on 2027-03-10" reads like a failure, and it is
+      // the one thing on screen when nothing else is.
       document.getElementById('emptyTitle').textContent =
-        data.date === todayYmd() ? 'No events today' : `No events on ${data.date}`;
+        data.date === todayYmd()
+          ? 'No meetings today'
+          : `No meetings on ${humanDate(data.date)}`;
+      document.getElementById('emptyBody').textContent =
+        data.date === todayYmd()
+          ? 'Your calendar is clear for today.'
+          : 'There is nothing scheduled for this day.';
       showView('empty');
     } else {
       renderEvents(data.events);
@@ -975,7 +987,11 @@ async function init() {
 document.getElementById('retryBtn').addEventListener('click', loadCalendar);
 
 document.getElementById('dateInput').addEventListener('change', () => {
-  if (document.getElementById('dateInput').value) loadCalendar();
+  // Clearing the field used to do nothing at all, leaving the previous day's
+  // meetings on screen under a header for a date the rep is no longer on.
+  const input = document.getElementById('dateInput');
+  if (!input.value) input.value = todayYmd();
+  loadCalendar();
 });
 
 document.getElementById('todayBtn').addEventListener('click', () => {

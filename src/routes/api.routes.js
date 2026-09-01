@@ -97,7 +97,14 @@ router.get('/me', async (req, res, next) => {
     if (!token) return res.json({ authenticated: false });
 
     const profile = await graph.getMe(token);
-    res.json({ authenticated: true, user: profile });
+    // Whether the master directory actually loaded. An empty directory answers
+    // every physician lookup with "nobody", which is indistinguishable from a
+    // genuine miss — so say it out loud rather than letting the UI guess.
+    res.json({
+      authenticated: true,
+      user: profile,
+      directory: { ready: physicians.isLoaded(), physicians: physicians.getAllPhysicians().length },
+    });
   } catch (err) {
     next(err);
   }

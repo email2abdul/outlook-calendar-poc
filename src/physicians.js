@@ -183,12 +183,88 @@ function loadFromCsv() {
   );
 }
 
+// ── Load, with retry ─────────────────────────────────────────────────────────
+
+/**
+ * The directory load used to get exactly one attempt.
+ *
+ * `bis_directory` pulls 21k physicians and 12.8k facilities in a single
+ * statement, so a busy moment on the database is enough to hit Postgres's
+ * statement timeout. When that happened the loader fell through to a CSV
+ * fallback whose files no longer ship, and the server came up serving an
+ * EMPTY directory — every physician lookup, brief and search silently
+ * answering "nobody" — and stayed that way until somebody noticed and
+ * restarted it (observed 2026-09-01).
+ *
+ * Nothing about that failure is permanent, so nothing about the recovery
+ * should need a human: retry a few times on the way up, then keep trying
+ * quietly in the background for as long as the directory is empty.
+ */
+const LOAD_ATTEMPTS = Number(process.env.DIRECTORY_LOAD_ATTEMPTS) || 4;
+const LOAD_BACKOFF_MS = Number(process.env.DIRECTORY_LOAD_BACKOFF_MS) || 4000;
+const RELOAD_EVERY_MS = Number(process.env.DIRECTORY_RELOAD_SECONDS || 120) * 1000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** True once the directory holds anybody — what "working" actually means. */
+function isLoaded() {
+  return physicians.length > 0;
+}
+
+/** One load, retried with a widening gap. Resolves true when it worked. */
+async function loadFromSupabaseWithRetry(attempts = LOAD_ATTEMPTS) {
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      await loadFromSupabase();
+      return true;
+    } catch (err) {
+      const last = attempt === attempts;
+      console.error(
+        `[physicians] Supabase load failed (attempt ${attempt}/${attempts}): ${err.message}` +
+          (last ? '' : ` — retrying in ${Math.round((LOAD_BACKOFF_MS * attempt) / 1000)}s`)
+      );
+      if (!last) await sleep(LOAD_BACKOFF_MS * attempt);
+    }
+  }
+  return false;
+}
+
+let reloadTimer = null;
+
+/**
+ * Keep trying in the background while the directory is empty. An empty
+ * directory is not a state the app can serve from, so this is the difference
+ * between "recovers on its own in two minutes" and "broken until a restart".
+ */
+function scheduleBackgroundReload() {
+  if (reloadTimer || !supabase) return;
+  console.warn(
+    `[physicians] directory is EMPTY — retrying every ${Math.round(RELOAD_EVERY_MS / 1000)}s. ` +
+      'Physician lookups, briefs and search will find nobody until this succeeds.'
+  );
+  reloadTimer = setInterval(async () => {
+    if (isLoaded()) {
+      clearInterval(reloadTimer);
+      reloadTimer = null;
+      return;
+    }
+    if (await loadFromSupabaseWithRetry(1)) {
+      clearInterval(reloadTimer);
+      reloadTimer = null;
+      console.log('[physicians] directory recovered — back to serving real data');
+    }
+  }, RELOAD_EVERY_MS);
+  reloadTimer.unref?.(); // never hold the process open on its own
+}
+
 /** Resolves when the directory is loaded; the server gates requests on this. */
 let ready;
 if (supabase) {
-  ready = loadFromSupabase().catch((err) => {
-    console.error(`[physicians] Supabase load failed (${err.message}) — falling back to CSV`);
+  ready = loadFromSupabaseWithRetry().then((ok) => {
+    if (ok) return;
+    console.error('[physicians] Supabase unreachable after every attempt — trying CSV');
     loadFromCsv();
+    if (!isLoaded()) scheduleBackgroundReload();
   });
 } else {
   loadFromCsv();
@@ -489,6 +565,7 @@ module.exports = {
   getNearbyForFacility,
   matchInText,
   ready,
+  isLoaded,
   // Exported for tests: the name-matching rule behind the multi-word search.
   nameTokens,
   nameHasAllTokens,
