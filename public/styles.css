@@ -733,6 +733,21 @@ body {
   opacity: 0.55;
 }
 
+/* The "nothing in BIS" row is a message, not a pickable result. */
+.physician-result--empty {
+  cursor: default;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.physician-result--empty:hover {
+  background: var(--surface);
+}
+
+.physician-result__lookup {
+  align-self: flex-start;
+}
+
 .physician-result .muted {
   font-size: 12px;
 }

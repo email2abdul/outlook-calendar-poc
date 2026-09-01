@@ -467,18 +467,101 @@ function renderPhysicianResults(list, results, onPick) {
   }
 }
 
+/**
+ * Nothing in the BIS directory for what the rep typed.
+ *
+ * BIS is the GI directory Lumendi sells into — gastroenterology, general and
+ * colorectal surgery. A physician outside those specialties is legitimately
+ * absent from it ("Jon Aagaard", Family Medicine, is in NPPES with a full
+ * profile but has no BIS row), and the list simply went blank: no message, no
+ * way forward, which reads as a broken search rather than an honest "not in
+ * this directory".
+ *
+ * The enrichment agent answers a full name from the public registries in a few
+ * seconds. It sits behind a button rather than running on the search itself
+ * because this fires on every keystroke — NPPES should not be queried for "j",
+ * "jo", "jon". The attendee cards auto-run the same lookup, which is fine
+ * there: they run once, over a bounded set of people.
+ */
+function renderNoBisMatch(list, query, onPick) {
+  const li = document.createElement('li');
+  li.className = 'physician-result physician-result--empty';
+
+  const msg = document.createElement('span');
+  msg.className = 'muted';
+  msg.textContent = `No match in the BIS directory for \u201c${query}\u201d.`;
+
+  const box = document.createElement('div');
+  box.className = 'enrich__body physician-analytics';
+
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'btn btn--ghost physician-result__lookup';
+  btn.textContent = '\uD83D\uDD0E Look up in public registries';
+  btn.addEventListener('click', () => {
+    btn.disabled = true;
+    enrichNameInto(box, query, onPick);
+  });
+
+  li.append(msg, btn, box);
+  list.appendChild(li);
+}
+
+/**
+ * Run the enrichment agent for a NAME typed into the search box.
+ *
+ * Free tiers only: NPPES resolves a full name in a few seconds, and the paid
+ * identity tier exists to recover a name from an email address — which is the
+ * one thing we already have here, so it would buy nothing.
+ */
+async function enrichNameInto(box, name, onPick) {
+  box.innerHTML = '<p class="muted">Checking public registries\u2026</p>';
+
+  const params = new URLSearchParams({ name, useWeb: 'never' });
+  let data;
+  try {
+    const res = await fetch(`/api/enrich?${params.toString()}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!res.ok) throw new Error(String(res.status));
+    data = await res.json();
+  } catch {
+    box.innerHTML = '<p class="muted">Enrichment unavailable.</p>';
+    return;
+  }
+
+  box.innerHTML = data.html || `<p class="muted">Nothing found for \u201c${name}\u201d.</p>`;
+
+  // The agent can find that this physician IS in BIS after all — the text
+  // search just did not reach their row. Offer them like any other BIS hit, so
+  // the rep gets the full brief and the schedule form.
+  if (['in_bis', 'recovered_in_bis'].includes(data.status) && data.physician && onPick) {
+    const pick = document.createElement('button');
+    pick.type = 'button';
+    pick.className = 'btn btn--ghost physician-result__lookup';
+    pick.textContent = `\u2713 Use ${data.physician.name || 'this physician'}`;
+    pick.addEventListener('click', () => onPick(data.physician));
+    box.appendChild(pick);
+  }
+}
+
 async function searchPhysicians(q, list, onPick) {
-  if (q.trim().length < 2) {
+  const query = q.trim();
+  if (query.length < 2) {
     list.innerHTML = '';
     return;
   }
   try {
-    const res = await fetch(`/api/physicians/search?q=${encodeURIComponent(q)}`, {
+    const res = await fetch(`/api/physicians/search?q=${encodeURIComponent(query)}`, {
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) return;
     const data = await res.json();
-    renderPhysicianResults(list, data.results || [], onPick);
+    const results = data.results || [];
+    renderPhysicianResults(list, results, onPick);
+    // A blank list is indistinguishable from a broken one — always say
+    // something, and offer the registries when BIS has nobody.
+    if (!results.length) renderNoBisMatch(list, query, onPick);
   } catch {
     /* search is best-effort; ignore transient errors */
   }
