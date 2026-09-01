@@ -1078,10 +1078,15 @@ async function buildOutside(detail, ev) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || 'The registry lookup failed.');
 
-      const groups = (data.groups || []).filter((g) => (g.candidates || []).length);
+      const rawGroups = data.groups || [];
+      const groups = rawGroups.filter((g) => (g.candidates || []).length);
       const failed = data.failures || [];
       const threshold = data.threshold || 70;
-      appendNameTag(list, data.nameIncomplete, (groups[0] || {}).total);
+      // Everyone the registries returned, including the ones held back — the
+      // count the rep needs to hear, and the count the name tag quotes.
+      const held = rawGroups.reduce((n, g) => n + (g.dropped || 0), 0);
+      const returned = rawGroups.reduce((n, g) => n + (g.total || 0) + (g.dropped || 0), 0);
+      appendNameTag(list, data.nameIncomplete, returned);
       const names = (data.names || []).length
         ? data.names
         : (data.groups || []).map((g) => g.name).filter(Boolean);
@@ -1099,6 +1104,15 @@ async function buildOutside(detail, ev) {
         head.textContent =
           `Not in the BIS directory, and the public registries could not be reached — ` +
           `so nothing is known yet about ${who}.`;
+      } else if (held) {
+        // They were FOUND — they just did not match this meeting closely enough.
+        // "the registries have nobody by that name" would be plainly false, and
+        // would send the rep looking for a different spelling.
+        head.textContent =
+          `Not in the BIS directory. The registries returned ${held} ${
+            held > 1 ? 'people' : 'person'
+          } named ${who}, but nothing in this meeting says which one — so none is shown. Add the ` +
+          'first name, the taxonomy (what kind of doctor), the city or the practice address.';
       } else {
         head.textContent = `Not in the BIS directory, and the public registries have nobody by ${who}.`;
       }
