@@ -1,0 +1,821 @@
+<title>Who Is This Meeting With</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  /* ── Tokens: a clinical instrument palette — slate-teal ink on cool paper,
+        one deep teal accent, and semantic colours reserved for the confidence
+        bands (they are data, not decoration). ─────────────────────────────── */
+  :root {
+    --ink: #12242c;
+    --ink-2: #3c5560;
+    --muted: #64808a;
+    --paper: #f4f7f7;
+    --surface: #ffffff;
+    --line: #d5e0e2;
+    --line-soft: #e7eeef;
+    --accent: #0a6273;
+    --accent-soft: #e6f1f3;
+    --pass: #14663a;
+    --pass-soft: #eaf6ef;
+    --offer: #8a5a00;
+    --offer-soft: #fdf4e3;
+    --stop: #9b1c39;
+    --stop-soft: #fdeef1;
+    --code-bg: #eef3f4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink: #e8f0f1;
+      --ink-2: #b3c7cd;
+      --muted: #8ba3ab;
+      --paper: #0d1719;
+      --surface: #131f22;
+      --line: #274044;
+      --line-soft: #1d2f33;
+      --accent: #5ec4d6;
+      --accent-soft: #102c33;
+      --pass: #6edb9f;
+      --pass-soft: #0f2a1d;
+      --offer: #e8b866;
+      --offer-soft: #2b210d;
+      --stop: #f79fb2;
+      --stop-soft: #2c111a;
+      --code-bg: #1b2a2e;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e8f0f1;
+    --ink-2: #b3c7cd;
+    --muted: #8ba3ab;
+    --paper: #0d1719;
+    --surface: #131f22;
+    --line: #274044;
+    --line-soft: #1d2f33;
+    --accent: #5ec4d6;
+    --accent-soft: #102c33;
+    --pass: #6edb9f;
+    --pass-soft: #0f2a1d;
+    --offer: #e8b866;
+    --offer-soft: #2b210d;
+    --stop: #f79fb2;
+    --stop-soft: #2c111a;
+    --code-bg: #1b2a2e;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 400 16px/1.62 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 62rem; margin: 0 auto; padding: 0 1.5rem 5rem; }
+  .prose { max-width: 40rem; }
+
+  h1, h2, h3, h4 { font-family: "IBM Plex Serif", ui-serif, Georgia, serif; text-wrap: balance; }
+  h1 { font-size: clamp(2rem, 5vw, 3rem); line-height: 1.08; letter-spacing: -0.02em; margin: 0 0 .5rem; font-weight: 600; }
+  h2 {
+    font-size: 1.5rem; line-height: 1.2; margin: 3.5rem 0 .25rem; font-weight: 600;
+    letter-spacing: -0.01em; display: flex; align-items: baseline; gap: .6rem;
+  }
+  h2 .num {
+    font: 500 .72rem/1 "IBM Plex Mono", monospace; letter-spacing: .12em;
+    color: var(--accent); border: 1px solid var(--line); border-radius: 2px;
+    padding: .32rem .4rem; background: var(--surface); flex: none;
+  }
+  h3 { font-size: 1.13rem; margin: 2rem 0 .35rem; font-weight: 600; }
+  h4 { font-size: .95rem; margin: 1.4rem 0 .3rem; font-weight: 600; font-family: "IBM Plex Sans", sans-serif; }
+  p, li { margin: 0 0 .8rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  strong { font-weight: 600; }
+  em { font-style: italic; color: var(--ink-2); }
+  ul, ol { margin: 0 0 1rem; padding-left: 1.2rem; }
+  li { padding-left: .15rem; }
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+
+  code, .mono, kbd {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .855em; background: var(--code-bg); padding: .1em .34em;
+    border-radius: 3px; color: var(--ink);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 6px;
+    padding: .9rem 1rem; overflow-x: auto; margin: 0 0 1.2rem;
+    font-family: "IBM Plex Mono", monospace; font-size: .82rem; line-height: 1.55;
+  }
+  pre code { background: none; padding: 0; }
+
+  .eyebrow {
+    font: 500 .72rem/1.3 "IBM Plex Mono", monospace; letter-spacing: .16em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .lede { font-size: 1.16rem; line-height: 1.55; color: var(--ink-2); max-width: 38rem; }
+  .meta {
+    display: flex; flex-wrap: wrap; gap: .4rem 1.4rem; margin: 1.6rem 0 0;
+    font: 400 .82rem/1.5 "IBM Plex Mono", monospace; color: var(--muted);
+  }
+  .meta b { color: var(--ink); font-weight: 500; }
+
+  header.head { padding: 3.5rem 0 2rem; border-bottom: 1px solid var(--line); margin-bottom: .5rem; }
+
+  /* ── Figures: break out of the prose column ─────────────────────────────── */
+  figure { margin: 1.6rem 0 2rem; }
+  figcaption { font-size: .82rem; color: var(--muted); margin-top: .7rem; }
+  .scroll { overflow-x: auto; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; margin: 0; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th {
+    font: 500 .72rem/1.3 "IBM Plex Mono", monospace; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--muted); border-bottom: 1px solid var(--line);
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", monospace; }
+  .t-card { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: .3rem .4rem; }
+
+  /* ── The ladder: numbering is the content, not decoration ───────────────── */
+  .rung { display: grid; grid-template-columns: 3.4rem 1fr; gap: 1.1rem; margin: 0 0 1.6rem; }
+  .rung__n {
+    font: 500 1.5rem/1 "IBM Plex Mono", monospace; color: var(--accent);
+    border-top: 2px solid var(--accent); padding-top: .5rem;
+  }
+  .rung__n small { display: block; font-size: .62rem; letter-spacing: .1em; color: var(--muted); margin-top: .3rem; }
+  .rung h3 { margin-top: .35rem; }
+
+  /* ── Flow diagram ───────────────────────────────────────────────────────── */
+  .flow { display: flex; flex-direction: column; gap: .45rem; min-width: 44rem; }
+  .node {
+    border: 1px solid var(--line); background: var(--surface); border-radius: 7px;
+    padding: .6rem .8rem; font-size: .85rem; line-height: 1.45;
+  }
+  .node b { display: block; font-size: .9rem; }
+  .node span { color: var(--ink-2); }
+  .node .mono { font-size: .78rem; }
+  .node--q { border-color: var(--accent); background: var(--accent-soft); }
+  .node--q b { color: var(--accent); }
+  .node--pass { border-color: var(--pass); background: var(--pass-soft); }
+  .node--pass b { color: var(--pass); }
+  .node--offer { border-color: var(--offer); background: var(--offer-soft); }
+  .node--offer b { color: var(--offer); }
+  .node--stop { border-color: var(--stop); background: var(--stop-soft); }
+  .node--stop b { color: var(--stop); }
+  .row { display: flex; gap: .45rem; align-items: stretch; }
+  .row > * { flex: 1; }
+  .arrow { color: var(--muted); font-size: .8rem; text-align: center; letter-spacing: .3em; }
+  .arrow--label { display: flex; align-items: center; gap: .5rem; justify-content: center; font-family: "IBM Plex Mono", monospace; font-size: .72rem; letter-spacing: .04em; }
+  .arrow--label::before, .arrow--label::after { content: ""; height: 1px; background: var(--line); flex: 1; }
+  .lane { border: 1px dashed var(--line); border-radius: 9px; padding: .8rem .8rem .3rem; }
+  .lane__label {
+    font: 500 .68rem/1 "IBM Plex Mono", monospace; letter-spacing: .14em; text-transform: uppercase;
+    color: var(--muted); margin-bottom: .6rem;
+  }
+
+  /* ── Callouts ───────────────────────────────────────────────────────────── */
+  .note {
+    border-left: 3px solid var(--accent); background: var(--surface);
+    padding: .75rem 1rem; margin: 1.2rem 0; font-size: .9rem; border-radius 0 6px 6px 0;
+  }
+  .note--rule { border-left-color: var(--pass); }
+  .note--warn { border-left-color: var(--stop); }
+  .note b { font-weight: 600; }
+
+  .pill {
+    display: inline-block; font: 500 .7rem/1.5 "IBM Plex Mono", monospace;
+    padding: .05rem .45rem; border-radius: 999px; border: 1px solid; white-space: nowrap;
+  }
+  .pill--pass { color: var(--pass); border-color: var(--pass); background: var(--pass-soft); }
+  .pill--offer { color: var(--offer); border-color: var(--offer); background: var(--offer-soft); }
+  .pill--stop { color: var(--stop); border-color: var(--stop); background: var(--stop-soft); }
+
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: .3rem 1rem; font-size: .88rem; margin: 0 0 1.2rem; }
+  .kv dt { font-family: "IBM Plex Mono", monospace; font-size: .8rem; color: var(--muted); }
+  .kv dd { margin: 0; }
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); gap: 1.2rem 2rem; }
+
+  footer.foot { margin-top: 4rem; padding-top: 1.2rem; border-top: 1px solid var(--line); font-size: .82rem; color: var(--muted); }
+
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+  /* ── Print (this page is also the source of the PDF) ────────────────────── */
+  @page { size: A4; margin: 15mm 14mm; }
+  @media print {
+    body { background: #fff; font-size: 10.2pt; }
+    .wrap { max-width: none; padding: 0; }
+    .prose { max-width: none; }
+    h1 { font-size: 24pt; }
+    h2 { font-size: 14pt; margin-top: 22pt; break-after: avoid; }
+    h3, h4 { break-after: avoid; }
+    .flow { min-width: 0; }
+    figure, .rung, .note, table, pre, .lane { break-inside: avoid; }
+    .pb { break-before: page; }
+    a { color: var(--ink); text-decoration: none; }
+    .no-print { display: none; }
+  }
+</style>
+
+<div class="wrap">
+
+<header class="head">
+  <p class="eyebrow">Outlook Calendar Intelligence · pre-meeting briefs</p>
+  <h1>Who is this meeting with?</h1>
+  <p class="lede">
+    The one question every pre-meeting brief depends on — and the six rungs the system
+    climbs to answer it, from a free lookup in your own directory to a scored search across
+    two public registries. With the test results that shaped each rule.
+  </p>
+  <div class="meta">
+    <span><b>Repo</b> outlook-calendar-poc</span>
+    <span><b>Branch</b> feat-outside-bis-physician-pre-notes</span>
+    <span><b>Tests</b> 104 passing</span>
+    <span><b>Verified</b> 1 September 2026, live NPPES + CMS + Supabase</span>
+  </div>
+</header>
+
+<div class="prose">
+
+<h2><span class="num">01</span> The question, and the order it is asked in</h2>
+
+<p>
+  A rep opens Outlook and sees eight meetings. Three are with physicians, one is a pipeline
+  review, and one says nothing more than “Dr Khan”. Every brief the system produces — the
+  email, the notes inside the meeting, the reminder — rests entirely on identifying the right
+  person, and identifying the wrong one is worse than identifying nobody: it hands a rep
+  another physician’s procedure volumes under the name they expected to see.
+</p>
+
+<p>
+  So the answer is built as a <strong>ladder</strong>. Each rung is a stronger claim than the one
+  below it and costs more to check, so the cheapest sufficient answer always wins and nothing
+  external is touched until everything free has been exhausted. The order is not a preference;
+  it is the confidence ranking.
+</p>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead>
+      <tr><th class="num">Rung</th><th>What is checked</th><th>Cost</th><th>If it answers</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="num">0</td><td>An <strong>NPI written on the meeting</strong></td><td>free, 0 ms</td><td><span class="pill pill--pass">resolved · 100%</span></td></tr>
+      <tr><td class="num">1</td><td>An <strong>attendee’s email</strong>, exactly, in the master</td><td>free, 0 ms</td><td><span class="pill pill--pass">resolved</span></td></tr>
+      <tr><td class="num">2</td><td>The physician the <strong>rep already confirmed</strong> for this meeting</td><td>free, 0 ms</td><td><span class="pill pill--pass">resolved</span></td></tr>
+      <tr><td class="num">3</td><td>The gate: does the meeting say <strong>“Dr” / “Doctor”</strong>?</td><td>free, 0 ms</td><td>opens rung 4, or stops here</td></tr>
+      <tr><td class="num">4</td><td>That <strong>name in the master</strong> (21,274 physicians, in memory)</td><td>free, 0 ms</td><td>one hit, a shortlist, or half a name</td></tr>
+      <tr><td class="num">5</td><td><strong>Public registries</strong> — NPPES by name, then CMS by NPI</td><td>network</td><td>scored candidates, best first</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption>Rungs 0–4 never leave the building. Only rung 5 makes a network call, and only for a meeting the master could not answer.</figcaption>
+</figure>
+
+</div>
+
+<h2><span class="num">02</span> The whole flow</h2>
+
+<figure class="scroll">
+  <div class="flow">
+    <div class="node node--q">
+      <b>A meeting appears, or changes</b>
+      <span>Outlook · read by the ingest tick every <span class="mono">300 s</span>, or when the rep opens the day view</span>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="node node--q"><b>Rung 0 — is an NPI written on it?</b><span>title, description or location · validated against the NPI check digit, so a phone number cannot pass</span></div>
+    <div class="row">
+      <div class="node node--pass"><b>In the master</b><span>the standard brief</span></div>
+      <div class="node node--offer"><b>Not in the master</b><span>straight to the registries <em>by NPI</em> — nothing to disambiguate</span></div>
+    </div>
+    <div class="arrow--label">no NPI on the meeting</div>
+
+    <div class="node node--q"><b>Rung 1 — is an attendee’s email in the master?</b><span>exact match only · the organiser and meeting rooms are never matched</span></div>
+    <div class="row">
+      <div class="node node--pass"><b>Yes → every match</b><span>two physician attendees produce two briefs, in one email</span></div>
+      <div class="node"><b>No</b><span>an email cannot be searched outside: neither registry indexes one</span></div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="node node--q"><b>Rung 2 — has the rep already confirmed someone here?</b><span>their pick is stored per meeting and outranks every guess below</span></div>
+    <div class="arrow--label">no stored decision</div>
+
+    <div class="node node--q"><b>Rung 3 — the gate: “Dr” or “Doctor”?</b><span>in the title, or in an attendee’s display name · whole words, so “Drainage” and “Andrew” do not open it</span></div>
+    <div class="node node--stop"><b>Gate shut → a normal meeting</b><span>no name is read, no lookup runs, nothing is spent. The panel says so and offers a search box.</span></div>
+    <div class="arrow--label">gate open</div>
+
+    <div class="node node--q"><b>Rung 4 — that name in the master</b><span>the title’s name, or an unmatched attendee’s display name · honorific and credentials stripped</span></div>
+    <div class="row">
+      <div class="node node--pass"><b>Exactly one</b><span>resolved — the standard brief</span></div>
+      <div class="node node--offer"><b>Several</b><span>a shortlist, ≤ 5, facility and city first</span></div>
+      <div class="node node--offer"><b>Half a name</b><span>“Khan” → 62 in the master · the rep is asked for the missing half</span></div>
+      <div class="node"><b>None</b><span>on to the registries</span></div>
+    </div>
+    <div class="arrow">▼</div>
+
+    <div class="lane">
+      <div class="lane__label">Rung 5 · outside the master — the only network path</div>
+      <div class="node node--q"><b>NPPES, by name</b><span>either half of a name works · up to 20 fetched, then scored — asking for five could miss the right person entirely</span></div>
+      <div class="arrow">▼</div>
+      <div class="node node--q"><b>Score every candidate against the meeting</b><span>first and last name, city, state, and whatever the meeting itself mentions — taxonomy, practice address, ZIP, phone</span></div>
+      <div class="row">
+        <div class="node node--pass"><b>≥ 70% and clear of the runner-up</b><span>shown as the answer, with its reasons</span></div>
+        <div class="node node--offer"><b>60–69%, or a tie</b><span>offered as options, each with its percentage</span></div>
+        <div class="node node--stop"><b>Under 60%</b><span>not shown at all — the count is stated and the rep is asked for one more detail</span></div>
+      </div>
+      <div class="arrow">▼</div>
+      <div class="node node--q"><b>CMS, by the NPI that came back</b><span>Medicare claims per year, 2024 and 2023 · CPT lines, services, patients, allowed amounts</span></div>
+      <div class="arrow">▼</div>
+      <div class="node node--pass"><b>Cross-confirm</b><span>do NPPES and CMS agree on surname, city and state? agreement is stated and adds confidence</span></div>
+    </div>
+
+    <div class="arrow">▼</div>
+    <div class="node node--pass">
+      <b>The brief — one renderer, four places</b>
+      <span>the app panel · an email the rep can send themselves · the meeting’s own body in Outlook · the reminder, 30 minutes before</span>
+    </div>
+  </div>
+  <figcaption>
+    Every box that stops the flow says why. A rung that cannot answer hands over; a rung that
+    <em>could not run</em> — a registry that did not resolve — says that instead, because “we could
+    not ask” and “there is nobody” are different answers and a rep acts differently on each.
+  </figcaption>
+</figure>
+
+<div class="prose">
+
+<h2 class="pb"><span class="num">03</span> Step by step, with what actually happened</h2>
+
+<p>
+  Each rung below was run against the live system on 1 September 2026 — the real Supabase
+  directory, the real NPPES API, the real CMS datasets. The examples are the outputs, not
+  illustrations.
+</p>
+
+<div class="rung">
+  <div class="rung__n">0<small>NPI</small></div>
+  <div>
+    <h3>An NPI written on the meeting</h3>
+    <p>
+      Ten digits a rep pasted in is the strongest identifier there is: no name to parse, nothing
+      to disambiguate, and no reason to require “Dr”. It is checked before everything else — and
+      validated against the <strong>NPI check digit</strong> (a Luhn sum over the number prefixed
+      with 80840), because a meeting body is full of ten-digit numbers.
+    </p>
+    <pre><code>"Review NPI 1003000126"
+
+  rung 0   → 1003000126 is on the meeting, not in the master
+  NPPES    → ARDALAN ENKESHAFI · Hospitalist · BETHESDA, MD
+  CMS 2024 → 384 services · 341 patients · $44,804 allowed · 7 codes
+  CMS 2023 → 802 services · 556 patients · $77,382 allowed · 7 codes
+  brief    → 100%, "the NPI was written on the meeting itself"
+             confirmed by NPPES and CMS (surname, city, state agree)</code></pre>
+    <p>
+      Rejected by the same rule: <code>7135550100</code> (a phone number),
+      <code>1234567890</code>, and any nine-digit id — all pass a length check and fail the
+      check digit, which is exactly why the check digit is used.
+    </p>
+  </div>
+</div>
+
+<div class="rung">
+  <div class="rung__n">1<small>EMAIL</small></div>
+  <div>
+    <h3>An attendee’s email, exactly</h3>
+    <p>
+      The invite’s own address list, matched exactly against the master. Every match counts, so a
+      meeting with two physician attendees produces two briefs in one email. The
+      <strong>organiser is never matched</strong> — that is the rep — and neither are meeting
+      rooms.
+    </p>
+    <pre><code>"Quarterly review"  ·  attendee aaron.baas@avera.org
+
+  rung 1  → matched exactly: Aaron P Baas (NPI 1114144375)
+  brief   → General Surgery · Avera Queen of Peace, Mitchell SD
+            email flagged "⚠️ unverified — from the BIS master,
+              never confirmed with the physician"
+            ✅ practice location matches the NPPES registry (MITCHELL, SD)
+            verified mobile + LinkedIn · contactability 92%
+            Colonoscopy 270 (CPT 45378, 45380, 45384, 45385)
+            therapeutic adoption 74% · snare used 16%
+            Lumendi account: active — DiLumen EZ since 2025-03-15</code></pre>
+    <p>
+      When the email is <em>not</em> in the master, the flow moves to the name — not because a
+      name is better, but because <strong>neither public registry can be searched by email</strong>.
+      NPPES has no email field at all.
+    </p>
+  </div>
+</div>
+
+<div class="rung">
+  <div class="rung__n">2<small>PICKED</small></div>
+  <div>
+    <h3>The physician the rep already confirmed</h3>
+    <p>
+      A shortlist is a question; this is the answer to it. Asking again every few minutes is worse
+      than useless — it re-lists candidates the rep has already ruled out. The pick is stored per
+      meeting, with who made it and when, and it outranks every automatic guess below it.
+    </p>
+    <p>
+      It also fixed a bug that used to destroy it: the ingest tick writes the meeting’s physician
+      on every sync, and for a meeting with no matching attendee email that value was
+      <code>null</code> — written straight over the rep’s choice. A confirmed choice now outranks
+      any automatic match, and an automatic match never overwrites a known link with nothing.
+    </p>
+  </div>
+</div>
+
+<div class="rung">
+  <div class="rung__n">3<small>GATE</small></div>
+  <div>
+    <h3>The gate — the meeting must call them a doctor</h3>
+    <p>
+      Without a gate, “Pipeline review” and “1:1 with Sam” become physician lookups. With it,
+      only a meeting that says <strong>“Dr”, “Dr.”, “Drs” or “Doctor”</strong> opens the name path.
+      Whole words only, so “Drainage” and “Andrew” do not qualify.
+    </p>
+    <p>
+      The title is the usual place but not the only one: an invite whose attendee reads
+      <em>“Dr Nicholas Shaheen &lt;nshaheen@med.unc.edu&gt;”</em> has said it just as plainly, and an
+      address that fails to match the master is precisely when the name path is needed. Requiring
+      the honorific in the title alone left those meetings with nothing — found while testing, and
+      fixed.
+    </p>
+    <pre><code>"Endoscopy sync"  ·  attendee Dr Nicholas Shaheen &lt;nshaheen@med.unc.edu&gt;
+
+  rung 1  → the address is not in the master
+  rung 3  → gate opens on the ATTENDEE name, not the title
+  rung 5  → NICHOLAS J SHAHEEN, NPI 1467521757 — 100%
+  CMS     → 2024: 292 services · 232 patients · $37,098
+            2023: 290 services · 212 patients · $38,505
+            43239 biopsy (office 76, facility 49) · 43229 polyp
+            destruction 27 · 43249 balloon dilation 26</code></pre>
+  </div>
+</div>
+
+<div class="rung">
+  <div class="rung__n">4<small>NAME</small></div>
+  <div>
+    <h3>That name, in your own directory</h3>
+    <p>
+      The 21,274-physician master is already in memory, so this is free and complete where a paged
+      search is neither. A stored middle initial does not block a match — “Aaron Baas” finds
+      “Aaron P Baas” — and four outcomes are possible.
+    </p>
+    <pre><code>"Case obs with Dr Aaron Baas"      → one hit  → the standard brief
+"Meeting with Dr Abdul Khan"       → 3 hits   → shortlist, rep picks
+"Meeting with Dr Khan"             → half a name → 62 hits + an ask
+"Meeting with Dr Charlotte Aagaard"→ none     → the registries</code></pre>
+    <p>
+      <strong>Half a name is kept, not dropped.</strong> “Khan” alone identifies nobody — it is 62
+      physicians in the master — but the old rule discarded it and left the rep with an empty
+      panel and no explanation. Now the master is searched by surname and the notes carry a
+      specific ask: <em>“the first name is missing. ‘Khan’ alone matches 62 physicians.”</em>
+    </p>
+    <p>
+      Which half is missing is answered by the master itself, not guessed: “Khan” ends sixty-odd
+      stored names and starts almost none, so it is a surname and the <strong>first</strong> name
+      is what is needed. “Geoffrey” is the reverse. When the distribution cannot tell, the ask is
+      for the full name rather than for the half the rep already gave.
+    </p>
+    <div class="note note--rule">
+      <b>Read once, not twice.</b> Half names go through the same reader as whole ones, with the
+      minimum word count relaxed to one. Re-implementing the parse is what once turned
+      <em>“Dr rounds”</em> into a physician called Rounds — the meeting words, place words,
+      capitalisation rule and organiser exclusion all live in one place, and they all still apply.
+    </div>
+  </div>
+</div>
+
+<div class="rung">
+  <div class="rung__n">5<small>OUTSIDE</small></div>
+  <div>
+    <h3>The public registries</h3>
+    <p>
+      Two sources, each doing only what it is good at. <strong>NPPES</strong> turns a name into an
+      NPI; <strong>CMS</strong> turns that NPI into what the physician actually does. The order is
+      deliberate — CMS’s table has one row per provider <em>per code</em>, so a name query there
+      returns hundreds of rows for one person and dozens of same-named strangers.
+    </p>
+    <p>
+      Adding a third website is a module and one line: a source declares its id, its human page,
+      whether it can search by name, and returns candidates in the shape the rest of the system
+      already renders. Nothing else changes.
+    </p>
+  </div>
+</div>
+
+<h2><span class="num">04</span> How sure are we? The number, and why it exists</h2>
+
+<p>
+  Nine people share the surname Aagaard. Listing all nine at 55% teaches a rep to click through
+  noise; presenting one of them as the answer teaches them to trust a coin toss. So every
+  candidate is scored against <strong>what the meeting itself said</strong>, the reasons are kept
+  alongside the number, and two thresholds decide what is shown.
+</p>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th>Signal</th><th class="num">Δ</th><th>Why it is worth that</th></tr></thead>
+    <tbody>
+      <tr><td>A registry listed them at all</td><td class="num">+30</td><td>a floor, not evidence</td></tr>
+      <tr><td>Last name matches</td><td class="num">+25</td><td>the field the registry indexes</td></tr>
+      <tr><td>First name matches exactly</td><td class="num">+30</td><td>the single strongest name signal</td></tr>
+      <tr><td>First name is a prefix / an initial</td><td class="num">+15 / +10</td><td>an initial is shared by dozens</td></tr>
+      <tr><td>First name differs</td><td class="num">−25</td><td>a different person with the same surname</td></tr>
+      <tr><td>State / city matches the meeting</td><td class="num">+15 / +15</td><td>geography separates same-named providers</td></tr>
+      <tr><td>Primary taxonomy matches (exact / contained)</td><td class="num">+25 / +20</td><td>only one of nine Aagaards is a dentist</td></tr>
+      <tr><td>Primary taxonomy contradicts the meeting</td><td class="num">−15</td><td>a listed taxonomy can still be phrased differently</td></tr>
+      <tr><td>Practice address / ZIP / phone matches</td><td class="num">+20 each</td><td>the fields a rep can copy from the registry page</td></tr>
+      <tr><td>The only candidate any source returned</td><td class="num">+10</td><td>nothing to be confused with</td></tr>
+      <tr><td>A second source confirms the identity</td><td class="num">+10</td><td>two independent registries agreeing</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption>Capped at 100. The reasons travel with the number, so “85%” is shown as “85% — last name matches, first name matches, state matches the meeting”.</figcaption>
+</figure>
+
+<div class="cols">
+  <div>
+    <h4><span class="pill pill--pass">≥ 70%</span> shown as the answer</h4>
+    <p>…and only when it is <strong>at least 10 points clear</strong> of the runner-up. Its brief is
+    assembled and rendered without the rep clicking anything.</p>
+  </div>
+  <div>
+    <h4><span class="pill pill--offer">60–69%</span> offered</h4>
+    <p>Listed as options, each with its own percentage, best first, at most five. A tie above 70%
+    lands here too: if two candidates cannot be told apart, neither is the answer.</p>
+  </div>
+  <div>
+    <h4><span class="pill pill--stop">under 60%</span> withheld</h4>
+    <p>Not shown at all — but <strong>counted out loud</strong>. “The registries returned 9 people
+    named ‘Aagaard’, but nothing in this meeting says which one.”</p>
+  </div>
+</div>
+
+<h3>What the meeting mentions is what disambiguates</h3>
+
+<p>
+  Rather than trying to parse a taxonomy or an address out of a free-text title — a guessing game —
+  the scorer looks for <em>each candidate’s own values inside the meeting text</em>. “Does this
+  meeting say ‘Dentist’?” has a definite answer, and it is exactly how a rep disambiguates by hand.
+</p>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th>The meeting says…</th><th>Charlotte Sue Aagaard<br><span class="mono">Behavior Technician · Seattle WA</span></th><th>Jeffrey Lynn Aagaard<br><span class="mono">Dentist · West Des Moines IA</span></th></tr></thead>
+    <tbody>
+      <tr><td><code>Dr Aagaard</code></td><td><span class="pill pill--stop">55%</span> withheld</td><td><span class="pill pill--stop">55%</span> withheld</td></tr>
+      <tr><td><code>Dr Aagaard (Dentist)</code></td><td><span class="pill pill--stop">55%</span> withheld</td><td><span class="pill pill--pass">75%</span> shown</td></tr>
+      <tr><td><code>Dr Aagaard at 4800 Sand Point Way NE</code></td><td><span class="pill pill--pass">75%</span> shown</td><td><span class="pill pill--stop">55%</span> withheld</td></tr>
+      <tr><td><code>Dr Charlotte Aagaard</code></td><td><span class="pill pill--pass">95%</span> shown</td><td><span class="pill pill--stop">40%</span> withheld</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption>Real NPPES records, real scores. One line added to a meeting title moves the answer from “nothing shown” to “exact”.</figcaption>
+</figure>
+
+<h2 class="pb"><span class="num">05</span> The test run that shaped these rules</h2>
+
+<p>
+  Six cases, run one at a time against the live system. Four fixes came out of them, listed after
+  the table.
+</p>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th>Meeting</th><th>Rung</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>Case obs with Dr Aaron Baas</code><br><span class="mono">full name, no email, in the master</span></td>
+        <td class="mono">4</td>
+        <td><span class="pill pill--pass">resolved</span> Aaron P Baas · the full brief: CPT volumes, commercial signals, Lumendi account, contact intelligence, NPPES location check</td>
+      </tr>
+      <tr>
+        <td><code>Quarterly review</code><br><span class="mono">attendee email in the master</span></td>
+        <td class="mono">1</td>
+        <td><span class="pill pill--pass">resolved</span> matched exactly, same brief</td>
+      </tr>
+      <tr>
+        <td><code>Endoscopy sync</code><br><span class="mono">email NOT in the master</span></td>
+        <td class="mono">3→5</td>
+        <td><span class="pill pill--pass">100%</span> gate opened on the attendee’s name → NICHOLAS J SHAHEEN → CMS 2024 + 2023 volumes, cross-confirmed</td>
+      </tr>
+      <tr>
+        <td><code>Meeting with Dr Katie</code><br><span class="mono">first name only</span></td>
+        <td class="mono">4→5</td>
+        <td><span class="pill pill--offer">6 × 60%</span> none shown as the answer; the <strong>last</strong> name asked for</td>
+      </tr>
+      <tr>
+        <td><code>Dr Katie, Counselor at 200 Casentini St Salinas CA</code></td>
+        <td class="mono">5</td>
+        <td><span class="pill pill--pass">100%</span> KATIE AAB (NPI 1205257284) — first name, taxonomy and practice address all mentioned; Katie Diblin Aagaard 80%; three others withheld</td>
+      </tr>
+      <tr>
+        <td><code>Meeting with Dr Aagaard</code><br><span class="mono">last name only</span></td>
+        <td class="mono">5</td>
+        <td><span class="pill pill--stop">9 × 55%</span> nine found, none shown, the full name asked for</td>
+      </tr>
+      <tr>
+        <td><code>… (Dentist)</code> / <code>… (Behavior Technician)</code> / <code>…, Counselor</code></td>
+        <td class="mono">5</td>
+        <td><span class="pill pill--pass">75%</span> Jeffrey Lynn / Charlotte Sue / Katie Diblin Aagaard respectively — one word decided each</td>
+      </tr>
+      <tr>
+        <td><code>Meeting with Dr Charlotte Aagaard</code><br><span class="mono">full name</span></td>
+        <td class="mono">5</td>
+        <td><span class="pill pill--pass">95%</span> NPI 1194350884 · 4800 Sand Point Way NE, Seattle WA 98105 · phone from NPPES · CMS: no Medicare services (a behaviour technician bills none)</td>
+      </tr>
+      <tr>
+        <td><code>Review NPI 1003000126</code></td>
+        <td class="mono">0</td>
+        <td><span class="pill pill--pass">100%</span> Ardalan Enkeshafi · CMS 2024 384 services / $44,804 · 2023 802 / $77,382</td>
+      </tr>
+      <tr>
+        <td><code>Pipeline review</code></td>
+        <td class="mono">3</td>
+        <td><span class="pill pill--stop">gate shut</span> no name read, no lookup run</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</figure>
+
+<h4>What the run changed</h4>
+<ol>
+  <li>
+    <strong>Either half of a name is searchable — on the right field.</strong> NPPES accepts a first
+    name alone (verified: <code>first_name=KATIE&amp;state=CA</code> returns the Salinas counsellor),
+    but “Katie” was being sent as the <em>surname</em> — while the ladder had already worked out
+    that the last name is the missing one.
+  </li>
+  <li>
+    <strong>The gate reads the attendee’s name.</strong> An unmatched address plus “Dr Nicholas
+    Shaheen” on the invite was gate-blocked, so the rep got nothing at the one moment the name
+    path exists for.
+  </li>
+  <li>
+    <strong>Fetch wide, then trim.</strong> Asking the registry for five candidates meant the one
+    the meeting described could be absent from the set: the dentist is not among the first five
+    Aagaards. Twenty are fetched, scored, and the best five offered.
+  </li>
+  <li>
+    <strong>Nothing under 60% is offered — and the silence is explained.</strong> The panel said
+    “the public registries have nobody by ‘Aagaard’”. They had nine. That sends a rep looking for
+    a different spelling instead of adding one word to the title.
+  </li>
+</ol>
+
+<h2><span class="num">06</span> The rules that keep it honest</h2>
+
+<p>
+  Most of the work in this system is not finding data. It is refusing to state more than the data
+  supports — because a brief is read in the two minutes before a meeting, and a rep cannot audit it.
+</p>
+
+<div class="note note--rule">
+  <b>“Could not ask” is never reported as “there is nobody”.</b> A registry that fails to resolve
+  produces an outage notice and a retry, not a finding about a physician. Both NPPES and CMS
+  dropped out during testing; each time the message named the host and said, in as many words,
+  that this is not a finding about this person.
+</div>
+
+<div class="note note--rule">
+  <b>A gap keeps its place in the layout.</b> An outside physician renders through the same
+  sections as a BIS one, and a field no source could fill says <strong>“Data not available”</strong>
+  where it belongs. A section that quietly disappears reads as “nothing to know here” rather than
+  “we could not find out” — Charlotte Aagaard’s brief carries fifteen such rows.
+</div>
+
+<div class="note note--rule">
+  <b>A withdrawn claim takes its consequences with it.</b> When no candidate is confident enough to
+  name, the NPI is dropped <em>and</em> so is everything derived from it. A facility that stands on
+  its own evidence survives; one inferred from the discarded NPI does not.
+</div>
+
+<div class="note note--rule">
+  <b>What is extra is labelled extra.</b> Licence numbers, taxonomy lists, Medicare participation —
+  things the master has no column for — sit in their own block, tagged
+  <span class="pill pill--offer">EXTRA · not in BIS</span>, with the page that proves them. They are
+  shown for context and are <strong>not stored</strong>.
+</div>
+
+<div class="note note--rule">
+  <b>Repetition that means something is explained.</b> CMS lists the same CPT code twice when it was
+  billed in both a facility and an office — commercially different things — so each row is labelled
+  rather than deduplicated into a single misleading number.
+</div>
+
+<div class="note note--warn">
+  <b>Nothing automatic is mailed or written into a meeting.</b> The reminder and the meeting-body
+  injection act only on a decision the <em>rep</em> made. Both run unattended, and putting an
+  automatic guess in front of someone in Outlook gives them no way to tell it was a guess.
+</div>
+
+<h2><span class="num">07</span> What the rep actually gets</h2>
+
+<p>
+  One renderer produces the brief, so the four places cannot disagree with each other. An outside
+  physician gets the same block as one from the master — the same note history, the same
+  “email me this briefing” — with three deliberate differences.
+</p>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th>Where</th><th>When</th><th>What</th></tr></thead>
+    <tbody>
+      <tr><td><strong>The app panel</strong></td><td>the rep opens the meeting</td><td>the brief, the shortlist, the confidence and its reasons, notes, actions</td></tr>
+      <tr><td><strong>An email to themselves</strong></td><td>on the button</td><td>the same brief, re-assembled server-side at send time so the mail and the screen cannot disagree · subject <span class="mono">🔎 Outside BIS: …</span></td></tr>
+      <tr><td><strong>The meeting’s own body</strong></td><td>the next ingest tick</td><td>the brief written into the event in Outlook, once, organiser’s copy only — attendees are never notified</td></tr>
+      <tr><td><strong>The reminder</strong></td><td>30 minutes before</td><td><span class="mono">⏰ In 27 min: Endoscopy case obs — NICHOLAS J SHAHEEN (outside BIS)</span> with the brief and the rep’s notes</td></tr>
+    </tbody>
+  </table>
+  </div>
+</figure>
+
+<h4>Three differences for an outside physician, each with a reason</h4>
+<ul>
+  <li>The brief is <strong>injected, not fetched</strong> — it was assembled from the sources rather than read from a table.</li>
+  <li>The inbox-intelligence section is <strong>skipped</strong> — the Email Sheet is keyed to master physicians.</li>
+  <li>“Schedule a call” is replaced by <strong>the reason it cannot work</strong>: NPPES publishes no email address at all, so a form that needs one is worse than an explanation.</li>
+</ul>
+
+<h2><span class="num">08</span> Where the answer is kept</h2>
+
+<p>
+  Decisions live in their own table, <code>outside_physician_app_meeting</code> — not bolted onto the
+  meeting row and never onto the read-only master. It is <strong>append-only</strong>: every answer
+  is a new row stamped with the rep it was made for and the moment it was made, and the latest row
+  for a meeting is the effective one. A correction keeps its history rather than erasing it.
+</p>
+
+<dl class="kv">
+  <dt>Same shape</dt>
+  <dd>A column for every field the app already shows for a master physician — physician, facility, contact and account fields — so both render identically. What a source could not fill stays <code>NULL</code>, and <code>NULL</code> is what the renderer turns into “Data not available”.</dd>
+  <dt>Who and when</dt>
+  <dd><code>owner_user_id</code>, <code>owner_email</code>, <code>created_at</code>, <code>source</code> (email · name · user · gate · outside), <code>decided_by</code> (user · system), <code>confidence</code>, <code>reason</code>.</dd>
+  <dt>Not stored</dt>
+  <dd>CMS year-wise volumes, Open Payments, publications, licences. They are fetched and rendered; whether to persist them is a separate decision, deliberately not taken as a side effect of this table.</dd>
+  <dt>Before the table exists</dt>
+  <dd>The store falls back to a local SQLite file and says so, so the whole flow is testable before anybody runs the setup SQL.</dd>
+</dl>
+
+<h2><span class="num">09</span> Run it yourself</h2>
+
+<h4>The whole ladder, from the command line — no sign-in needed</h4>
+<pre><code>npm run flow:try -- "Meeting with Dr Aagaard (Dentist)"
+npm run flow:try -- "Meeting with Dr Katie, Counselor at 200 CASENTINI ST SALINAS CA" --brief
+npm run flow:try -- "Review NPI 1003000126" --save
+npm run flow:try -- "Endoscopy sync" --email nshaheen@med.unc.edu --name "Dr Nicholas Shaheen"</code></pre>
+<p>
+  Flags: <code>--city</code> <code>--state</code> <code>--taxonomy</code> <code>--address</code>
+  <code>--zip</code> <code>--phone</code> supply what a meeting would otherwise carry;
+  <code>--save</code> writes the decision; <code>--brief</code> prints the whole brief.
+</p>
+
+<h4>The real UI, on real registry answers, in a browser</h4>
+<pre><code>npm run demo:page          # writes data/demo/
+open data/demo/index.html  # ?open=7 jumps straight to a case</code></pre>
+<p>
+  Nine example meetings, each captioned with the case it demonstrates. Only Graph and the session
+  are mocked; every registry answer on the page came out of the real pipeline.
+</p>
+
+<h4>Configuration</h4>
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th>Setting</th><th>Now</th><th>Effect</th></tr></thead>
+    <tbody>
+      <tr><td class="mono">CMS_SERVICE_YEARS</td><td class="mono">2024,2023</td><td>which Medicare years are read — more years is a config change, not a code change</td></tr>
+      <tr><td class="mono">REMINDER_LEAD_MINUTES</td><td class="mono">30</td><td>how early the reminder lands</td></tr>
+      <tr><td class="mono">INGEST_POLL_SECONDS</td><td class="mono">300</td><td>how soon a new meeting gets its brief and its injection</td></tr>
+      <tr><td class="mono">ANTHROPIC_API_KEY</td><td class="mono">set</td><td>unset disables every AI feature; the registry path keeps working</td></tr>
+      <tr><td class="mono">supabase/outside-physician-setup.sql</td><td class="mono">run in DEV</td><td>creates the decision table; without it decisions go to local SQLite</td></tr>
+    </tbody>
+  </table>
+  </div>
+</figure>
+
+<h2><span class="num">10</span> Open items</h2>
+<ul>
+  <li><strong>Both registries flap on this machine.</strong> NPPES was unreachable for stretches of the test session (<code>ESERVFAIL</code>) and CMS had been the unreliable one earlier. Re-run before concluding anything about a source; <code>npm run enrich:doctor</code> diagnoses the resolver.</li>
+  <li><strong>Sending a brief for real needs the rep’s Microsoft sign-in.</strong> The message itself — subject, first line, the brief intact with its “Data not available” rows, the meeting line, the notes — is asserted in tests.</li>
+  <li><strong>Taxonomy hints are read from the meeting text.</strong> A structured field on the meeting would be stronger; today a rep types “(Dentist)” or the practice address into the title or description.</li>
+  <li><strong>Outside physicians are not in the Email Intelligence Sheet</strong>, which is keyed to master NPIs.</li>
+  <li><strong>The branch is pushed; no pull request is open.</strong> <code>feat-outside-bis-physician-pre-notes</code>, 13 commits ahead of <code>main</code>.</li>
+</ul>
+
+<footer class="foot">
+  Outlook Calendar Intelligence · “Who is this meeting with?” — flow, agent logic and test results.
+  Verified against live NPPES, live CMS and the DEV Supabase project on 1 September 2026.
+  104 tests passing. Source: <span class="mono">docs/physician-match-flow.body.html</span>;
+  PDF regenerated with headless Chrome.
+</footer>
+
+</div>
+</div>
