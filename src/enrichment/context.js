@@ -72,6 +72,9 @@ const LEAD_WORDS = new Set([
   'touch', 'base', 'quick', 'weekly', 'monthly', 'daily', 'onsite', 'on', 'site',
   'brief', 'briefing', 'training', 'case', 'observation', 'evaluation',
   'chat', 'huddle', 'session', 'standup', 'debrief',
+  // "Dr Abernathy consult" is a consult with Dr Abernathy, not a Mr Consult —
+  // the same rule the other meeting words already follow.
+  'consult', 'consultation', 'rounds', 'prep', 'walkthrough', 'shadow',
 ]);
 
 const HONORIFIC = /^(dr|doctor|prof|professor|mr|mrs|ms|miss|sir)[.,]?$/i;
@@ -147,8 +150,16 @@ function titleCase(tokens) {
     .join(' ');
 }
 
-/** One title segment → a person's name, or null when it isn't one. */
-function nameFromSegment(segment, skipTokens) {
+/**
+ * One title segment → a person's name, or null when it isn't one.
+ *
+ * `minWords` is 2 by default: a lone surname cannot identify anybody, and
+ * guessing from one is how a brief ends up about the wrong physician. A caller
+ * that wants the half-name ON PURPOSE — to ask the rep for the missing part —
+ * passes 1, and every other rule here still applies (meeting words, place
+ * words, the organizer, capitalisation).
+ */
+function nameFromSegment(segment, skipTokens, minWords = 2) {
   // Everything after "at"/"@"/"–"/"(" is where, not who.
   const who = String(segment)
     .split(/\s+(?:at|@|re|regarding|about|for|from)\s+/i)[0]
@@ -189,9 +200,10 @@ function nameFromSegment(segment, skipTokens) {
     if (tokens.length === 6) break;
   }
 
-  // Two tokens minimum: a bare surname is not enough to look anybody up, and a
-  // single first name ("call with Steve") would produce confident nonsense.
-  if (tokens.length < 2) return null;
+  // Two tokens minimum by default: a bare surname is not enough to look anybody
+  // up, and a single first name ("call with Steve") would produce confident
+  // nonsense. A caller asking for half a name knows it is half.
+  if (tokens.length < minWords) return null;
   if (!looksLikeAName(tokens, hadHonorific)) return null;
   if (tokens.every((t) => skipTokens.has(t.toLowerCase()))) return null; // the organizer
   return titleCase(tokens);
@@ -215,6 +227,7 @@ function nameFromSegment(segment, skipTokens) {
  * @param {object} [opts]
  * @param {string} [opts.selfEmail]
  * @param {number} [opts.limit=3]
+ * @param {number} [opts.minWords=2]  1 to accept a half name ("Dr Khan")
  * @returns {Array<{name:string, source:'title'}>}
  */
 function namesFromEvent(event, opts = {}) {
@@ -238,7 +251,7 @@ function namesFromEvent(event, opts = {}) {
   const out = [];
   const seen = new Set();
   for (const segment of body.split(/\s*(?:,|&|\+|;|\/|<>| and )\s*/i)) {
-    const name = nameFromSegment(segment, skip);
+    const name = nameFromSegment(segment, skip, opts.minWords || 2);
     if (!name) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;

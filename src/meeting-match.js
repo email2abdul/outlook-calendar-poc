@@ -169,6 +169,96 @@ function namesToLookUp(ev, selfEmail) {
   return out;
 }
 
+/**
+ * The half-names a meeting gave — "Dr Khan", "Dr Geoffrey" — and which part is
+ * missing.
+ *
+ * A single word cannot identify a physician: "Khan" is 30 people in the master
+ * and hundreds in the registry. The old rule dropped these on the floor, which
+ * left the rep with an empty panel and no idea why. They are kept now, so the
+ * notes can carry a tag asking for the part that is missing and the shortlist
+ * can still be offered — with honest, low confidence.
+ *
+ * @returns {Array<{name: string, source: string, missing: 'first'|'last'|'unknown'}>}
+ */
+function partialNamesFrom(ev, selfEmail) {
+  const out = [];
+  const seen = new Set();
+  const skip = context.organizerTokens(ev, selfEmail);
+
+  const consider = (raw, source) => {
+    const words = cleanPersonName(raw).split(/\s+/).filter(Boolean);
+    if (words.length !== 1) return; // two words is a whole name; zero is nothing
+    const word = words[0];
+    if (word.length < 3) return; // "Dr A" identifies nobody at all
+    if (skip.has(word.toLowerCase())) return; // the organizer
+    if (!/^[A-Za-z][A-Za-z'’-]*$/.test(word)) return;
+    const key = word.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push({ name: word, source, missing: missingPartOf(word) });
+  };
+
+  // Read the title through the SAME reader as a full name, asking it to accept
+  // one word. Re-implementing the parse here is how "Dr rounds" became a
+  // physician called Rounds: the meeting words, place words and the organizer
+  // rule all live in namesFromEvent, and they all still apply.
+  for (const p of context.namesFromEvent(ev, { selfEmail, minWords: 1 })) {
+    consider(p.name, 'title');
+  }
+
+  for (const a of context.attendeesToEnrich(ev, { selfEmail })) {
+    if (a.name && !physicians.getByEmail(a.email)) consider(a.name, 'attendee');
+  }
+
+  return out;
+}
+
+/**
+ * Is this single word a surname or a given name — and therefore which half of
+ * the name is missing?
+ *
+ * Answered from the master itself rather than from a name list: "Khan" ends
+ * 30-odd physician names and starts almost none, so it is a surname and the
+ * FIRST name is what the rep needs to add. Ambiguous either way → say "full
+ * name" instead of guessing wrong and asking for the part they already gave.
+ */
+function missingPartOf(word) {
+  if (typeof physicians.getAllPhysicians !== 'function') return 'unknown';
+  const w = word.toLowerCase();
+  let asFirst = 0;
+  let asLast = 0;
+  for (const p of physicians.getAllPhysicians()) {
+    const parts = String(p.name || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (!parts.length) continue;
+    if (parts[0] === w) asFirst++;
+    if (parts[parts.length - 1] === w) asLast++;
+  }
+  if (asLast > asFirst * 2 && asLast > 0) return 'first';
+  if (asFirst > asLast * 2 && asFirst > 0) return 'last';
+  return 'unknown';
+}
+
+/**
+ * Physicians in the master whose SURNAME is this word.
+ *
+ * searchByNameTokens needs two words (a lone token would match half the
+ * directory as a substring), so a half-name needs its own, stricter lookup:
+ * the word has to be the last word of the stored name.
+ */
+function bisBySurname(word) {
+  if (typeof physicians.getAllPhysicians !== 'function') return [];
+  const w = word.toLowerCase();
+  const hits = [];
+  for (const p of physicians.getAllPhysicians()) {
+    const parts = String(p.name || '').toLowerCase().split(/\s+/).filter(Boolean);
+    if (parts.length && parts[parts.length - 1] === w) hits.push(p);
+  }
+  // Every hit is counted and only the shown ones are sliced: "50" when there
+  // are 63 of them is a number the rep would act on wrongly.
+  return hits;
+}
+
 /** The lean physician shape the UI and the briefs need. */
 function toCard(p) {
   return {
@@ -192,7 +282,7 @@ function toCard(p) {
  * @param {string} [opts.chosenNpi]  the physician the rep already confirmed for
  *                                   this meeting (app_activities.chosen_npi)
  * @returns {{
- *   status: 'matched'|'choose'|'needs_external'|'gate_blocked'|'no_name',
+ *   status: 'matched'|'choose'|'needs_external'|'partial_name'|'gate_blocked'|'no_name',
  *   via: 'meeting-npi'|'attendee-email'|'rep-choice'|'bis-name'|null,
  *   npi: string|null,
  *   physicians: object[],
@@ -211,6 +301,9 @@ function matchMeeting(ev, opts = {}) {
     status: 'no_name',
     via: null,
     npi: null, // an NPI the MEETING itself carried, resolved or not
+    // Set when the meeting gave only half a name: { name, missing } — the notes
+    // show a tag asking for the part that is missing.
+    nameIncomplete: null,
     physicians: [],
     groups: [],
     names: [],
@@ -301,7 +394,48 @@ function matchMeeting(ev, opts = {}) {
 
   // ── Rung 4: the name(s), against the master ──────────────────────────────
   const names = namesToLookUp(ev, selfEmail);
+
   if (!names.length) {
+    // Half a name is still something: offer what the master has under that
+    // surname, and say which part the rep needs to add.
+    const partials = partialNamesFrom(ev, selfEmail);
+    if (partials.length) {
+      const first = partials[0];
+      const hits = bisBySurname(first.name);
+
+      if (hits.length) {
+        return {
+          ...base,
+          status: 'choose',
+          nameIncomplete: first,
+          names: partials.map((p) => ({ name: p.name, source: p.source, email: null })),
+          groups: [
+            {
+              name: first.name,
+              source: first.source,
+              candidates: hits.slice(0, MAX_CANDIDATES).map(toCard),
+              total: hits.length,
+              partial: true,
+            },
+          ],
+          reason:
+            `The meeting only gives “${first.name}”, so ${hits.length} physician(s) in the ` +
+            'master could be the one — the rep picks, or completes the name.',
+        };
+      }
+
+      return {
+        ...base,
+        status: 'partial_name',
+        nameIncomplete: first,
+        names: partials.map((p) => ({ name: p.name, source: p.source, email: null })),
+        unresolvedNames: partials.map((p) => p.name),
+        reason:
+          `The meeting only gives “${first.name}” — half a name identifies nobody, and ` +
+          'the master has no physician with that surname.',
+      };
+    }
+
     return {
       ...base,
       names,
@@ -383,6 +517,8 @@ function matchMeeting(ev, opts = {}) {
 
 module.exports = {
   matchMeeting,
+  partialNamesFrom,
+  missingPartOf,
   npiFromEvent,
   isValidNpi,
   titleGate,

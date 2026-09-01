@@ -72,6 +72,13 @@ function lookupHint(ev) {
       : '🔢 Possible physician matches — click to pick';
   }
 
+  if (m && m.status === 'partial_name') {
+    const half = m.nameIncomplete?.name;
+    return half
+      ? `✍️ Only “${half}” on this meeting — click to complete the name`
+      : '✍️ Half a name on this meeting — click to complete it';
+  }
+
   if (m && m.status === 'needs_external') {
     const who = (m.names || []).map((n) => n.name).filter(Boolean);
     return who.length
@@ -106,7 +113,7 @@ function hasIntel(ev) {
   const m = ev.match;
   return (
     matchedPhysiciansOf(ev).length > 0 ||
-    (m && (m.status === 'matched' || m.status === 'choose')) ||
+    (m && (m.status === 'matched' || m.status === 'choose' || m.status === 'partial_name')) ||
     (ev.titleMatches || []).length > 0 ||
     (ev.titlePeople || []).length > 0 ||
     (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
@@ -898,6 +905,9 @@ function appendSearchBox(detail, onPick) {
 function buildChoose(detail, ev) {
   const m = ev.match || {};
 
+  // Half a name reaches this path too ("Dr Khan" → 62 physicians in the master).
+  appendNameTag(detail, m.nameIncomplete, (m.groups || [])[0]?.total);
+
   const pickedWrap = document.createElement('div');
   pickedWrap.className = 'event__detail-picked';
 
@@ -979,6 +989,60 @@ function buildChoose(detail, ev) {
 }
 
 /**
+ * The meeting gave half a name — say which half is missing.
+ *
+ * This is the one problem in the whole ladder that the REP can fix instantly,
+ * and only they can: no registry will turn "Khan" into a person. So the ask is
+ * specific, and it says how many people the half-name matches, because that is
+ * what makes it obvious why the app is asking.
+ */
+function appendNameTag(detail, incomplete, total) {
+  if (!incomplete || !incomplete.name) return;
+  const p = document.createElement('p');
+  p.className = 'muted event__detail-intro';
+  const which =
+    incomplete.missing === 'first'
+      ? 'the first name is missing'
+      : incomplete.missing === 'last'
+        ? 'the last name is missing'
+        : 'the full name is not written out';
+  const many = total > 1 ? ` “${incomplete.name}” alone matches ${total} physicians.` : '';
+  p.textContent =
+    `✍️ Please write the physician's full name on the meeting — ${which}.${many} ` +
+    'With the full name this can be matched exactly.';
+  detail.appendChild(p);
+}
+
+/** One candidate → the list row a rep reads, with its confidence. */
+function candidateRow(c, threshold, onPick) {
+  const li = document.createElement('li');
+  li.className = 'physician-result';
+
+  const name = document.createElement('strong');
+  const pct = Number.isFinite(c.confidence) ? ` — ${c.confidence}%` : '';
+  name.textContent = `${c.inBis ? '🩺 ' : ''}${c.name || `NPI ${c.npi}`}${pct}`;
+
+  const meta = document.createElement('span');
+  meta.className = 'muted';
+  // Primary taxonomy leads: with five people who share a surname, "what kind of
+  // doctor" is what tells the rep which one they are meeting.
+  meta.textContent = [
+    c.primaryTaxonomy || c.specialty,
+    [c.city, c.state].filter(Boolean).join(', '),
+    c.npi ? `NPI ${c.npi}` : null,
+    c.inBis ? 'in your BIS directory' : c.externalSource,
+    Number.isFinite(c.confidence) && c.confidence < threshold ? 'below the confidence bar' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  li.append(name, meta);
+  if (!c.npi) li.classList.add('physician-result--noemail');
+  li.addEventListener('click', () => onPick(c));
+  return li;
+}
+
+/**
  * Nobody on this meeting is in the BIS directory — ask the public sources.
  *
  * This is the only path in the panel that leaves the building, so it runs when
@@ -1016,15 +1080,19 @@ async function buildOutside(detail, ev) {
 
       const groups = (data.groups || []).filter((g) => (g.candidates || []).length);
       const failed = data.failures || [];
+      const threshold = data.threshold || 70;
+      appendNameTag(list, data.nameIncomplete, (groups[0] || {}).total);
       const names = (data.names || []).length
         ? data.names
         : (data.groups || []).map((g) => g.name).filter(Boolean);
       const who = names.length ? `“${names.join('”, “')}”` : 'that name';
 
       if (groups.length) {
-        head.textContent =
-          `Not in the BIS directory. ${(data.sources || []).map((x) => x.name).join(', ')} ` +
-          'answered — pick who this meeting is with:';
+        head.textContent = data.brief
+          ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
+            'anything less certain is listed as an option.'
+          : `Not in the BIS directory. ${(data.sources || []).map((x) => x.name).join(', ')} ` +
+            'answered — pick who this meeting is with:';
       } else if (failed.length) {
         // The claim "nobody by that name" would be about the PERSON, on evidence
         // that is only about the network. Say what actually happened.
@@ -1045,32 +1113,44 @@ async function buildOutside(detail, ev) {
             : `“${g.name}” — one match in the public registries:`;
         list.appendChild(line);
 
-        const ul = document.createElement('ul');
-        ul.className = 'physician-results';
-        for (const c of g.candidates) {
-          const li = document.createElement('li');
-          li.className = 'physician-result';
+        // Above the bar: shown. Below it: an option the rep opens on purpose —
+        // a 55% guess must not sit on screen looking like an answer.
+        const strong = g.candidates.filter((c) => (c.confidence ?? 100) >= threshold);
+        const weak = g.candidates.filter((c) => (c.confidence ?? 100) < threshold);
 
-          const name = document.createElement('strong');
-          // A candidate the master turns out to hold is worth saying out loud.
-          name.textContent = `${c.inBis ? '🩺 ' : ''}${c.name || `NPI ${c.npi}`}`;
-
-          const meta = document.createElement('span');
-          meta.className = 'muted';
-          meta.textContent = [
-            c.specialty,
-            [c.city, c.state].filter(Boolean).join(', '),
-            c.npi ? `NPI ${c.npi}` : null,
-            c.inBis ? 'in your BIS directory' : c.externalSource,
-          ]
-            .filter(Boolean)
-            .join(' · ');
-
-          li.append(name, meta);
-          li.addEventListener('click', () => pickOutside(c, ev, picked));
-          ul.appendChild(li);
+        if (strong.length) {
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of strong) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          list.appendChild(ul);
         }
-        list.appendChild(ul);
+
+        if (weak.length) {
+          const box = document.createElement('details');
+          const sum = document.createElement('summary');
+          sum.textContent = strong.length
+            ? `Other possible matches (${weak.length}) — under ${threshold}% confidence`
+            : `${weak.length} possible match${weak.length > 1 ? 'es' : ''}, none over ${threshold}% ` +
+              '— open to see them';
+          box.appendChild(sum);
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of weak) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          box.appendChild(ul);
+          list.appendChild(box);
+        }
+      }
+
+      // One candidate cleared the bar and stood clear of the rest: its notes are
+      // already assembled, so show them without making the rep click.
+      if (data.brief) {
+        const auto = document.createElement('section');
+        auto.className = 'physician-block';
+        const body = document.createElement('div');
+        body.className = 'physician-analytics';
+        body.innerHTML = data.brief;
+        auto.appendChild(body);
+        list.appendChild(auto);
       }
 
       // Say which source went missing, and offer the retry — silence here reads
@@ -1224,7 +1304,7 @@ function buildDetail(detail, ev) {
 
   // Gate open, name read, and the master has nobody — the public registries are
   // the next rung, and they are asked here rather than on page load.
-  if (m && m.status === 'needs_external') {
+  if (m && (m.status === 'needs_external' || m.status === 'partial_name')) {
     buildOutside(detail, ev);
     return;
   }

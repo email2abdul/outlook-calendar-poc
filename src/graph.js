@@ -755,10 +755,25 @@ function physicianBriefHtml({ physician, analytics, contact, verification }) {
  * @param {object} opts.record        a store record (mirror fields, nulls intact)
  * @param {object} [opts.extra]       { label: value } the source could add
  * @param {object} [opts.cms]         CMS by-provider-and-service result, if any
+ * @param {object} [opts.agreement]   { confirmed, on[], by[] } — do the sources agree?
+ * @param {number} [opts.confidence]  0-100, how sure we are this is the person
+ * @param {string[]} [opts.matchReasons]  why that number
+ * @param {object} [opts.nameIncomplete] { name, missing, total } when the
+ *        meeting gave only half a name — the notes ask for the rest
  * @param {string} [opts.sourceName]  e.g. "NPPES NPI Registry"
  * @param {string} [opts.sourceUrl]   the page that proves it
  */
-function outsideBriefHtml({ record, extra = {}, cms = null, sourceName, sourceUrl } = {}) {
+function outsideBriefHtml({
+  record,
+  extra = {},
+  cms = null,
+  agreement = null,
+  confidence = null,
+  matchReasons = [],
+  nameIncomplete = null,
+  sourceName,
+  sourceUrl,
+} = {}) {
   if (!record) return '';
   const r = record;
   const td = 'style="padding:2px 12px 2px 0;vertical-align:top"';
@@ -783,6 +798,49 @@ function outsideBriefHtml({ record, extra = {}, cms = null, sourceName, sourceUr
       `${link}. Anything BIS would normally supply and this source could not is marked ` +
       '"Data not available".</p>'
   );
+
+  // ── How sure are we that this is the right person? ────────────────────────
+  // A brief with no number invites the rep to treat a 55% guess exactly like a
+  // 95% certainty. The number and its reasons travel together, so it can be
+  // argued with rather than believed.
+  if (Number.isFinite(confidence)) {
+    const strong = confidence >= 70;
+    const [c, bg] = strong ? ['#0b6b3a', '#eefaf3'] : ['#8a5700', '#fff8e6'];
+    const why = (matchReasons || []).length ? ` — ${escapeHtml(matchReasons.join(', '))}` : '';
+    const confirmedBy =
+      agreement?.confirmed && (agreement.by || []).length > 1
+        ? ` Confirmed by ${escapeHtml(agreement.by.join(' and '))} (${escapeHtml(
+            (agreement.on || []).join(', ')
+          )} agree).`
+        : '';
+    out.push(
+      `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid ${c};background:${bg};` +
+        `color:${c}"><b>${strong ? '✅' : '⚠️'} Identity confidence: ${confidence}%</b>${why}.` +
+        confirmedBy +
+        (strong ? '' : ' Treat as a suggestion and confirm before acting on it.') +
+        '</p>'
+    );
+  }
+
+  // ── The meeting only gave half a name ────────────────────────────────────
+  // Nothing downstream can fix this, and the rep can — in five seconds, in the
+  // invite. So the ask is specific about which half is missing.
+  if (nameIncomplete?.name) {
+    const which =
+      nameIncomplete.missing === 'first'
+        ? 'the <b>first name</b> is missing'
+        : nameIncomplete.missing === 'last'
+          ? 'the <b>last name</b> is missing'
+          : 'the full name is not written out';
+    const howMany = Number.isFinite(nameIncomplete.total) && nameIncomplete.total > 1
+      ? ` “${escapeHtml(nameIncomplete.name)}” alone matches ${nameIncomplete.total} physicians.`
+      : '';
+    out.push(
+      '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #7a2048;background:#fdf0f4;' +
+        `color:#7a2048"><b>✍️ Please write the physician's full name on the meeting</b> — ` +
+        `${which}.${howMany} With the full name this brief can be matched exactly.</p>`
+    );
+  }
 
   // NPPES already returns a full "street, city, ST zip" string, so appending the
   // parts again produced "1 Main St, Houston, TX 77002, Houston, TX, 77002".

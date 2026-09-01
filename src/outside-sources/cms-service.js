@@ -125,6 +125,7 @@ function toProvider(r, year) {
         .join(' ') || null,
     // The dataset's own words for what this provider is ("Gastroenterology").
     specialty: r.Rndrng_Prvdr_Type || null,
+    primaryTaxonomy: r.Rndrng_Prvdr_Type || null,
     credential: r.Rndrng_Prvdr_Crdntls || null,
     facilityAddress: [street, r.Rndrng_Prvdr_City, r.Rndrng_Prvdr_State_Abrvtn, r.Rndrng_Prvdr_Zip5]
       .filter(Boolean)

@@ -18,6 +18,7 @@ const meetingContext = require('../enrichment/context');
 const meetingMatch = require('../meeting-match');
 const outsideStore = require('../outside-physician-store');
 const outsideSources = require('../outside-sources');
+const outsideScore = require('../outside-sources/score');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -633,6 +634,31 @@ async function outsideProfile(npi, preferredSourceId) {
 
   if (!identity && !cms) return null;
 
+  // Do the two sources describe the SAME person? Two independent registries
+  // agreeing on a name and a place is the strongest confirmation available
+  // without asking the physician, and it is what lifts a candidate over the bar.
+  const same = (a, b) =>
+    a && b && String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+  const agreedOn = [];
+  if (identity && cms) {
+    const lastOf = (n) => outsideScore.splitFullName(n).last;
+    if (same(lastOf(identity.name), lastOf(cms.name))) agreedOn.push('surname');
+    if (same(identity.city, cms.city)) agreedOn.push('city');
+    if (same(identity.state, cms.state)) agreedOn.push('state');
+  }
+  const agreement = {
+    // The surname has to be one of them: agreeing only on a state is two
+    // strangers in the same place.
+    confirmed: agreedOn.includes('surname') && agreedOn.length >= 2,
+    on: agreedOn,
+    // Display names, not ids: "Confirmed by NPPES NPI Registry and CMS Medicare
+    // …" is a sentence a rep can act on; "nppes and cms-service" is not.
+    by: [
+      identity ? registry?.name || registryId : null,
+      cms && (cms.years || []).length ? cmsSource?.name || 'CMS' : null,
+    ].filter(Boolean),
+  };
+
   // NPPES leads; CMS fills the blanks it left.
   const record = {
     ...(cms || {}),
@@ -652,6 +678,7 @@ async function outsideProfile(npi, preferredSourceId) {
     record,
     extra: { ...(cms?.extra || {}), ...(identity?.extra || {}) },
     cms,
+    agreement,
     sourceName: identity ? registry.name : cmsSource.name,
     sourceUrl: identity?.externalSourceUrl || registry?.url || cmsSource?.url || null,
     failures,
@@ -696,14 +723,16 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
     const organizer = organizerEmail(req);
     const match = meetingMatch.matchMeeting(event, { selfEmail: organizer });
 
-    // Only a meeting the ladder could not resolve inside BIS has anything to
-    // look up outside it.
-    if (match.status !== 'needs_external') {
+    // A meeting the ladder could not resolve inside BIS — either because nobody
+    // matched, or because it only gave half a name — has something to look up
+    // outside it.
+    if (match.status !== 'needs_external' && match.status !== 'partial_name') {
       return res.json({
         eventId,
         status: match.status,
         searched: false,
         reason: match.reason,
+        nameIncomplete: match.nameIncomplete || null,
         groups: [],
         failures: [],
         sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
@@ -746,12 +775,18 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
           groups: [{ name: `NPI ${match.npi}`, source: 'meeting', total: 1, candidates: [candidate] }],
           // One candidate and no ambiguity: the notes are shown straight away,
           // exactly as they will look once the rep confirms.
+          // An NPI the rep wrote down is not a guess, so this is 100 — and the
+          // reason says why, rather than leaving a bare number on screen.
+          confidence: 100,
           brief: bis
             ? null
             : graph.outsideBriefHtml({
                 record: profile.record,
                 extra: profile.extra,
                 cms: profile.cms,
+                agreement: profile.agreement,
+                confidence: 100,
+                matchReasons: ['the NPI was written on the meeting itself'],
                 sourceName: profile.sourceName,
                 sourceUrl: profile.sourceUrl,
               }),
@@ -778,27 +813,67 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
           : { ...c, inBis: false };
       });
 
-      groups.push({ name, source: 'title', total: candidates.length, candidates });
+      // Score every candidate against what the MEETING said, so the rep gets a
+      // number they can act on instead of a list. Below the bar a candidate is
+      // an option they open on purpose; at or above it, and clearly ahead of
+      // the runner-up, its data is put in front of them.
+      const { ranked, primary, ambiguous, cleared } = outsideScore.rankCandidates(
+        candidates,
+        { firstName, lastName, city: hints.city, state: hints.state },
+        {}
+      );
+
+      groups.push({
+        name,
+        source: match.nameIncomplete ? match.nameIncomplete.source : 'title',
+        total: ranked.length,
+        candidates: ranked,
+        cleared,
+        ambiguous,
+        primaryNpi: primary?.npi || null,
+        // Half a name cannot score a first-name match, which is exactly why so
+        // little clears the bar here — the tag asks the rep to complete it.
+        partial: Boolean(match.nameIncomplete),
+      });
     }
 
-    // Exactly one candidate across every name: there is nobody to choose
-    // between, so go on to CMS with that NPI and hand back the notes now —
-    // "single match" should not still cost the rep a click to see anything.
-    const only =
-      groups.length === 1 && groups[0].candidates.length === 1 ? groups[0].candidates[0] : null;
+    // One candidate stands out (or is simply the only one): go on to CMS with
+    // that NPI and hand back the notes now — clearing the bar should not still
+    // cost the rep a click to see anything.
+    const chosen = groups.find((g) => g.primaryNpi);
     let brief = null;
-    if (only && only.npi && !only.inBis) {
-      const profile = await outsideProfile(only.npi, only.externalSource);
-      failures.push(...(profile?.failures || []));
-      if (profile) {
-        brief = graph.outsideBriefHtml({
-          record: profile.record,
-          extra: profile.extra,
-          cms: profile.cms,
-          sourceName: profile.sourceName,
-          sourceUrl: profile.sourceUrl,
-        });
-        groups[0].candidates[0] = { ...only, ...profile.record, extra: profile.extra };
+    let confidence = null;
+    if (chosen) {
+      const best = chosen.candidates.find((c) => c.npi === chosen.primaryNpi);
+      confidence = best.confidence;
+      if (!best.inBis) {
+        const profile = await outsideProfile(best.npi, best.externalSource);
+        failures.push(...(profile?.failures || []));
+        if (profile) {
+          // Two sources agreeing is worth points, and the rep sees why.
+          const rescored = outsideScore.scoreCandidate(
+            best,
+            { firstName: best.firstName, lastName: best.lastName, city: best.city, state: best.state },
+            { total: chosen.total, confirmed: profile.agreement.confirmed }
+          );
+          confidence = Math.max(best.confidence, rescored.confidence);
+
+          brief = graph.outsideBriefHtml({
+            record: profile.record,
+            extra: profile.extra,
+            cms: profile.cms,
+            agreement: profile.agreement,
+            confidence,
+            matchReasons: best.matchReasons,
+            nameIncomplete: match.nameIncomplete
+              ? { ...match.nameIncomplete, total: chosen.total }
+              : null,
+            sourceName: profile.sourceName,
+            sourceUrl: profile.sourceUrl,
+          });
+          const at = chosen.candidates.findIndex((c) => c.npi === best.npi);
+          chosen.candidates[at] = { ...best, ...profile.record, extra: profile.extra, confidence };
+        }
       }
     }
 
@@ -810,9 +885,14 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       // The names that were looked up — needed by the UI even when a source was
       // unreachable and there is no candidate to carry them.
       names: match.unresolvedNames,
+      // Set when the meeting gave half a name: the UI and the notes both show a
+      // tag asking for the part that is missing.
+      nameIncomplete: match.nameIncomplete || null,
       hints: { city: hints.city || null, state: hints.state || null, facility: hints.facilityName || null },
       groups,
       brief,
+      confidence,
+      threshold: outsideScore.CONFIDENCE_SHOW,
       // A source that could not be reached is NOT a source that said "nobody" —
       // the UI has to be able to say which happened.
       failures,
@@ -962,6 +1042,10 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
           extra: outside.extra || {},
           // The CPT lines are rendered, never stored — see the store's comment.
           cms: profile?.cms || null,
+          agreement: profile?.agreement || null,
+          // The rep confirmed this person by hand; nothing is being estimated.
+          confidence: 100,
+          matchReasons: ['confirmed by you'],
           sourceName: profile?.sourceName || outsideSources.byId(sourceId)?.name || sourceId,
           sourceUrl:
             profile?.sourceUrl || outside.externalSourceUrl || outsideSources.byId(sourceId)?.url || null,

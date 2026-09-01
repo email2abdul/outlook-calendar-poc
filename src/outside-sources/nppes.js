@@ -37,7 +37,15 @@ function toCandidate(p) {
     // ── mirror of what Supabase would hold ──────────────────────────────────
     npi: p.npi || null,
     name: p.name || null,
+    // Not store columns — they are what the scorer compares against, and what
+    // lets the UI ask for "the missing first name" by name.
+    firstName: p.firstName || null,
+    lastName: p.lastName || null,
     specialty: p.specialty || null,
+    // The registry's PRIMARY taxonomy, promoted to its own field: with five
+    // same-named candidates on screen it is the line that tells a rep which one
+    // is the gastroenterologist they are meeting.
+    primaryTaxonomy: p.specialty || null,
     email: null, // NPPES has no email field at all
     phone: p.phone || null,
     esdProcedure: null, // unknown, NOT false
