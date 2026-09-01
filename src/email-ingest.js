@@ -145,7 +145,8 @@ async function syncActivities(token, user) {
     // silence. Look the attendees (or the names in the title) up outside the
     // master instead. Not gated on `existed`: meetings that predate this
     // feature deserve it too, and briefUnknownAttendees has its own
-    // `enrich:<eventId>` key, so it still runs exactly once per meeting.
+    // `enrich:<series-or-event>` key, so it still runs exactly once per
+    // meeting — and exactly once per recurring SERIES, not once per occurrence.
     if (!physicians.length) {
       try {
         const recovered = await briefUnknownAttendees(token, user, ev);
@@ -318,7 +319,12 @@ async function briefUnknownAttendees(token, user, ev) {
         .map((p) => ({ email: null, name: p.name, via: 'meeting title' }));
   if (!subjects.length) return [];
 
-  const key = `enrich:${ev.id}`;
+  // Keyed on the SERIES, not the occurrence: calendarView expands a recurring
+  // meeting into one event per occurrence, so `enrich:<occurrenceId>` bought a
+  // full lookup ~29 times over the 30-day window for one weekly meeting with
+  // one person. Falls back to the event id for a non-recurring meeting, so
+  // one-off meetings — and keys already written — behave exactly as before.
+  const key = `enrich:${context.seriesKey(ev, subjects)}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return [];
   await tokenStore.markReminderSent(user.homeAccountId, key);
 
