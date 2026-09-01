@@ -32,11 +32,20 @@ const sources = require('../src/outside-sources');
 
 test('a registered source is listed with the page a rep can open', () => {
   const list = sources.list();
-  assert.strictEqual(list.length, 1);
-  assert.strictEqual(list[0].id, 'nppes');
-  assert.match(list[0].url, /^https:\/\//);
+  assert.ok(list.some((s) => s.id === 'nppes'));
+  for (const s of list) assert.match(s.url, /^https:\/\//, `${s.id} needs a human page`);
   assert.strictEqual(sources.byId('nppes').name, 'NPPES NPI Registry');
   assert.strictEqual(sources.byId('nope'), null);
+});
+
+test('only the sources that can identify a person by NAME are asked for one', () => {
+  // CMS's service table has one row per provider PER CODE, so a name query
+  // there returns hundreds of rows for one person and dozens of strangers. It
+  // answers by NPI — which is why it is registered but not name-searchable.
+  const searchable = sources.nameSearchable().map((s) => s.id);
+  assert.ok(searchable.includes('nppes'));
+  assert.ok(!searchable.includes('cms-service'), 'CMS must not be name-searched');
+  assert.ok(sources.byId('cms-service'), 'but it is still reachable by id, for the NPI step');
 });
 
 test("each candidate carries which source answered, and where to verify it", async () => {

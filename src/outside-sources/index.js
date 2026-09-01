@@ -36,12 +36,25 @@
  */
 
 const nppes = require('./nppes');
+const cmsService = require('./cms-service');
 
-const SOURCES = [nppes];
+const SOURCES = [nppes, cmsService];
 
 /** The sources that are usable right now (a key may be missing, a host down). */
 function list() {
   return SOURCES.filter((s) => s.enabled !== false);
+}
+
+/**
+ * The sources that can turn a NAME into a person.
+ *
+ * Not every source can: CMS's service table has one row per provider PER CODE,
+ * so a name query returns hundreds of rows for one person and dozens of
+ * same-named strangers. It answers by NPI, which is why NPPES runs first and
+ * CMS is asked afterwards with the NPI it produced.
+ */
+function nameSearchable() {
+  return list().filter((s) => s.nameSearchable !== false && typeof s.searchByName === 'function');
 }
 
 function byId(id) {
@@ -58,7 +71,7 @@ function byId(id) {
  *   candidates carry `externalSource`, newest source order preserved
  */
 async function searchByName(query, { limit = 5 } = {}) {
-  const sources = list();
+  const sources = nameSearchable();
   const settled = await Promise.allSettled(
     sources.map((s) => s.searchByName({ ...query, limit }))
   );
@@ -81,4 +94,4 @@ async function searchByName(query, { limit = 5 } = {}) {
   return { candidates, failures };
 }
 
-module.exports = { list, byId, searchByName, SOURCES };
+module.exports = { list, nameSearchable, byId, searchByName, SOURCES };

@@ -592,6 +592,73 @@ router.get('/meetings/match', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * Everything the public sources can say about one NPI, assembled once.
+ *
+ * Order matters and is the rep's own: identity from NPPES (it is the registry
+ * that owns names and addresses), then CMS by that NPI for what it alone has —
+ * the CPT lines, year by year. CMS also fills gaps NPPES leaves (its provider
+ * type when the registry lists no specialty, an address when the registry has
+ * none), never overwrites what NPPES stated.
+ *
+ * CPT volumes are NOT folded into the stored record: they are a list, they
+ * belong to the notes, and whether to persist them is a separate decision.
+ *
+ * @param {string} npi
+ * @param {string} [preferredSourceId] the source the rep picked from
+ * @returns {Promise<{record, extra, cms, sourceName, sourceUrl, failures}|null>}
+ */
+async function outsideProfile(npi, preferredSourceId) {
+  const failures = [];
+
+  const registryId = preferredSourceId && preferredSourceId !== 'cms-service' ? preferredSourceId : 'nppes';
+  const registry = outsideSources.byId(registryId);
+  let identity = null;
+  if (registry?.getByNpi) {
+    try {
+      identity = await registry.getByNpi(npi);
+    } catch (err) {
+      failures.push({ source: registry.id, name: registry.name, error: err.message });
+    }
+  }
+
+  const cmsSource = outsideSources.byId('cms-service');
+  let cms = null;
+  if (cmsSource?.getByNpi) {
+    try {
+      cms = await cmsSource.getByNpi(npi);
+    } catch (err) {
+      failures.push({ source: cmsSource.id, name: cmsSource.name, error: err.message });
+    }
+  }
+
+  if (!identity && !cms) return null;
+
+  // NPPES leads; CMS fills the blanks it left.
+  const record = {
+    ...(cms || {}),
+    ...Object.fromEntries(Object.entries(identity || {}).filter(([, v]) => v !== null && v !== undefined)),
+    npi: String(npi),
+    inBis: false,
+  };
+  delete record.extra;
+  delete record.years;
+  delete record.unreachableYears;
+  delete record.latestYear;
+  delete record.ruralUrban;
+  delete record.medicareParticipating;
+  delete record.credential;
+
+  return {
+    record,
+    extra: { ...(cms?.extra || {}), ...(identity?.extra || {}) },
+    cms,
+    sourceName: identity ? registry.name : cmsSource.name,
+    sourceUrl: identity?.externalSourceUrl || registry?.url || cmsSource?.url || null,
+    failures,
+  };
+}
+
+/**
  * GET /api/meetings/outside?eventId=… — who this meeting could be with, from the
  * public sources, when the BIS master has nobody.
  *
@@ -654,6 +721,46 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
 
     const groups = [];
     const failures = [];
+
+    // An NPI written on the meeting identifies the physician outright — there is
+    // no name to search and nothing to disambiguate, so the sources are asked by
+    // that NPI and the notes come back ready.
+    if (match.npi) {
+      const profile = await outsideProfile(match.npi);
+      failures.push(...(profile?.failures || []));
+
+      if (profile) {
+        const bis = physicians.getByNpi(match.npi);
+        const candidate = bis
+          ? { ...outsideStore.mirrorFromPhysician(bis), inBis: true, externalSource: 'nppes' }
+          : { ...profile.record, extra: profile.extra, externalSource: profile.record.externalSource || 'nppes' };
+
+        return res.json({
+          eventId,
+          status: match.status,
+          searched: true,
+          via: 'meeting-npi',
+          npi: match.npi,
+          reason: match.reason,
+          names: [],
+          groups: [{ name: `NPI ${match.npi}`, source: 'meeting', total: 1, candidates: [candidate] }],
+          // One candidate and no ambiguity: the notes are shown straight away,
+          // exactly as they will look once the rep confirms.
+          brief: bis
+            ? null
+            : graph.outsideBriefHtml({
+                record: profile.record,
+                extra: profile.extra,
+                cms: profile.cms,
+                sourceName: profile.sourceName,
+                sourceUrl: profile.sourceUrl,
+              }),
+          failures,
+          sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+        });
+      }
+    }
+
     for (const name of match.unresolvedNames) {
       const { firstName, lastName } = enrichment.splitName(name);
       const found = await outsideSources.searchByName(
@@ -674,6 +781,27 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       groups.push({ name, source: 'title', total: candidates.length, candidates });
     }
 
+    // Exactly one candidate across every name: there is nobody to choose
+    // between, so go on to CMS with that NPI and hand back the notes now —
+    // "single match" should not still cost the rep a click to see anything.
+    const only =
+      groups.length === 1 && groups[0].candidates.length === 1 ? groups[0].candidates[0] : null;
+    let brief = null;
+    if (only && only.npi && !only.inBis) {
+      const profile = await outsideProfile(only.npi, only.externalSource);
+      failures.push(...(profile?.failures || []));
+      if (profile) {
+        brief = graph.outsideBriefHtml({
+          record: profile.record,
+          extra: profile.extra,
+          cms: profile.cms,
+          sourceName: profile.sourceName,
+          sourceUrl: profile.sourceUrl,
+        });
+        groups[0].candidates[0] = { ...only, ...profile.record, extra: profile.extra };
+      }
+    }
+
     res.json({
       eventId,
       status: match.status,
@@ -684,6 +812,7 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       names: match.unresolvedNames,
       hints: { city: hints.city || null, state: hints.state || null, facility: hints.facilityName || null },
       groups,
+      brief,
       // A source that could not be reached is NOT a source that said "nobody" —
       // the UI has to be able to say which happened.
       failures,
@@ -736,6 +865,7 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
     // browser is not allowed to decide what a physician's details are.
     const sourceId = typeof req.body?.source === 'string' ? req.body.source.trim() : '';
     let outside = null;
+    let profile = null;
     if (npi && !physician) {
       const src = sourceId ? outsideSources.byId(sourceId) : null;
       if (!src) {
@@ -746,7 +876,10 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
         });
       }
       try {
-        outside = src.getByNpi ? await src.getByNpi(npi) : null;
+        // Identity from the source the rep picked from, plus CMS by the same
+        // NPI — the same assembly the outside endpoint uses, so the notes the
+        // rep confirmed are the notes they were shown.
+        profile = await outsideProfile(npi, src.id);
       } catch (err) {
         return res.status(502).json({
           error: 'source_unreachable',
@@ -754,12 +887,13 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
           detail: err.message,
         });
       }
-      if (!outside) {
+      if (!profile) {
         return res.status(400).json({
           error: 'bad_request',
           message: `${src.name} has no provider with NPI ${npi}.`,
         });
       }
+      outside = { ...profile.record, extra: profile.extra };
     }
 
     const token = await auth.getAccessToken(req);
@@ -826,8 +960,11 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       ? graph.outsideBriefHtml({
           record,
           extra: outside.extra || {},
-          sourceName: outsideSources.byId(sourceId)?.name || sourceId,
-          sourceUrl: outside.externalSourceUrl || outsideSources.byId(sourceId)?.url || null,
+          // The CPT lines are rendered, never stored — see the store's comment.
+          cms: profile?.cms || null,
+          sourceName: profile?.sourceName || outsideSources.byId(sourceId)?.name || sourceId,
+          sourceUrl:
+            profile?.sourceUrl || outside.externalSourceUrl || outsideSources.byId(sourceId)?.url || null,
         })
       : null;
 

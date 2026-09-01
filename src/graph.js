@@ -754,10 +754,11 @@ function physicianBriefHtml({ physician, analytics, contact, verification }) {
  * @param {object} opts
  * @param {object} opts.record        a store record (mirror fields, nulls intact)
  * @param {object} [opts.extra]       { label: value } the source could add
+ * @param {object} [opts.cms]         CMS by-provider-and-service result, if any
  * @param {string} [opts.sourceName]  e.g. "NPPES NPI Registry"
  * @param {string} [opts.sourceUrl]   the page that proves it
  */
-function outsideBriefHtml({ record, extra = {}, sourceName, sourceUrl } = {}) {
+function outsideBriefHtml({ record, extra = {}, cms = null, sourceName, sourceUrl } = {}) {
   if (!record) return '';
   const r = record;
   const td = 'style="padding:2px 12px 2px 0;vertical-align:top"';
@@ -821,22 +822,84 @@ function outsideBriefHtml({ record, extra = {}, sourceName, sourceUrl } = {}) {
     ])
   );
 
-  // Volumes and everything derived from them (families, commercial signals,
-  // product fit, talking points) come from bis_procedure_volumes, which has no
-  // row for this physician. Say so once, in the section's own place, rather
-  // than dropping four sections and leaving the brief looking complete.
-  out.push(
-    '<p class="brief-h"><b>Procedure intelligence</b></p>',
-    table([
-      ['CPT volumes', null],
-      ['Procedure families', null],
-      ['Commercial signals', null],
-      ['Best-fit product', null],
-    ]),
-    '<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">' +
-      'Volume-based sections need this physician in <code>bis_procedure_volumes</code>. ' +
-      'Public claims data (CMS, by year) is not connected yet.</p>'
-  );
+  // ── Procedure intelligence ────────────────────────────────────────────────
+  // bis_procedure_volumes has no row for this physician, but Medicare claims do
+  // — by year, per code. This is the section that turns a name into a practice,
+  // so when CMS answered it is rendered in full; when it did not, the section
+  // still exists and says why.
+  out.push('<p class="brief-h"><b>Procedure intelligence</b></p>');
+
+  const cmsYears = (cms?.years || []).filter((y) => (y.lines || []).length);
+  if (cmsYears.length) {
+    const money = (n) =>
+      n === null || n === undefined ? NA : `$${Math.round(n).toLocaleString('en-US')}`;
+    const count = (n) => (n === null || n === undefined ? NA : n.toLocaleString('en-US'));
+
+    for (const y of cmsYears) {
+      out.push(
+        `<p style="margin:8px 0 4px"><b>${escapeHtml(y.year)}</b> — ` +
+          `${count(y.services)} services · ${count(y.beneficiaries)} beneficiaries · ` +
+          `${money(y.allowed)} Medicare allowed · ${count(y.codes)} distinct codes</p>`,
+        '<table><tr>' +
+          ['CPT/HCPCS', 'Procedure', 'Services', 'Patients', 'Avg allowed']
+            .map(
+              (h, i) =>
+                // The number columns are narrow; without this "Avg allowed"
+                // wraps to "Avg allowe / d" on a phone-width panel.
+                `<td style="padding:2px 12px 2px 0;vertical-align:top` +
+                `${i === 1 ? '' : ';white-space:nowrap'}"><b>${h}</b></td>`
+            )
+            .join('') +
+          '</tr>' +
+          y.lines
+            .map(
+              (l) =>
+                `<tr><td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${cell(l.hcpcs)}</td>` +
+                `<td ${td}>${cell(l.description)}</td>` +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.services)}</td>` +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.beneficiaries)}</td>` +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${money(l.avgAllowed)}</td></tr>`
+            )
+            .join('') +
+          '</table>' +
+          (y.truncated
+            ? `<p style="margin:2px 0 8px;color:#5a6672;font-size:12px">Top ${y.lines.length} of ` +
+              `${count(y.codes)} codes by volume.</p>`
+            : '')
+      );
+    }
+
+    const cmsLink = cms.externalSourceUrl
+      ? `<a href="${escapeHtml(cms.externalSourceUrl)}">CMS Medicare Physician & Other Practitioners</a>`
+      : 'CMS Medicare Physician &amp; Other Practitioners';
+    out.push(
+      `<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">Source: ${cmsLink}, ` +
+        'by provider and service. Medicare fee-for-service claims only — not all payers, ' +
+        `so these are a floor, not this physician's total volume.</p>`
+    );
+  } else {
+    // Distinguish "CMS has no claims for this NPI" from "CMS could not be
+    // reached": the first is a fact about the physician, the second is not.
+    const blind = (cms?.unreachableYears || []).length ? cms.unreachableYears.join(', ') : null;
+    out.push(
+      table([
+        ['CPT volumes', null],
+        ['Procedure families', null],
+        ['Commercial signals', null],
+        ['Best-fit product', null],
+      ]),
+      '<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">' +
+        (blind
+          ? `📡 CMS claims data could not be read for ${escapeHtml(blind)} — this is a source ` +
+            'outage, not a finding about this physician. Retry from the meeting.'
+          : cms
+            ? 'CMS Medicare claims list no services for this NPI in the years read. ' +
+              'Medicare fee-for-service only, so a private-payer practice can be absent.'
+            : 'Volume-based sections need this physician in <code>bis_procedure_volumes</code>, ' +
+              'or Medicare claims under their NPI.') +
+        '</p>'
+    );
+  }
 
   out.push(
     '<p class="brief-h"><b>Account</b></p>',

@@ -9,15 +9,18 @@ const context = require('./enrichment/context');
  * The order is deliberate and gets more expensive with every rung, so the
  * cheapest answer always wins:
  *
+ *   0. an NPI written on the MEETING itself               free, 0 ms
+ *      — the strongest identifier there is, so it is asked first
  *   1. an ATTENDEE's exact email in the BIS master        free, 0 ms
  *   2. the physician the REP already picked for this       free, 0 ms
- *      meeting (app_activities.chosen_npi)
+ *      meeting (the stored decision)
  *   3. the title says "Dr"/"Doctor" — the gate            free, 0 ms
  *   4. that name in the BIS master (in-memory directory)  free, 0 ms
  *      · exactly one  → resolved
  *      · several      → the rep picks (status `choose`)
- *   5. nothing in BIS → `needs_external`, which is where the enrichment agent
- *      (NPPES + CMS) takes over — that step is NOT run here.
+ *   5. nothing in BIS → `needs_external`, which is where the public sources
+ *      (NPPES by name, then CMS by the NPI it produces) take over — those are
+ *      NOT run here.
  *
  * Two rules this module inherits from enrichment/context.js and never breaks:
  * the ORGANIZER (the rep who booked the meeting) is never matched, and the
@@ -52,6 +55,58 @@ const GATE_RE = /\b(dr|doctor)s?\b\.?/i;
 /** Words that are a qualification, not part of a person's name. */
 const CREDENTIAL = /^(md|do|dds|dmd|mbbs|phd|mph|msc|ms|rn|np|pa|pa-c|facs|facg|fasge|facp|faga|jr|sr|ii|iii|iv)$/i;
 const HONORIFIC = /^(dr|doctor|prof|professor|mr|mrs|ms|miss|sir)$/i;
+
+/**
+ * An NPI is ten digits with a Luhn check digit, computed over the number
+ * prefixed by 80840 (the NPPES issuer prefix). Checking it matters: a meeting
+ * body is full of ten-digit numbers — phone numbers, order numbers, Teams
+ * conference ids — and treating one of those as a physician id would brief a
+ * stranger with total confidence.
+ */
+function isValidNpi(value) {
+  const digits = String(value || '').replace(/\D/g, '');
+  if (digits.length !== 10) return false;
+
+  const body = `80840${digits.slice(0, 9)}`;
+  let sum = 0;
+  // Double every second digit from the right of the (prefix + first 9) string.
+  for (let i = body.length - 1, alt = true; i >= 0; i--, alt = !alt) {
+    let n = Number(body[i]);
+    if (alt) {
+      n *= 2;
+      if (n > 9) n -= 9;
+    }
+    sum += n;
+  }
+  const check = (10 - (sum % 10)) % 10;
+  return check === Number(digits[9]);
+}
+
+/**
+ * An NPI written on the meeting — in the title, the body, or the location.
+ *
+ * A rep who pastes "NPI 1467521757" into an invite has named the physician
+ * exactly, with no ambiguity to resolve and nothing to guess. That is why this
+ * runs before the email match and before the "Dr" gate: it is the one identifier
+ * that cannot mean two people.
+ *
+ * "NPI 1234567890" is preferred over a bare ten-digit run, so a labelled id
+ * beats a phone number that happens to pass the checksum.
+ */
+function npiFromEvent(ev) {
+  const text = [ev?.title, ev?.description, ev?.location].filter(Boolean).join(' \n ');
+  if (!text) return null;
+
+  const labelled = /\bNPIs?\b[^0-9]{0,12}(\d[\d\s-]{8,}\d)/gi;
+  for (const m of text.matchAll(labelled)) {
+    const digits = m[1].replace(/\D/g, '');
+    if (isValidNpi(digits)) return digits;
+  }
+  for (const m of text.matchAll(/\b(\d{10})\b/g)) {
+    if (isValidNpi(m[1])) return m[1];
+  }
+  return null;
+}
 
 /**
  * Does the title open the name path?
@@ -138,7 +193,8 @@ function toCard(p) {
  *                                   this meeting (app_activities.chosen_npi)
  * @returns {{
  *   status: 'matched'|'choose'|'needs_external'|'gate_blocked'|'no_name',
- *   via: 'attendee-email'|'bis-name'|null,
+ *   via: 'meeting-npi'|'attendee-email'|'rep-choice'|'bis-name'|null,
+ *   npi: string|null,
  *   physicians: object[],
  *   groups: Array<{name: string, source: string, candidates: object[], total: number}>,
  *   names: object[],
@@ -154,6 +210,7 @@ function matchMeeting(ev, opts = {}) {
   const base = {
     status: 'no_name',
     via: null,
+    npi: null, // an NPI the MEETING itself carried, resolved or not
     physicians: [],
     groups: [],
     names: [],
@@ -161,6 +218,33 @@ function matchMeeting(ev, opts = {}) {
     unresolvedNames: [],
     reason: '',
   };
+
+  // ── Rung 0: an NPI written on the meeting itself ─────────────────────────
+  // Nothing else identifies a physician this precisely, so nothing else goes
+  // first. In the master → resolved. Not in the master → still resolved as far
+  // as WHO is concerned; the public sources are simply where their details are,
+  // and they are asked by NPI (no name, no ambiguity, no gate).
+  const meetingNpi = npiFromEvent(ev);
+  if (meetingNpi) {
+    base.npi = meetingNpi;
+    const known = physicians.getByNpi(meetingNpi);
+    if (known) {
+      return {
+        ...base,
+        status: 'matched',
+        via: 'meeting-npi',
+        physicians: [toCard(known)],
+        reason: `NPI ${meetingNpi} is on the meeting and is in the BIS master (${known.name || meetingNpi}).`,
+      };
+    }
+    return {
+      ...base,
+      status: 'needs_external',
+      reason:
+        `NPI ${meetingNpi} is on the meeting but not in the BIS master — the public ` +
+        'sources are asked by that NPI, so there is nothing to disambiguate.',
+    };
+  }
 
   // ── Rung 1: an attendee's exact email in the master ──────────────────────
   const byEmail = new Map();
@@ -299,6 +383,8 @@ function matchMeeting(ev, opts = {}) {
 
 module.exports = {
   matchMeeting,
+  npiFromEvent,
+  isValidNpi,
   titleGate,
   cleanPersonName,
   namesToLookUp,

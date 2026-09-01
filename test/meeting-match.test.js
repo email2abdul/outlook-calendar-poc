@@ -33,7 +33,9 @@ const DIRECTORY = [
     facility: { id: 'F2', name: 'Duke Health', city: 'Durham', state: 'NC' },
   },
   {
-    npi: '1000000003',
+    // A real, checksum-valid NPI: rung 0 refuses to look up a number that
+    // cannot be one, so the fixture needs a genuine value.
+    npi: '1508935800',
     name: 'Nicholas J Shaheen',
     specialty: 'Gastroenterology',
     email: null,
@@ -61,7 +63,7 @@ stub('src/physicians', {
   matchInText: () => [],
 });
 
-const { matchMeeting, titleGate, cleanPersonName } = require('../src/meeting-match');
+const { matchMeeting, titleGate, cleanPersonName, isValidNpi } = require('../src/meeting-match');
 
 const REP = 'rep@lumendi-example.com';
 const event = (over = {}) => ({
@@ -147,7 +149,7 @@ test('a gated title whose name matches exactly one physician is resolved', () =>
   assert.strictEqual(r.via, 'bis-name');
   assert.deepStrictEqual(
     r.physicians.map((p) => p.npi),
-    ['1000000003']
+    ['1508935800']
   );
 });
 
@@ -183,7 +185,7 @@ test('an attendee display name is used when their address is not in the master',
   assert.strictEqual(r.names[0].source, 'attendee');
   assert.deepStrictEqual(
     r.physicians.map((p) => p.npi),
-    ['1000000003']
+    ['1508935800']
   );
 });
 
@@ -224,7 +226,7 @@ test('a physician the rep picked resolves the meeting with no lookup at all', ()
 test('a choice sticks even on a title the gate would have blocked', () => {
   const r = matchMeeting(event({ title: 'Coffee catch-up' }), {
     selfEmail: REP,
-    chosenNpi: '1000000003',
+    chosenNpi: '1508935800',
   });
 
   assert.strictEqual(r.status, 'matched');
@@ -237,7 +239,7 @@ test('an exact attendee email still outranks a stored choice', () => {
       title: 'Meeting with Dr Geoffrey Aaron',
       attendees: [{ name: 'G Aaron', email: 'gaaron@bis-example.org', type: 'required' }],
     }),
-    { selfEmail: REP, chosenNpi: '1000000003' }
+    { selfEmail: REP, chosenNpi: '1508935800' }
   );
 
   assert.strictEqual(r.via, 'attendee-email');
@@ -256,4 +258,72 @@ test('a stored choice that has left the directory falls back, and says so', () =
   assert.strictEqual(r.status, 'matched');
   assert.strictEqual(r.via, 'bis-name', 'the ladder carries on rather than showing nothing');
   assert.match(r.reason, /Nicholas/);
+});
+
+// ── Rung 0: an NPI written on the meeting ────────────────────────────────────
+
+test('an NPI on the meeting outranks everything else, including the email match', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Case review — NPI 1508935800',
+      // A different physician's address, matched exactly. The NPI still wins:
+      // the rep wrote it down, and it cannot mean two people.
+      attendees: [{ name: 'G Aaron', email: 'gaaron@bis-example.org', type: 'required' }],
+    }),
+    { selfEmail: REP }
+  );
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'meeting-npi');
+  assert.strictEqual(r.npi, '1508935800');
+  assert.deepStrictEqual(r.physicians.map((p) => p.npi), ['1508935800']);
+});
+
+test('an NPI needs no "Dr" in the title — it is not a name to guess at', () => {
+  const r = matchMeeting(event({ title: 'Quarterly sync 1508935800' }), { selfEmail: REP });
+  assert.strictEqual(r.via, 'meeting-npi');
+});
+
+test('an NPI in the body or location counts too', () => {
+  const body = matchMeeting(event({ title: 'Case review', description: 'npi: 1508935800' }), {
+    selfEmail: REP,
+  });
+  assert.strictEqual(body.via, 'meeting-npi');
+
+  const loc = matchMeeting(event({ title: 'Case review', location: 'Endoscopy — NPI 1508935800' }), {
+    selfEmail: REP,
+  });
+  assert.strictEqual(loc.via, 'meeting-npi');
+});
+
+test('an NPI the master does not have is still an answer, handed to the sources', () => {
+  const r = matchMeeting(event({ title: 'Case review NPI 1467521757' }), { selfEmail: REP });
+
+  assert.strictEqual(r.status, 'needs_external');
+  assert.strictEqual(r.npi, '1467521757', 'the sources are asked by NPI, not by name');
+  assert.deepStrictEqual(r.physicians, []);
+  assert.match(r.reason, /not in the BIS master/);
+});
+
+test('a ten-digit number that is not an NPI is ignored', () => {
+  // The checksum is the whole point: meeting bodies are full of phone numbers,
+  // order numbers and conference ids, and briefing a stranger with total
+  // confidence is the worst failure this app has.
+  assert.strictEqual(isValidNpi('7135550100'), false);
+  assert.strictEqual(isValidNpi('1234567890'), false);
+  assert.strictEqual(isValidNpi('150893549'), false, 'nine digits');
+
+  const r = matchMeeting(event({ title: 'Call 7135550100 before the demo' }), { selfEmail: REP });
+  assert.strictEqual(r.npi, null);
+  assert.strictEqual(r.via, null);
+});
+
+test('a labelled NPI is preferred over a bare ten-digit run', () => {
+  // Both pass the checksum; the labelled one is the one the rep meant.
+  assert.strictEqual(isValidNpi('1467521757'), true);
+  const r = matchMeeting(
+    event({ title: 'Ref 1467521757 · NPI 1508935800', description: '' }),
+    { selfEmail: REP }
+  );
+  assert.strictEqual(r.npi, '1508935800');
 });
