@@ -865,6 +865,10 @@ function externalBriefHtml(result) {
     ambiguous: ['#8a5700', '#fff8e6', '⚠️', `Possible match only (${result.confidence}% confident) — confirm before using.`],
     facility_only: ['#8a5700', '#fff8e6', '⚠️', 'Person could not be identified — facility information only.'],
     unresolved: ['#7a2048', '#fdf0f4', '❔', 'Could not identify this person from the available sources.'],
+    // Distinct from `unresolved` on purpose: one is an answer, the other is the
+    // absence of one. Showing the "could not identify" banner for a DNS failure
+    // tells the rep something false about the physician.
+    lookup_failed: ['#7a2048', '#fdf0f4', '📡', 'Lookup could not run — the provider registries were unreachable from this server. This is NOT a finding about this person; retry once connectivity is restored.'],
     not_physician: ['#7a2048', '#fdf0f4', '🚫', 'Identified as a non-physician — no physician brief produced.'],
     recovered_in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Matched into BIS by NPI — the physician IS in the master; the address or name on the meeting simply did not match it.'],
     in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Already in your BIS database.'],
@@ -874,6 +878,20 @@ function externalBriefHtml(result) {
     `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid ${colour};` +
       `background:${bg};color:${colour}"><b>${icon} ${escapeHtml(text)}</b></p>`
   );
+
+  // A source that never answered is called out even when the rest of the
+  // cascade produced a usable profile — otherwise a thin brief looks like a
+  // complete one, and the rep reads a gap as a fact.
+  if ((result.sourcesDown || []).length) {
+    const down = result.sourcesDown
+      .map((o) => `${escapeHtml(o.source)}${o.host ? ` (${escapeHtml(o.host)})` : ''}`)
+      .join(', ');
+    out.push(
+      `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #8a5700;background:#fff8e6;` +
+        `color:#8a5700"><b>📡 Incomplete — source unreachable:</b> ${down}. ` +
+        'Anything those sources supply is missing from this brief, not missing from the registry.</p>'
+    );
+  }
 
   if (result.matchedFacility) {
     out.push(

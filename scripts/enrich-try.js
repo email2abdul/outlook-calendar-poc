@@ -52,6 +52,7 @@ const STATUS_HELP = {
   facility_only: 'Person not identified, but the facility was.',
   not_physician: 'Identified as a non-physician — no brief produced.',
   unresolved: 'Nothing confident enough was found.',
+  lookup_failed: 'The registries were unreachable from this box — no conclusion about this person. Run `npm run enrich:doctor`.',
 };
 
 (async () => {
