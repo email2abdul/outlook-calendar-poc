@@ -3,6 +3,7 @@
 require('isomorphic-fetch');
 const { Client } = require('@microsoft/microsoft-graph-client');
 const config = require('./config');
+const verify = require('./enrichment/verify');
 
 /**
  * Graph module — everything that talks to Microsoft Graph lives here so it can
@@ -209,13 +210,54 @@ function formatMeetingTime(dateTimeStr, timeZone) {
   );
 }
 
-/** HTML details table for a physician profile (shared by invite + briefing). */
-function physicianDetailsTable(physician) {
+/**
+ * The Email cell, with how far that address can be trusted.
+ *
+ * No public registry publishes physician emails (NPPES has no such field), so
+ * every address in the master is either rep-confirmed in app_contacts or an
+ * unverified vendor value — and the brief has to say which, or the rep mails a
+ * dead address. Inline-styled: the badge must survive an email client.
+ */
+function emailCellHtml(trust) {
+  const BADGE = {
+    verified: ['#0b6b3a', '✅ verified'],
+    unverified: ['#8a6d00', '⚠️ unverified'],
+    suspect: ['#b42318', '⚠️ unverified · likely stale'],
+  };
+  const [colour, label] = BADGE[trust.status] || BADGE.unverified;
+  return (
+    `${escapeHtml(trust.address)} ` +
+    `<span style="color:${colour};white-space:nowrap">${label}</span>` +
+    `<br><span style="color:#666;font-size:12px">${escapeHtml(trust.note)}</span>`
+  );
+}
+
+/**
+ * HTML details table for a physician profile (shared by invite + briefing).
+ * @param {object} physician
+ * @param {object} [opts]
+ * @param {object} [opts.contact]      app_contacts overlay — a verified email wins
+ * @param {object} [opts.verification] enrichment/verify.verifyPhysician() output
+ */
+function physicianDetailsTable(physician, opts = {}) {
+  const trust = verify.emailTrust(physician, opts.contact || null, opts.verification || null);
+
   const rows = [
     ['Name', physician.name],
     ['NPI', physician.npi],
     ['Specialty', physician.specialty],
-    ['Email', physician.email],
+    // Pre-rendered (badge markup), so it must not be escaped again below.
+    ['Email', trust ? { html: emailCellHtml(trust) } : null],
+    trust?.masterEmail
+      ? [
+          'BIS master email',
+          {
+            html:
+              `${escapeHtml(trust.masterEmail)} ` +
+              '<span style="color:#8a6d00">⚠️ superseded by the verified address above</span>',
+          },
+        ]
+      : null,
     ['Phone', physician.phone],
     ['ESD Procedure', physician.esdProcedure ? 'Yes' : 'No'],
     ['Facility', physician.facility?.name],
@@ -233,13 +275,70 @@ function physicianDetailsTable(physician) {
     ['Health System', physician.facility ? physician.facility.healthSystem || 'Independent / unaffiliated' : null],
     ['Territory', physician.facility?.territory],
     ['LinkedIn', physician.linkedinUrl],
-  ].filter(([, v]) => v);
+  ]
+    .filter(Boolean)
+    .filter(([, v]) => v);
 
   const table = rows
-    .map(([k, v]) => `<tr><td style="padding:2px 12px 2px 0"><b>${escapeHtml(k)}</b></td><td>${escapeHtml(v)}</td></tr>`)
+    .map(
+      ([k, v]) =>
+        `<tr><td style="padding:2px 12px 2px 0;vertical-align:top"><b>${escapeHtml(k)}</b></td>` +
+        `<td>${v && v.html ? v.html : escapeHtml(v)}</td></tr>`
+    )
     .join('');
 
   return `<table>${table}</table>`;
+}
+
+/**
+ * HTML "Data check" section — BIS master vs the NPPES registry.
+ *
+ * BIS is purchased data and goes stale: when a physician changes practice the
+ * master keeps the old facility, phone and email (the email being the one that
+ * bounces). NPPES is free, authoritative for practice location, and keyed by
+ * the same NPI — so the brief can say "these two disagree, don't trust the
+ * contact details" instead of presenting a dead address as fact.
+ *
+ * Renders nothing when the registry could not be reached (see verify.js).
+ */
+function dataCheckHtml(verification) {
+  if (!verification) return '';
+  const td = 'style="padding:2px 12px 2px 0;vertical-align:top"';
+  const reg = verification.registry;
+  const link = reg.sourceUrl
+    ? ` — <a href="${escapeHtml(reg.sourceUrl)}">verify on NPPES</a>`
+    : '';
+
+  if (!verification.stale) {
+    return (
+      '<p style="color:#0b6b3a;margin:10px 0 0">' +
+      `✅ Practice location matches the NPPES registry (${escapeHtml(
+        [reg.city, reg.state].filter(Boolean).join(', ') || 'checked'
+      )})${link}</p>`
+    );
+  }
+
+  const bisLine = [verification.bis.facility, verification.bis.city, verification.bis.state]
+    .filter(Boolean)
+    .join(' — ');
+  const regLine =
+    [reg.address, reg.phone].filter(Boolean).join(' · ') +
+    (reg.lastUpdated ? ` (registry updated ${reg.lastUpdated})` : '');
+
+  return (
+    '<div style="border-left:4px solid #b42318;background:#fff6f5;padding:8px 12px;margin:12px 0">' +
+    '<p style="margin:0 0 6px"><b>⚠️ Data check — BIS and the NPPES registry disagree</b></p>' +
+    '<table>' +
+    `<tr><td ${td}><b>BIS master</b></td><td>${escapeHtml(bisLine || '—')}</td></tr>` +
+    `<tr><td ${td}><b>NPPES registry</b></td><td>${escapeHtml(regLine || '—')}</td></tr>` +
+    '</table>' +
+    `<p style="margin:6px 0 0">${escapeHtml(
+      `${verification.reasons.join('; ')}. The facility, phone and especially the EMAIL above ` +
+        'come from the BIS master and may belong to a practice this physician has left — ' +
+        'confirm before contacting.'
+    )}${link}</p>` +
+    '</div>'
+  );
 }
 
 /**
@@ -616,10 +715,11 @@ function analyticsHtml(a) {
  * so they always match. Each section returns '' when that physician has no data
  * for it, so nothing irrelevant is shown. Notes/intro are added by the caller.
  */
-function physicianBriefHtml({ physician, analytics, contact }) {
+function physicianBriefHtml({ physician, analytics, contact, verification }) {
   return [
     '<p class="brief-h"><b>Physician details</b></p>',
-    physicianDetailsTable(physician),
+    physicianDetailsTable(physician, { contact, verification }),
+    dataCheckHtml(verification),
     contactIntelligenceHtml(physician, contact),
     analyticsHtml(analytics),
     accountOpportunityHtml(analytics?.accountOpportunity),
@@ -766,7 +866,7 @@ function externalBriefHtml(result) {
     facility_only: ['#8a5700', '#fff8e6', '⚠️', 'Person could not be identified — facility information only.'],
     unresolved: ['#7a2048', '#fdf0f4', '❔', 'Could not identify this person from the available sources.'],
     not_physician: ['#7a2048', '#fdf0f4', '🚫', 'Identified as a non-physician — no physician brief produced.'],
-    recovered_in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Recovered from BIS by NPI — the email was missing from the master, but the physician is in it.'],
+    recovered_in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Matched into BIS by NPI — the physician IS in the master; the address or name on the meeting simply did not match it.'],
     in_bis: ['#0b6b3a', '#eefaf3', '✅', 'Already in your BIS database.'],
   };
   const [colour, bg, icon, text] = banners[result.status] || banners.unresolved;
@@ -972,7 +1072,8 @@ function meetingNotesHtml(notes) {
  *
  * @param {object} opts
  * @param {string} opts.toEmail organizer's address
- * @param {Array<{physician:object, notes:object[], analytics?:object, contact?:object}>} opts.physicians
+ * @param {Array<{physician:object, notes:object[], analytics?:object, contact?:object,
+ *          verification?:object}>} opts.physicians
  * @param {{title?:string, start?:string, timeZone?:string}} [opts.event]
  * @param {string} [opts.subject]
  * @param {string} [opts.intro]
@@ -1002,14 +1103,14 @@ function buildBriefingContent({ physicians, event, intro }) {
     : '';
 
   const sections = list
-    .map(({ physician, analytics, contact, notes }) => {
+    .map(({ physician, analytics, contact, notes, verification }) => {
       const banner = multi
         ? `<h2 style="font-size:18px;margin:26px 0 8px;padding-bottom:5px;` +
           `border-bottom:2px solid #0f6cbd">${escapeHtml(briefName(physician))}</h2>`
         : '';
       return [
         banner,
-        physicianBriefHtml({ physician, analytics, contact }),
+        physicianBriefHtml({ physician, analytics, contact, verification }),
         '<p class="brief-h"><b>Meeting notes</b></p>',
         meetingNotesHtml(notes),
       ].join('');

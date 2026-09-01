@@ -450,8 +450,11 @@ async function enrich(query = {}) {
       result.status = 'recovered_in_bis';
       result.confidence = Math.max(result.confidence, 90);
       p.note(
-        'Recovered from BIS by NPI — the email was missing from the master, ' +
-          'but the physician is in it.'
+        email
+          ? 'Recovered from BIS by NPI — this address is not the one the master ' +
+            'holds for them, but the physician is in it.'
+          : 'Matched into BIS by NPI — the physician is in the master; the name in ' +
+            'the meeting resolved to their registry NPI.'
       );
 
       const bisMeta = { source: 'BIS master data (bis_physicians)' };

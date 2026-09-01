@@ -56,6 +56,137 @@ function attendeesToEnrich(event, opts = {}) {
   return out;
 }
 
+// ── Names in the title ──────────────────────────────────────────────────────
+
+/**
+ * Words that introduce a meeting rather than name anybody, stripped from the
+ * front of a title ("Meeting with …", "Lunch with …", "Demo for …").
+ */
+const LEAD_WORDS = new Set([
+  'meeting', 'meet', 'mtg', 'call', 'zoom', 'teams', 'webex', 'sync', 'catchup',
+  'catch', 'up', 'visit', 'demo', 'lunch', 'dinner', 'coffee', 'breakfast',
+  'intro', 'introduction', 'discussion', 'discuss', 'appointment', 'appt',
+  'followup', 'follow', 'checkin', 'check', 'in', 'review', 'touchpoint',
+  'touch', 'base', 'quick', 'weekly', 'monthly', 'daily', 'onsite', 'on', 'site',
+  'brief', 'briefing', 'training', 'case', 'observation', 'evaluation',
+]);
+
+const HONORIFIC = /^(dr|doctor|prof|professor|mr|mrs|ms|miss|sir)[.,]?$/i;
+const CREDENTIAL = /^(md|do|dds|mbbs|phd|mph|msc|rn|np|pa-c|pa|facs|facg|fasge|facp|faga|jr|sr|ii|iii|iv)[.,]?$/i;
+/** A token that proves the phrase is a place, not a person. */
+const PLACE_WORD = new Set([
+  'hospital', 'hospitals', 'clinic', 'clinics', 'medical', 'medicine', 'center',
+  'centre', 'health', 'healthcare', 'system', 'university', 'college',
+  'institute', 'associates', 'group', 'practice', 'partners', 'endoscopy',
+  'surgery', 'surgical', 'gastroenterology', 'gi', 'department', 'dept',
+  'office', 'team', 'inc', 'llc', 'pllc', 'pc', 'pa',
+]);
+/** Words that are never part of a person's name in a calendar title. */
+const NOT_A_NAME = new Set([
+  'agenda', 'notes', 'update', 'updates', 'pipeline', 'forecast', 'product',
+  'products', 'demo', 'training', 'onboarding', 'interview', 'standup',
+  'retro', 'planning', 'budget', 'q1', 'q2', 'q3', 'q4', 'poc', 'bis', 'lumendi',
+]);
+
+/** "GEOFFREY AARON" / "geoffrey aaron" → "Geoffrey Aaron". */
+function titleCase(tokens) {
+  return tokens
+    .map((t) =>
+      t.length <= 2 && t.endsWith('.')
+        ? t.toUpperCase() // initials: "a." → "A."
+        : t[0].toUpperCase() + t.slice(1).toLowerCase()
+    )
+    .join(' ');
+}
+
+/** One title segment → a person's name, or null when it isn't one. */
+function nameFromSegment(segment, skipTokens) {
+  // Everything after "at"/"@"/"–"/"(" is where, not who.
+  const who = String(segment)
+    .split(/\s+(?:at|@|re|regarding|about|for|from)\s+/i)[0]
+    .split(/[(–—|]/)[0]
+    .replace(/\s+-\s+.*$/, '')
+    // A connector left at the front ("Demo FOR Adam Smith" once "demo" is gone)
+    // would otherwise be read as a first name.
+    .replace(/^(?:for|with|w\/|to|the|our|a|an)\s+/i, '')
+    .trim();
+
+  const raw = who.split(/\s+/).filter(Boolean);
+  const tokens = [];
+  for (const t of raw) {
+    const word = t.replace(/[,;:]+$/, '');
+    const bare = word.toLowerCase().replace(/[.]/g, '');
+    if (!word) continue;
+    if (HONORIFIC.test(word)) continue;
+    if (CREDENTIAL.test(word)) continue;
+    if (LEAD_WORDS.has(bare)) continue;
+    // A place word (or an obvious non-name) ends the name — "Adam Smith
+    // Hospital Boston" is Adam Smith, and nothing after it.
+    if (PLACE_WORD.has(bare) || NOT_A_NAME.has(bare)) break;
+    if (!/^[A-Za-z][A-Za-z'’.-]*$/.test(word)) break;
+    tokens.push(word);
+    if (tokens.length === 4) break;
+  }
+
+  // Two tokens minimum: a bare surname is not enough to look anybody up, and a
+  // single first name ("call with Steve") would produce confident nonsense.
+  if (tokens.length < 2) return null;
+  if (tokens.every((t) => skipTokens.has(t.toLowerCase()))) return null; // the organizer
+  return titleCase(tokens);
+}
+
+/**
+ * People NAMED in a meeting's title.
+ *
+ * The attendee list is the reliable way to know who a meeting is with, but reps
+ * routinely book "meeting with dr Geoffrey Aaron" with no attendee at all — and
+ * until now that produced nothing: enrichment is keyed on an email address, so
+ * there was none to enrich, and the rep walked in blind (verified 2026-08-31,
+ * three of four meetings on the test calendar).
+ *
+ * Deliberately conservative — this feeds an automated lookup, so a wrong name
+ * is worse than no name: an honorific or two capitalised words in a row, never
+ * a lone surname, never the organizer, and anything that reads like a place is
+ * cut at the place word.
+ *
+ * @param {object} event    normalized event (src/graph.js)
+ * @param {object} [opts]
+ * @param {string} [opts.selfEmail]
+ * @param {number} [opts.limit=3]
+ * @returns {Array<{name:string, source:'title'}>}
+ */
+function namesFromEvent(event, opts = {}) {
+  const title = String(event?.title || '').trim();
+  if (!title) return [];
+
+  const skip = organizerTokens(event, opts.selfEmail);
+
+  // "Meeting with X", "Demo for X" — keep what follows the connector. Without
+  // one, drop the leading meeting words and read what's left.
+  const afterWith = title.split(/\s+(?:with|w\/)\s+/i);
+  let body = afterWith.length > 1 ? afterWith.slice(1).join(' with ') : title;
+  if (afterWith.length === 1) {
+    const words = body.split(/\s+/);
+    while (words.length && LEAD_WORDS.has(words[0].toLowerCase().replace(/[.,:]/g, ''))) {
+      words.shift();
+    }
+    body = words.join(' ');
+  }
+
+  const out = [];
+  const seen = new Set();
+  for (const segment of body.split(/\s*(?:,|&|\+|;|\/|<>| and )\s*/i)) {
+    const name = nameFromSegment(segment, skip);
+    if (!name) continue;
+    const key = name.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ name, source: 'title' });
+    if (out.length >= (opts.limit || 3)) break;
+  }
+  return out;
+}
+
 /** True when this address is the meeting's organizer (or the signed-in user). */
 function isOrganizer(event, email, selfEmail) {
   const e = normEmail(email);
@@ -192,6 +323,7 @@ function stripOrganizerPeople(analysis, event, selfEmail) {
 
 module.exports = {
   attendeesToEnrich,
+  namesFromEvent,
   isOrganizer,
   hintsFromEvent,
   organizerTokens,

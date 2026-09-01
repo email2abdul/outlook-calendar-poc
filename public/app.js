@@ -494,7 +494,13 @@ function meetingContextOf(ev) {
 }
 
 /**
- * Run the enrichment agent for one attendee and render the result.
+ * Run the enrichment agent for one meeting SUBJECT and render the result.
+ *
+ * A subject is whoever we can name: an attendee (identified by email — the
+ * reliable case) or a person named in the title with no attendee at all, which
+ * is how reps actually book "meeting with dr Geoffrey Aaron". The agent takes
+ * either: `name` skips the paid identity tier entirely, because the one thing
+ * that tier buys is a name.
  *
  * Two passes on purpose. The free tiers (BIS + NPPES + CMS) answer in 1-5s, so
  * they run automatically and the rep sees something immediately. The paid web
@@ -507,10 +513,11 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
   }</p>`;
 
   const params = new URLSearchParams({
-    email: attendee.email,
     context: meetingContextOf(ev),
     useWeb,
   });
+  if (attendee.email) params.set('email', attendee.email);
+  else if (attendee.name) params.set('name', attendee.name);
 
   let data;
   try {
@@ -527,7 +534,8 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
   box.innerHTML = data.html || '<p class="muted">Nothing found for this address.</p>';
 
   // Offer the paid lookup only when the free tiers actually fell short.
-  const needsWeb = !deep && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);
+  const needsWeb =
+    !deep && Boolean(attendee.email) && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);
   if (needsWeb) {
     const btn = document.createElement('button');
     btn.type = 'button';
@@ -548,7 +556,12 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
  * they are filtered out here as well as on the server.
  */
 function buildEnrichment(detail, ev) {
-  const targets = (ev.attendees || []).filter((a) => a.email && !a.isOrganizer && a.type !== 'resource');
+  const attendees = (ev.attendees || []).filter((a) => a.email && !a.isOrganizer && a.type !== 'resource');
+  // No attendee to go on (the common case for a meeting typed straight into
+  // Outlook) — fall back to the people NAMED in the title, resolved server-side.
+  const targets = attendees.length
+    ? attendees
+    : (ev.titlePeople || []).map((p) => ({ name: p.name, email: null, fromTitle: true }));
   if (!targets.length) return;
 
   const wrap = document.createElement('div');
@@ -556,7 +569,11 @@ function buildEnrichment(detail, ev) {
 
   const head = document.createElement('h3');
   head.className = 'enrich__title';
-  head.textContent = targets.length > 1 ? 'Attendees — external lookup' : 'External lookup';
+  head.textContent = attendees.length
+    ? targets.length > 1
+      ? 'Attendees — external lookup'
+      : 'External lookup'
+    : 'From the meeting title — external lookup';
   wrap.appendChild(head);
 
   for (const attendee of targets) {
@@ -565,7 +582,11 @@ function buildEnrichment(detail, ev) {
 
     const who = document.createElement('p');
     who.className = 'enrich__who';
-    who.textContent = attendee.name ? `${attendee.name} · ${attendee.email}` : attendee.email;
+    who.textContent = attendee.email
+      ? attendee.name
+        ? `${attendee.name} · ${attendee.email}`
+        : attendee.email
+      : `${attendee.name} · named in the meeting title`;
     card.appendChild(who);
 
     const body = document.createElement('div');
