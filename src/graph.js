@@ -1100,6 +1100,13 @@ const FIELD_LABELS = {
   identityReasoning: 'How we identified them',
   jobTitle: 'Title',
   licenseNumber: 'License #',
+  // The auto-capitaliser turns these into "Npi Status" / "Ruc Aurban".
+  npiStatus: 'NPI status',
+  licenseState: 'License state',
+  ruralUrban: 'Practice area',
+  medicareParticipating: 'Medicare participating',
+  paymentProducts: 'Products paid for',
+  recentPublications: 'Recent publications',
 };
 
 /** Turn a camelCase profile key into a readable label. */
@@ -1442,6 +1449,60 @@ async function sendPhysiciansBriefing(accessToken, { toEmail, physicians, event,
 
 /** Single-physician briefing — thin wrapper over the combined sender so the
  *  manual "Email me this briefing" and schedule-invite paths are unchanged. */
+/**
+ * Email a brief for a physician the master does not have.
+ *
+ * A sibling of sendPhysiciansBriefing rather than a branch inside it: the body
+ * is already rendered (outsideBriefHtml, assembled from whichever public
+ * sources answered), and the subject has to say plainly that this is NOT your
+ * data — a rep skimming their inbox must not mistake a registry profile for the
+ * master's own.
+ *
+ * The rep's own note history rides along, exactly as it does in a BIS brief:
+ * notes are keyed by NPI, and an outside physician has one.
+ *
+ * @param {string} accessToken
+ * @param {object} opts
+ * @param {string} opts.toEmail
+ * @param {string} opts.name       who the brief is about
+ * @param {string} opts.html       the rendered brief
+ * @param {object[]} [opts.notes]  this rep's meeting notes for them
+ * @param {object} [opts.event]    { title, start, timeZone }
+ * @returns {Promise<string|null>} the address it actually went to
+ */
+async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, event }) {
+  if (!toEmail || !html) return null;
+  const client = getGraphClient(accessToken);
+
+  const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
+  const who = name || 'this contact';
+
+  const content = [
+    `<p>${escapeHtml(
+      `${who} is not in the BIS directory. Everything below was assembled from public ` +
+        'sources, and anything those sources could not supply is marked "Data not available".'
+    )}</p>`,
+    event?.title
+      ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${meetingWhen ? ` — ${escapeHtml(meetingWhen)}` : ''}</p>`
+      : '',
+    html,
+    '<p class="brief-h"><b>Meeting notes</b></p>',
+    meetingNotesHtml(notes || []),
+  ].join('');
+
+  // Same delivery rule as every other brief — see sendPhysiciansBriefing.
+  const sendTo = config.briefingToEmail || toEmail;
+  await client.api('/me/sendMail').post({
+    message: {
+      subject: `🔎 Outside BIS: ${who}${event?.title ? ` — ${event.title}` : ''}`,
+      body: { contentType: 'HTML', content },
+      toRecipients: [{ emailAddress: { address: sendTo } }],
+    },
+    saveToSentItems: true,
+  });
+  return sendTo;
+}
+
 async function sendPhysicianBriefing(
   accessToken,
   { toEmail, physician, notes, analytics, event, subject, intro, contact }
@@ -1686,6 +1747,7 @@ async function getMe(accessToken) {
 
 module.exports = {
   getEventById,
+  sendOutsideBriefing,
   outsideBriefHtml,
   getEventsForDay,
   getUpcomingEvents,

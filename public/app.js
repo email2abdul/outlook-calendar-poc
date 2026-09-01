@@ -398,7 +398,7 @@ async function submitMomFor(evt, block, physician, event) {
 }
 
 /** Email the organizer this physician's details + full meeting-note history. */
-async function sendBriefingFor(block, physician, event) {
+async function sendBriefingFor(block, physician, event, { source = null } = {}) {
   const btn = block.querySelector('.briefing__send');
   const status = block.querySelector('.briefing__status');
 
@@ -417,6 +417,9 @@ async function sendBriefingFor(block, physician, event) {
           eventTitle: event?.title || null,
           // Readable "2026-06-05 15:00" instead of the raw ISO string.
           eventStart: (event?.start || '').slice(0, 16).replace('T', ' ') || null,
+          // For a physician the master does not have, the server re-assembles
+          // the brief from this source rather than trusting the browser's copy.
+          source: source || undefined,
         }),
       }
     );
@@ -507,12 +510,37 @@ function wireScheduleForm(form, physician) {
 
 // ── One physician block ───────────────────────────────────────────────────────
 
-function buildPhysicianBlock(physician, event, { scheduleOpen = false } = {}) {
+/**
+ * One self-contained physician block — for a physician in the master, and for
+ * one who is not.
+ *
+ * An outside physician gets the same block on purpose: notes are keyed by NPI
+ * and they have one, and "email me this briefing" is exactly as useful for a
+ * registry profile as for a BIS row. Only three things differ, and each for a
+ * reason:
+ *   · the brief is already rendered (assembled from the public sources), so it
+ *     is injected rather than fetched;
+ *   · there is no inbox intelligence to show — the Email Sheet is keyed to BIS
+ *     physicians;
+ *   · "Schedule a call" needs an address to invite, and NPPES has no email
+ *     field at all, so it is hidden rather than left there to fail.
+ *
+ * @param {object} physician        BIS row, or an outside candidate/record
+ * @param {object} event
+ * @param {object} [opts]
+ * @param {boolean} [opts.scheduleOpen]
+ * @param {string}  [opts.briefHtml] pre-rendered brief (outside physicians)
+ * @param {boolean} [opts.outside]   skip inbox intel; hide scheduling with no email
+ * @param {string}  [opts.source]    which public source the brief came from
+ */
+function buildPhysicianBlock(physician, event, { scheduleOpen = false, briefHtml = null, outside = false, source = null } = {}) {
   const block = physBlockTpl.content.firstElementChild.cloneNode(true);
   block.dataset.npi = physician.npi;
+  if (outside) block.dataset.outside = 'true';
 
   block.querySelector('.physician-block__name').textContent = physician.name || `NPI ${physician.npi}`;
-  block.querySelector('.physician-block__specialty').textContent = physician.specialty || '';
+  block.querySelector('.physician-block__specialty').textContent =
+    physician.specialty || physician.primaryTaxonomy || '';
 
   const photo = block.querySelector('.physician-block__photo');
   if (physician.photoUrl) {
@@ -520,18 +548,34 @@ function buildPhysicianBlock(physician, event, { scheduleOpen = false } = {}) {
     photo.hidden = false;
   }
 
-  // All three data sections load asynchronously and independently.
-  loadBriefInto(block.querySelector('.physician-block__brief'), physician.npi);
-  loadIntelInto(block, physician);
+  const briefBox = block.querySelector('.physician-block__brief');
+  if (briefHtml) briefBox.innerHTML = `<h3>Pre-meeting brief</h3>${briefHtml}`;
+  else loadBriefInto(briefBox, physician.npi);
+
+  if (!outside) loadIntelInto(block, physician);
   loadNotesInto(block, physician, event);
 
   // Actions.
   block.querySelector('.mom-form').addEventListener('submit', (e) => submitMomFor(e, block, physician, event));
-  block.querySelector('.briefing__send').addEventListener('click', () => sendBriefingFor(block, physician, event));
+  block
+    .querySelector('.briefing__send')
+    .addEventListener('click', () => sendBriefingFor(block, physician, event, { source }));
 
   const sched = block.querySelector('.physician-block__schedule');
-  if (scheduleOpen) sched.open = true;
-  wireScheduleForm(block.querySelector('.schedule-form'), physician);
+  if (outside && !physician.email) {
+    // Nothing to invite: say so instead of offering a form that cannot work.
+    sched.hidden = true;
+    const why = document.createElement('p');
+    why.className = 'muted';
+    why.style.fontSize = '12px';
+    why.textContent =
+      'Scheduling needs an email address, and the public registries do not publish one — ' +
+      'add it to the meeting as an attendee to invite them.';
+    sched.after(why);
+  } else {
+    if (scheduleOpen) sched.open = true;
+    wireScheduleForm(block.querySelector('.schedule-form'), physician);
+  }
 
   return block;
 }
@@ -1168,13 +1212,17 @@ async function buildOutside(detail, ev) {
       // One candidate cleared the bar and stood clear of the rest: its notes are
       // already assembled, so show them without making the rep click.
       if (data.brief) {
-        const auto = document.createElement('section');
-        auto.className = 'physician-block';
-        const body = document.createElement('div');
-        body.className = 'physician-analytics';
-        body.innerHTML = data.brief;
-        auto.appendChild(body);
-        list.appendChild(auto);
+        const best =
+          (groups.flatMap((g) => g.candidates).find((c) => c.npi === (groups.find((g) => g.primaryNpi) || {}).primaryNpi)) ||
+          groups[0]?.candidates[0] ||
+          {};
+        list.appendChild(
+          buildPhysicianBlock(best, ev, {
+            briefHtml: data.brief,
+            outside: !best.inBis,
+            source: best.externalSource,
+          })
+        );
       }
 
       // Say which source went missing, and offer the retry — silence here reads
@@ -1246,16 +1294,15 @@ async function pickOutside(candidate, ev, picked) {
     return;
   }
 
-  const box = document.createElement('section');
-  box.className = 'physician-block';
-  const title = document.createElement('h3');
-  title.className = 'physician-block__name';
-  title.textContent = saved.physician?.name || candidate.name || `NPI ${candidate.npi}`;
-  const body = document.createElement('div');
-  body.className = 'physician-analytics';
-  body.innerHTML = saved.html || '<p class="muted">No notes could be assembled.</p>';
-  box.append(title, body);
-  picked.appendChild(box);
+  // The same block a BIS physician gets — notes, "email me this briefing" and
+  // all — with the brief that was just assembled injected into it.
+  picked.appendChild(
+    buildPhysicianBlock(
+      { ...candidate, ...(saved.physician || {}) },
+      ev,
+      { briefHtml: saved.html, outside: true, source: candidate.externalSource }
+    )
+  );
 }
 
 /**

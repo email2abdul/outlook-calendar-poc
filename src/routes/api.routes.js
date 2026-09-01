@@ -45,6 +45,41 @@ function ownerId(req) {
 // ── Email-intelligence platform: CRM activities + ingested emails ───────────
 
 /**
+ * Who a /physicians/:npi route is about — the master's row, or an outside NPI.
+ *
+ * Notes and briefs used to 404 for anyone the master does not hold, which meant
+ * the rep could look a physician up in the registries, read their volumes, and
+ * then not be able to write a single note about them. Notes are keyed by NPI and
+ * an outside physician has one, so the only real question is whether the id is
+ * genuine: the NPI CHECK DIGIT answers that (see meetingMatch.isValidNpi), which
+ * keeps the store from filling up with typos and phone numbers.
+ *
+ * The name comes from whatever the rep already confirmed for a meeting
+ * (outside_physician_app_meeting), so an emailed brief says "Nicholas Shaheen"
+ * rather than "NPI 1467521757".
+ *
+ * @returns {Promise<{npi: string, physician: object|null, name: string, inBis: boolean}|null>}
+ */
+async function physicianOrOutside(req, npiParam) {
+  const npi = String(npiParam || '').trim();
+  const physician = physicians.getByNpi(npi);
+  if (physician) {
+    return { npi: physician.npi, physician, name: physician.name || `NPI ${physician.npi}`, inBis: true };
+  }
+  if (!meetingMatch.isValidNpi(npi)) return null;
+
+  let name = `NPI ${npi}`;
+  try {
+    const recent = await outsideStore.listRecent(ownerId(req), 200);
+    const seen = recent.find((r) => r.npi === npi && r.name);
+    if (seen) name = seen.name;
+  } catch {
+    /* the name is a nicety; the NPI is the identity */
+  }
+  return { npi, physician: null, name, inBis: false };
+}
+
+/**
  * GET /api/activities — the signed-in salesperson's synced CRM activities
  * (calendar meetings), newest first, each with its matched physician name.
  */
@@ -354,9 +389,13 @@ router.get('/physicians/:npi/brief', requireAuth, async (req, res, next) => {
  */
 router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
-    res.json({ npi: physician.npi, notes: await callNotes.getNotes(physician.npi, organizerEmail(req)) });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
+    res.json({
+      npi: who.npi,
+      inBis: who.inBis,
+      notes: await callNotes.getNotes(who.npi, organizerEmail(req)),
+    });
   } catch (err) {
     next(err);
   }
@@ -369,8 +408,8 @@ router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  */
 router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
 
     const { notes, eventId, meetingDate } = req.body || {};
     if (typeof notes !== 'string' || notes.trim() === '') {
@@ -381,7 +420,7 @@ router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
     }
 
     const note = await callNotes.addNote({
-      npi: physician.npi,
+      npi: who.npi,
       organizerEmail: organizerEmail(req),
       eventId: typeof eventId === 'string' ? eventId : null,
       meetingDate: meetingDate || null,
@@ -402,8 +441,8 @@ router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  */
 router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
 
     const to = organizerEmail(req);
     if (!to) return res.status(400).json({ error: 'bad_request', message: 'No organizer email on session.' });
@@ -411,21 +450,58 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
     const token = await auth.getAccessToken(req);
     if (!token) return res.status(401).json({ error: 'unauthenticated' });
 
-    const { eventTitle, eventStart } = req.body || {};
+    const { eventTitle, eventStart, source } = req.body || {};
+    const event = {
+      title: typeof eventTitle === 'string' ? eventTitle : undefined,
+      start: typeof eventStart === 'string' ? eventStart : undefined,
+    };
 
+    // Not in the master → the brief is assembled from the public sources at
+    // send time rather than trusted from the browser, and it is the SAME render
+    // the panel showed, so the email and the screen cannot disagree.
+    if (!who.inBis) {
+      const profile = await outsideProfile(who.npi, typeof source === 'string' ? source : undefined);
+      if (!profile) {
+        return res.status(502).json({
+          error: 'source_unreachable',
+          message: 'No public source could describe this NPI just now, so nothing was emailed.',
+        });
+      }
+      const sentTo = await graph.sendOutsideBriefing(token, {
+        toEmail: to,
+        name: profile.record.name || who.name,
+        html: graph.outsideBriefHtml({
+          record: profile.record,
+          extra: profile.extra,
+          cms: profile.cms,
+          agreement: profile.agreement,
+          sourceName: profile.sourceName,
+          sourceUrl: profile.sourceUrl,
+        }),
+        notes: await callNotes.getNotes(who.npi, to),
+        event,
+      });
+      await crm.audit({
+        actor: 'user',
+        action: 'brief.emailed',
+        entityType: 'outside_physician',
+        entityId: who.npi,
+        details: { to: sentTo, inBis: false, source: source || 'nppes', event: event.title || null },
+      });
+      return res.json({ sent: true, to: sentTo, inBis: false });
+    }
+
+    const physician = who.physician;
     await graph.sendPhysicianBriefing(token, {
       toEmail: to,
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
       contact: await contactsStore.getContact(physician.npi),
-      event: {
-        title: typeof eventTitle === 'string' ? eventTitle : undefined,
-        start: typeof eventStart === 'string' ? eventStart : undefined,
-      },
+      event,
     });
 
-    res.json({ sent: true, to });
+    res.json({ sent: true, to, inBis: true });
   } catch (err) {
     next(err);
   }
@@ -1206,3 +1282,6 @@ router.get('/leads/match', requireAuth, async (req, res, next) => {
 });
 
 module.exports = router;
+// Exported for tests: the rule that decides whether a /physicians/:npi route may
+// act on an NPI the master does not hold.
+module.exports.physicianOrOutside = physicianOrOutside;

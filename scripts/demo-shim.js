@@ -30,6 +30,29 @@
         inBis: !picked, physician: picked?.physician || null, html: picked?.html || null,
       });
     }
+    // Notes and the emailed brief now work for an outside physician too, so the
+    // demo has to answer for them — kept in memory, per page load.
+    const noteWrite = u.match(/^\/api\/physicians\/([^/]+)\/notes$/);
+    if (noteWrite && (opts.method || 'GET').toUpperCase() === 'POST') {
+      const body = JSON.parse(opts.body || '{}');
+      const npi = noteWrite[1];
+      D.notes[npi] = D.notes[npi] || [];
+      const note = {
+        id: Date.now(),
+        npi,
+        notes: body.notes,
+        meetingDate: body.meetingDate || null,
+        createdAt: new Date().toISOString(),
+        source: 'human',
+      };
+      D.notes[npi].unshift(note);
+      return json({ note });
+    }
+    const send = u.match(/^\/api\/physicians\/([^/]+)\/send-briefing/);
+    if (send) {
+      return json({ sent: true, to: 'rep@lumendi-example.com (demo — no mail was sent)', inBis: false });
+    }
+
     const brief = u.match(/^\/api\/physicians\/([^/]+)\/brief/);
     if (brief) return json({ html: D.briefs[brief[1]] || '<p class="muted">Not generated for this demo.</p>' });
     const note = u.match(/^\/api\/physicians\/([^/]+)\/notes/);
@@ -49,6 +72,19 @@
       const li = document.querySelectorAll('#eventList .event')[Number(n)];
       if (li && !li.classList.contains('event--open')) li.querySelector('.event__title').click();
     }, 400);
+  });
+
+  // ?note=<text> writes a note on the open card's physician, so the round trip
+  // can be exercised without typing.
+  window.addEventListener('load', () => {
+    const text = new URLSearchParams(location.search).get('note');
+    if (!text) return;
+    setTimeout(() => {
+      const form = document.querySelector('#eventList .event--open .mom-form');
+      if (!form) return;
+      form.querySelector('textarea').value = text;
+      form.querySelector('button[type="submit"], .mom-form button').click();
+    }, 1400);
   });
 
   // A one-line caption per meeting, so the page explains itself.
