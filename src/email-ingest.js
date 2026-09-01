@@ -6,6 +6,7 @@ const physiciansDir = require('./physicians');
 const entityMatcher = require('./entity-matcher');
 const context = require('./enrichment/context');
 const enrichment = require('./enrichment');
+const verify = require('./enrichment/verify');
 const tokenStore = require('./token-store');
 const crm = require('./crm-store');
 const callNotes = require('./notes');
@@ -141,8 +142,11 @@ async function syncActivities(token, user) {
     }
 
     // Nobody on the meeting is in BIS — the case that used to end here in
-    // silence. Look the attendees up outside the master instead.
-    if (!physicians.length && !existed) {
+    // silence. Look the attendees (or the names in the title) up outside the
+    // master instead. Not gated on `existed`: meetings that predate this
+    // feature deserve it too, and briefUnknownAttendees has its own
+    // `enrich:<eventId>` key, so it still runs exactly once per meeting.
+    if (!physicians.length) {
       try {
         const recovered = await briefUnknownAttendees(token, user, ev);
         // An attendee the agent found IS in BIS after all (their email was
@@ -151,6 +155,9 @@ async function syncActivities(token, user) {
           const primary = recovered[0];
           await crm.upsertActivityFromEvent(user.homeAccountId, ev, primary.npi, primary.facility?.id);
           await sendInstantBrief(token, user, ev, recovered);
+          // Same brief onto the event itself — a physician found by name/NPI
+          // deserves the in-meeting notes an email-matched one already gets.
+          await enrichEventBody(token, user, ev, recovered);
         }
       } catch (err) {
         console.warn('[ingest] enrichment brief failed:', err.message);
@@ -191,6 +198,7 @@ async function enrichEventBody(token, user, ev, physicians) {
       notes: await callNotes.getNotes(physician.npi, user.email),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
       contact: await contactsStore.getContact(physician.npi),
+      verification: await verify.verifyPhysician(physician),
     });
   }
   const content = graph.buildBriefingContent({
@@ -204,6 +212,36 @@ async function enrichEventBody(token, user, ev, physicians) {
   if (injected) {
     const names = physicians.map((p) => p.name || `NPI ${p.npi}`).join(', ');
     console.log(`[ingest] brief embedded in meeting "${ev.title}" (${names})`);
+  }
+}
+
+/**
+ * Embed a brief for someone OUTSIDE the master into the meeting body.
+ *
+ * The counterpart to enrichEventBody for the enrichment path: same idempotency
+ * key, so a meeting gets one injected brief and never two, and the same
+ * provenance-tagged HTML the external email carries — every field labelled with
+ * the registry it came from, since none of it is BIS-verified.
+ */
+async function injectExternalBrief(token, user, ev, enrichments) {
+  const key = `enriched:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return;
+
+  const names = enrichments.map(
+    (r) => r.profile?.fields?.name?.value || r.query?.name || r.query?.email || 'unknown contact'
+  );
+  const content = [
+    `<p>${'Auto-added BIS pre-meeting notes. '}` +
+      `${names.join(', ')} ${names.length > 1 ? 'are' : 'is'} NOT in the BIS master — ` +
+      'the profile below was assembled from public registries, each field labelled ' +
+      'with its source.</p>',
+    ...enrichments.map((r) => graph.externalBriefHtml(r)),
+  ].join('');
+
+  const injected = await graph.injectBriefIntoEvent(token, ev.id, content);
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  if (injected) {
+    console.log(`[ingest] external brief embedded in meeting "${ev.title}" (${names.join(', ')})`);
   }
 }
 
@@ -227,6 +265,7 @@ async function sendInstantBrief(token, user, ev, physicians) {
       notes: await callNotes.getNotes(physician.npi, user.email),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
       contact: await contactsStore.getContact(physician.npi),
+      verification: await verify.verifyPhysician(physician),
     });
   }
   const names = physicians.map((p) => p.name || `NPI ${p.npi}`).join(', ');
@@ -265,24 +304,56 @@ async function sendInstantBrief(token, user, ev, physicians) {
  * @returns {Promise<object[]>} BIS physicians recovered by NPI (usually empty)
  */
 async function briefUnknownAttendees(token, user, ev) {
+  if (!ev.id) return [];
+
+  // Who to look up: attendees when the meeting has any, otherwise the people
+  // NAMED in the title. A meeting typed straight into Outlook ("meeting with dr
+  // Geoffrey Aaron") carries no attendee at all, and used to produce nothing —
+  // no brief, no notes, nothing on the event.
   const attendees = context.attendeesToEnrich(ev, { selfEmail: user.email });
-  if (!attendees.length || !ev.id) return [];
+  const subjects = attendees.length
+    ? attendees.map((a) => ({ email: a.email, name: a.name || null, via: 'attendee' }))
+    : context
+        .namesFromEvent(ev, { selfEmail: user.email })
+        .map((p) => ({ email: null, name: p.name, via: 'meeting title' }));
+  if (!subjects.length) return [];
 
   const key = `enrich:${ev.id}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return [];
   await tokenStore.markReminderSent(user.homeAccountId, key);
 
   const meetingContext = [ev.title, ev.description].filter(Boolean).join('. ').slice(0, 500);
+  // Facility / city / state the title mentions — a name alone matches many
+  // providers in NPPES, and geography is what separates them.
+  let hints = {};
+  try {
+    hints = await context.hintsFromEvent(ev, { selfEmail: user.email });
+  } catch {
+    /* context is a bonus, never a blocker */
+  }
+
   const recovered = [];
   const external = [];
 
-  for (const attendee of attendees) {
-    const result = await enrichment.enrich({ email: attendee.email, meetingContext });
+  for (const subject of subjects) {
+    const result = await enrichment.enrich({
+      email: subject.email || undefined,
+      name: subject.email ? undefined : subject.name,
+      state: hints.state || undefined,
+      city: hints.city || undefined,
+      facilityName: hints.facilityName || hints.mentionedFacilities?.[0] || undefined,
+      meetingContext,
+    });
 
     if (result.status === 'recovered_in_bis' && result.physician) {
       recovered.push(result.physician);
     } else if (result.status === 'external') {
       external.push(result);
+    } else if (subject.via === 'meeting title') {
+      console.log(
+        `[ingest] title name "${subject.name}" on "${ev.title}" → ${result.status} ` +
+          `(confidence ${result.confidence}) — not briefed`
+      );
     }
   }
 
@@ -294,8 +365,16 @@ async function briefUnknownAttendees(token, user, ev) {
     });
     console.log(
       `[ingest] external brief sent to ${to} — "${ev.title}" ` +
-        `(${external.length} attendee(s) outside BIS)`
+        `(${external.length} ${subjects[0].via}(s) outside BIS)`
     );
+
+    // …and put the same brief ON the meeting, so the rep opening the event in
+    // Outlook has the pre-meeting notes there rather than in a separate mail.
+    try {
+      await injectExternalBrief(token, user, ev, external);
+    } catch (err) {
+      console.warn('[ingest] external brief injection failed:', err.message);
+    }
   }
 
   return recovered;
@@ -622,4 +701,5 @@ function start() {
 module.exports = {
   start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
   reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
+  briefUnknownAttendees,
 };

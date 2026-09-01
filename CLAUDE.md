@@ -92,4 +92,9 @@ cards) + CSV export (`GET /api/email-intel`).
 - Commit/push only when asked. Branch first if on `main`.
 - Stores degrade to null/empty when Supabase/AI is absent — never hard-crash the app.
 - Email == in-app brief: both use `graph.physicianBriefHtml`. Keep them identical.
+- `bis_physicians` is NOT ground truth for contact details. NPPES has no email field at all, so
+  every email is vendor-guessed (`⚠️ unverified`) unless `app_contacts` confirms it. Briefs run
+  `enrichment/verify.js` (BIS vs NPPES by NPI) and flag a physician who has moved.
+- A meeting with no attendee still gets a brief: `enrichment/context.namesFromEvent()` reads the
+  name out of the title and the agent resolves it. Never mail/inject an `ambiguous` result.
 - Current working branch: `feature/old-email-read`.

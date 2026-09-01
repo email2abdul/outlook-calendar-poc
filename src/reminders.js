@@ -4,6 +4,7 @@ const auth = require('./auth');
 const graph = require('./graph');
 const physiciansDir = require('./physicians');
 const context = require('./enrichment/context');
+const verify = require('./enrichment/verify');
 const callNotes = require('./notes');
 const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
@@ -116,6 +117,9 @@ async function tick() {
             notes: await callNotes.getNotes(physician.npi, user.email),
             analytics: await analytics.getLabelledAnalytics(physician.npi),
             contact: await contactsStore.getContact(physician.npi),
+            // Flags a BIS row the NPPES registry disagrees with, so the rep is
+            // not handed a stale facility/email as fact. Null when unreachable.
+            verification: await verify.verifyPhysician(physician),
           });
         }
         const names = physicians.map((p) => p.name || p.npi).join(', ');

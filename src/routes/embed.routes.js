@@ -8,6 +8,7 @@ const contactsStore = require('../contacts-store');
 const graph = require('../graph');
 const leadMatch = require('../lead-match');
 const entityMatcher = require('../entity-matcher');
+const verify = require('../enrichment/verify');
 
 /**
  * Part 2 — embed the lead BIS brief INSIDE Dynamics 365.
@@ -78,11 +79,17 @@ router.get('/lead-brief', async (req, res, next) => {
     // Physician hit → the full pre-meeting brief (same body as email/in-app).
     if (result.matchedBy === 'email' || result.matchedBy === 'name') {
       const physician = physicians.getByNpi(result.physician.npi) || result.physician;
-      const [analyticsData, contact] = await Promise.all([
+      const [analyticsData, contact, verification] = await Promise.all([
         analytics.getLabelledAnalytics(physician.npi),
         contactsStore.getContact(physician.npi),
+        verify.verifyPhysician(physician),
       ]);
-      const brief = graph.physicianBriefHtml({ physician, analytics: analyticsData, contact });
+      const brief = graph.physicianBriefHtml({
+        physician,
+        analytics: analyticsData,
+        contact,
+        verification,
+      });
       return res.type('html').send(
         page(
           who,
@@ -127,16 +134,17 @@ router.get('/lead-brief', async (req, res, next) => {
 
 /** Build one physician "block" (name + specialty + brief HTML) for the add-in. */
 async function physicianBlock(physician, matchedBy) {
-  const [analyticsData, contact] = await Promise.all([
+  const [analyticsData, contact, verification] = await Promise.all([
     analytics.getLabelledAnalytics(physician.npi),
     contactsStore.getContact(physician.npi),
+    verify.verifyPhysician(physician),
   ]);
   return {
     npi: physician.npi,
     name: physician.name || `NPI ${physician.npi}`,
     specialty: physician.specialty || '',
     matchedBy,
-    html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact }),
+    html: graph.physicianBriefHtml({ physician, analytics: analyticsData, contact, verification }),
   };
 }
 
