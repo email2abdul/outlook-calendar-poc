@@ -10,11 +10,13 @@ const context = require('./enrichment/context');
  * cheapest answer always wins:
  *
  *   1. an ATTENDEE's exact email in the BIS master        free, 0 ms
- *   2. the title says "Dr"/"Doctor" — the gate            free, 0 ms
- *   3. that name in the BIS master (in-memory directory)  free, 0 ms
+ *   2. the physician the REP already picked for this       free, 0 ms
+ *      meeting (app_activities.chosen_npi)
+ *   3. the title says "Dr"/"Doctor" — the gate            free, 0 ms
+ *   4. that name in the BIS master (in-memory directory)  free, 0 ms
  *      · exactly one  → resolved
  *      · several      → the rep picks (status `choose`)
- *   4. nothing in BIS → `needs_external`, which is where the enrichment agent
+ *   5. nothing in BIS → `needs_external`, which is where the enrichment agent
  *      (NPPES + CMS) takes over — that step is NOT run here.
  *
  * Two rules this module inherits from enrichment/context.js and never breaks:
@@ -132,6 +134,8 @@ function toCard(p) {
  * @param {object} ev                normalized event (src/graph.js)
  * @param {object} [opts]
  * @param {string} [opts.selfEmail]  the signed-in rep, excluded like the organizer
+ * @param {string} [opts.chosenNpi]  the physician the rep already confirmed for
+ *                                   this meeting (app_activities.chosen_npi)
  * @returns {{
  *   status: 'matched'|'choose'|'needs_external'|'gate_blocked'|'no_name',
  *   via: 'attendee-email'|'bis-name'|null,
@@ -177,7 +181,30 @@ function matchMeeting(ev, opts = {}) {
     };
   }
 
-  // ── Rung 2: the gate ─────────────────────────────────────────────────────
+  // ── Rung 2: the physician the rep already picked for this meeting ────────
+  // A shortlist is a question, and this is the answer to it. Asking the same
+  // question every few minutes is worse than useless: it re-lists candidates
+  // the rep has already ruled out, and (before this) it re-spent the lookup.
+  // Deliberately below the email rung, per the agreed flow — an address that
+  // matches the master exactly is not a guess anyone needs to confirm.
+  if (opts.chosenNpi) {
+    const picked = physicians.getByNpi(opts.chosenNpi);
+    if (picked) {
+      return {
+        ...base,
+        status: 'matched',
+        via: 'rep-choice',
+        physicians: [toCard(picked)],
+        reason: `${picked.name || opts.chosenNpi} was confirmed for this meeting by the rep.`,
+      };
+    }
+    // The NPI is stored but no longer in the directory (the master was
+    // reloaded, or the row went away). Fall through to the ladder rather than
+    // showing nothing — and say so, so the stale pick is visible.
+    base.reason = `Stored choice ${opts.chosenNpi} is no longer in the BIS master.`;
+  }
+
+  // ── Rung 3: the gate ─────────────────────────────────────────────────────
   if (!gate.pass) {
     return {
       ...base,
@@ -188,7 +215,7 @@ function matchMeeting(ev, opts = {}) {
     };
   }
 
-  // ── Rung 3: the name(s), against the master ──────────────────────────────
+  // ── Rung 4: the name(s), against the master ──────────────────────────────
   const names = namesToLookUp(ev, selfEmail);
   if (!names.length) {
     return {

@@ -137,6 +137,24 @@ async function dayHandler(req, res, next) {
     // the UI can show the physician's full profile inline — plus the
     // organizer's latest meeting note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
+
+    // What has already been DECIDED for these meetings — one query for the
+    // whole day, not one per meeting. A physician the rep confirmed outranks
+    // every automatic guess below, and is why a shortlist is asked once and
+    // not on every page load.
+    let decided = new Map();
+    if (crm.enabled) {
+      try {
+        decided = await crm.findActivitiesByEventIds(
+          ownerId(req),
+          data.events.map((e) => e.id)
+        );
+      } catch (err) {
+        // No decision history is a worse day view, not a broken one.
+        console.warn('[api] activity lookup failed:', err.message);
+      }
+    }
+
     data.events = await Promise.all(
       data.events.map(async (ev) => {
         // Only ATTENDEES are matched against the directory — never the person
@@ -167,7 +185,11 @@ async function dayHandler(req, res, next) {
         // any title analysis, because it decides whether a name path is even
         // allowed: the title must say "Dr"/"Doctor", and then the name has to
         // be in the master. Its answer is what the UI renders.
-        const match = meetingMatch.matchMeeting(ev, { selfEmail: organizer });
+        const activity = decided.get(String(ev.id)) || null;
+        const match = meetingMatch.matchMeeting(ev, {
+          selfEmail: organizer,
+          chosenNpi: activity?.chosen_npi || null,
+        });
 
         // Resolved by name, or narrowed to a shortlist the rep picks from:
         // either way the person is IN the master, so title chips and external
@@ -557,6 +579,100 @@ router.get('/meetings/match', requireAuth, async (req, res, next) => {
       start: event.start,
       timeZone: event.timeZone,
       ...result,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/meetings/choose — remember which physician this meeting is with.
+ * Body: { eventId, npi }   ·   npi: null clears the choice
+ *
+ * The shortlist asks a question only the rep can answer; this is where the
+ * answer is kept. It is written to app_activities as BOTH chosen_npi (the
+ * decision, with who made it and when) and physician_npi (the column every
+ * existing reader already uses), so the reminder brief and reply→note linking
+ * follow the choice without learning anything new.
+ *
+ * 503 with a plain message when supabase/meeting-choice-setup.sql has not been
+ * run on the project yet — the UI shows the brief regardless and says the
+ * choice was not saved, which is honest rather than silent.
+ */
+router.post('/meetings/choose', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.body?.eventId === 'string' ? req.body.eventId.trim() : '';
+    const rawNpi = req.body?.npi;
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+    const clearing = rawNpi === null || rawNpi === undefined || rawNpi === '';
+    const npi = clearing ? null : String(rawNpi).trim();
+    if (!clearing && !/^\d{10}$/.test(npi)) {
+      return res.status(400).json({ error: 'bad_request', message: 'npi must be 10 digits, or null to clear.' });
+    }
+    if (!crm.enabled) {
+      return res.status(503).json({
+        error: 'unavailable',
+        message: 'Supabase is not configured, so the choice cannot be remembered.',
+      });
+    }
+
+    // The physician must be one we can actually brief; a stale or mistyped NPI
+    // would otherwise be stored and quietly brief nobody.
+    const physician = npi ? physicians.getByNpi(npi) : null;
+    if (npi && !physician) {
+      return res.status(400).json({
+        error: 'bad_request',
+        message: `NPI ${npi} is not in the BIS directory.`,
+      });
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    let row;
+    try {
+      row = await crm.setChosenPhysician(ownerId(req), event, npi, {
+        by: 'user',
+        briefStatus: npi ? 'briefed' : null,
+      });
+    } catch (err) {
+      if (err.message === 'MISSING_CHOICE_COLUMNS') {
+        console.warn('[api] choice columns missing:', err.detail);
+        return res.status(503).json({
+          error: 'setup_required',
+          message:
+            'This Supabase project has no chosen_npi column yet — run ' +
+            'supabase/meeting-choice-setup.sql, then the choice will stick.',
+        });
+      }
+      throw err;
+    }
+
+    await crm.audit({
+      actor: 'user',
+      action: npi ? 'meeting.physician_chosen' : 'meeting.physician_choice_cleared',
+      entityType: 'activity',
+      entityId: row?.id || null,
+      details: { eventId, npi, title: event.title, by: organizerEmail(req) },
+    });
+
+    res.json({
+      saved: true,
+      eventId,
+      cleared: !npi,
+      physician: physician
+        ? { npi: physician.npi, name: physician.name, specialty: physician.specialty || null }
+        : null,
     });
   } catch (err) {
     next(err);

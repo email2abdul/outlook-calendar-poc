@@ -127,7 +127,10 @@ async function syncActivities(token, user) {
       user.homeAccountId,
       ev,
       primary?.npi,
-      primary?.facility?.id
+      primary?.facility?.id,
+      // Already read above; hand it over so the merge (which protects a rep's
+      // confirmed physician from being overwritten) costs no second query.
+      { existing: existed }
     );
     if (activity) synced++;
 

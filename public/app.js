@@ -60,7 +60,10 @@ function lookupHint(ev) {
   // NAMES the physician it resolved, or says how many people share the name.
   const m = ev.match;
   if (m && m.status === 'matched' && (m.physicians || []).length) {
-    return `🩺 ${listNames(m.physicians.map((p) => p.name).filter(Boolean))} — BIS intelligence, click to open`;
+    const who = listNames(m.physicians.map((p) => p.name).filter(Boolean));
+    return m.via === 'rep-choice'
+      ? `🩺 ${who} — your pick for this meeting, click to open`
+      : `🩺 ${who} — BIS intelligence, click to open`;
   }
   if (m && m.status === 'choose') {
     const g = (m.groups || []).find((x) => x.total > 1);
@@ -820,6 +823,46 @@ function buildNoMatch(detail, ev, { intro: introText } = {}) {
   detail.appendChild(pickedWrap);
 }
 
+/**
+ * Remember (or forget) which physician this meeting is with.
+ *
+ * The brief is rendered optimistically before this resolves — the rep asked to
+ * see the person, and a slow write should not hold that up — so the caller
+ * reports what happened instead of pretending it saved.
+ *
+ * @param {object} ev
+ * @param {string|null} npi  null clears the choice
+ */
+async function saveMeetingChoice(ev, npi) {
+  const res = await fetch('/api/meetings/choose', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ eventId: ev.id, npi }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || 'The choice could not be saved.');
+  return data;
+}
+
+/**
+ * Re-run the ladder for one meeting and rebuild its panel.
+ *
+ * Reads the CURRENT event back through /api/meetings/match, so this doubles as
+ * the honest way to reflect a meeting the rep has just edited — or a choice
+ * they just cleared.
+ */
+async function refreshMatch(ev, detail) {
+  try {
+    const res = await fetch(`/api/meetings/match?eventId=${encodeURIComponent(ev.id)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) ev.match = await res.json();
+  } catch {
+    /* keep the panel we have rather than blanking it */
+  }
+  buildDetail(detail, ev);
+}
+
 /** A free-text physician search, wired to `onPick`. Used by more than one path. */
 function appendSearchBox(detail, onPick) {
   const searchWrap = physSearchTpl.content.firstElementChild.cloneNode(true);
@@ -849,10 +892,26 @@ function buildChoose(detail, ev) {
   const pickedWrap = document.createElement('div');
   pickedWrap.className = 'event__detail-picked';
 
-  function pick(p) {
+  async function pick(p) {
     pickedWrap.innerHTML = '';
+
+    // The answer to the shortlist is worth keeping: without it the next page
+    // load asks again, and the reminder email never learns who was picked.
+    const status = document.createElement('p');
+    status.className = 'muted event__detail-intro';
+    status.textContent = `Remembering ${p.name || p.npi} for this meeting…`;
+    pickedWrap.appendChild(status);
     pickedWrap.appendChild(buildPhysicianBlock(p, ev));
     pickedWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    try {
+      await saveMeetingChoice(ev, p.npi);
+      status.textContent =
+        `✔ ${p.name || p.npi} is now the physician for this meeting — the reminder brief ` +
+        'will use them too.';
+    } catch (err) {
+      status.textContent = `⚠️ ${err.message} The brief below is still correct; the choice was not saved.`;
+    }
   }
 
   for (const g of m.groups || []) {
@@ -921,18 +980,44 @@ function buildDetail(detail, ev) {
 
   if (m && m.status === 'matched' && (m.physicians || []).length) {
     // Say HOW this person was identified. A name match is weaker evidence than
-    // an email match, and the rep is entitled to know which one they are
-    // looking at before they act on the brief.
+    // an email match, and a choice the rep made is stronger than both — they
+    // are entitled to know which one they are looking at before acting on it.
     const via = document.createElement('p');
     via.className = 'muted event__detail-intro';
-    const names = m.names || [];
-    const named = names.map((n) => `“${n.name}” (${n.source})`).join(', ');
-    via.textContent =
-      `Matched by name: ${named} — ` +
-      (names.length > 1
-        ? 'each resolves to exactly one physician in the BIS directory. '
-        : 'exactly one physician in the BIS directory. ') +
-      'No attendee email on this meeting is in the directory.';
+
+    if (m.via === 'rep-choice') {
+      const who = m.physicians[0];
+      via.textContent = `✔ You picked ${who.name || who.npi} for this meeting. `;
+
+      // The choice has to be undoable, or a mis-click is permanent: clearing it
+      // puts the meeting back on the ladder and re-renders whatever it says.
+      const change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'btn btn--ghost';
+      change.textContent = 'Change';
+      change.addEventListener('click', async () => {
+        change.disabled = true;
+        change.textContent = 'Clearing…';
+        try {
+          await saveMeetingChoice(ev, null);
+          await refreshMatch(ev, detail);
+        } catch (err) {
+          via.textContent = `⚠️ ${err.message} `;
+          change.disabled = false;
+          change.textContent = 'Change';
+        }
+      });
+      via.appendChild(change);
+    } else {
+      const names = m.names || [];
+      const named = names.map((n) => `“${n.name}” (${n.source})`).join(', ');
+      via.textContent =
+        `Matched by name: ${named} — ` +
+        (names.length > 1
+          ? 'each resolves to exactly one physician in the BIS directory. '
+          : 'exactly one physician in the BIS directory. ') +
+        'No attendee email on this meeting is in the directory.';
+    }
     detail.appendChild(via);
 
     for (const p of m.physicians) detail.appendChild(buildPhysicianBlock(p, ev));

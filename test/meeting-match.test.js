@@ -201,3 +201,59 @@ test('"Dr" with no readable full name asks for nothing', () => {
   assert.strictEqual(r.status, 'no_name');
   assert.deepStrictEqual(r.physicians, []);
 });
+
+// ── Rung 2: a choice the rep already made ───────────────────────────────────
+
+test('a physician the rep picked resolves the meeting with no lookup at all', () => {
+  const r = matchMeeting(
+    // Ambiguous by name, and the gate is open — but the question was already
+    // answered, so it must not be asked again.
+    event({ title: 'Meeting with Dr Geoffrey Aaron' }),
+    { selfEmail: REP, chosenNpi: '1000000002' }
+  );
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'rep-choice');
+  assert.deepStrictEqual(
+    r.physicians.map((p) => p.npi),
+    ['1000000002']
+  );
+  assert.deepStrictEqual(r.groups, [], 'no shortlist is rebuilt');
+});
+
+test('a choice sticks even on a title the gate would have blocked', () => {
+  const r = matchMeeting(event({ title: 'Coffee catch-up' }), {
+    selfEmail: REP,
+    chosenNpi: '1000000003',
+  });
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'rep-choice');
+});
+
+test('an exact attendee email still outranks a stored choice', () => {
+  const r = matchMeeting(
+    event({
+      title: 'Meeting with Dr Geoffrey Aaron',
+      attendees: [{ name: 'G Aaron', email: 'gaaron@bis-example.org', type: 'required' }],
+    }),
+    { selfEmail: REP, chosenNpi: '1000000003' }
+  );
+
+  assert.strictEqual(r.via, 'attendee-email');
+  assert.deepStrictEqual(
+    r.physicians.map((p) => p.npi),
+    ['1000000001']
+  );
+});
+
+test('a stored choice that has left the directory falls back, and says so', () => {
+  const r = matchMeeting(event({ title: 'Case obs with Dr Nicholas Shaheen' }), {
+    selfEmail: REP,
+    chosenNpi: '9999999999', // no longer in the master
+  });
+
+  assert.strictEqual(r.status, 'matched');
+  assert.strictEqual(r.via, 'bis-name', 'the ladder carries on rather than showing nothing');
+  assert.match(r.reason, /Nicholas/);
+});
