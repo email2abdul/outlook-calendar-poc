@@ -79,7 +79,12 @@ async function bisBrief(npi) {
 
 /** The same assembly the endpoint does, plus the rendered notes. */
 async function outsideFor(ev, match) {
-  const hints = { city: ev.demoCity || null, state: ev.demoState || null };
+  const derived = await meetingContext.hintsFromEvent(ev, { selfEmail: REP.email }).catch(() => ({}));
+  const hints = {
+    city: ev.demoCity || derived.city || null,
+    state: ev.demoState || derived.state || null,
+    taxonomy: derived.taxonomy || null,
+  };
   const text = [ev.title, ev.description].filter(Boolean).join(' · ');
   const groups = [];
   const failures = [];

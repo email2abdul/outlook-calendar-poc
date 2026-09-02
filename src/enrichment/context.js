@@ -340,6 +340,37 @@ function organizerTokens(event, selfEmail) {
 }
 
 /**
+ * A taxonomy the rep labelled on the meeting.
+ *
+ * "Primary Taxonomy - Internal Medicine from CHICAGO" is a rep telling us, in
+ * as many words, what kind of physician this is. Two things then have to happen:
+ * the phrase becomes a TAXONOMY hint, and it is taken out of the text before the
+ * facility analysis runs — because "Internal Medicine" on its own matched a BIS
+ * facility called "Barkstone Internal Medicine Laguna Hills California", whose
+ * city and state were then sent to the registry as filters and eliminated every
+ * real candidate (a Chicago physician, found 2026-09-02).
+ *
+ * @param {string} text
+ * @returns {{taxonomy: string|null, rest: string}} the label's value, and the
+ *          text with that clause removed
+ */
+function taxonomyFromText(text) {
+  const raw = String(text || '');
+  // "Primary Taxonomy - X", "Taxonomy: X", "Specialty — X"; the value runs to a
+  // separator a rep would actually type, not to the end of the description.
+  const re = /\b(?:primary\s+)?(?:taxonomy|speciality|specialty)\s*[-–—:]\s*([^.,;\n·|]+)/i;
+  const m = re.exec(raw);
+  if (!m) return { taxonomy: null, rest: raw };
+
+  // "Internal Medicine from CHICAGO" → the taxonomy is what precedes the place.
+  const value = m[1].split(/\s+(?:from|at|in)\s+/i)[0].trim();
+  return {
+    taxonomy: value || null,
+    rest: (raw.slice(0, m.index) + ' ' + raw.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim(),
+  };
+}
+
+/**
  * Facility / location hints from the meeting title and description.
  *
  * Reuses the existing entity-matcher rather than re-implementing extraction —
@@ -350,7 +381,7 @@ function organizerTokens(event, selfEmail) {
  * email, and a name in the title is as likely to be the organizer's as the
  * physician's.
  *
- * @returns {Promise<{facilityId, facilityName, city, state, mentionedFacilities, text}>}
+ * @returns {Promise<{facilityId, facilityName, city, state, taxonomy, mentionedFacilities, text}>}
  */
 async function hintsFromEvent(event, opts = {}) {
   const text = [event?.title, event?.description, event?.location]
@@ -358,21 +389,26 @@ async function hintsFromEvent(event, opts = {}) {
     .join('. ')
     .trim();
 
+  // A labelled taxonomy is the rep's own answer to "what kind of physician" —
+  // read it, and keep it out of the facility analysis below.
+  const { taxonomy, rest } = taxonomyFromText(text);
+
   const hints = {
     facilityId: null,
     facilityName: null,
     city: null,
     state: null,
+    taxonomy,
     mentionedFacilities: [],
     text: text || null,
   };
-  if (!text) return hints;
+  if (!rest) return hints;
 
   const skip = organizerTokens(event, opts.selfEmail);
 
   let analysis;
   try {
-    analysis = await entityMatcher.analyze(text);
+    analysis = await entityMatcher.analyze(rest);
   } catch (err) {
     console.warn('[enrichment:context] entity analysis failed:', err.message);
     return hints;
@@ -452,6 +488,7 @@ function stripOrganizerPeople(analysis, event, selfEmail) {
 
 module.exports = {
   attendeesToEnrich,
+  taxonomyFromText,
   namesFromEvent,
   seriesKey,
   isOrganizer,

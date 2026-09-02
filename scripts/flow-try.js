@@ -161,7 +161,20 @@ async function main() {
 
   // ── Outside the master ────────────────────────────────────────────────────
   const names = match.unresolvedNames.length ? match.unresolvedNames : [];
-  const hints = { city: flag('city') || null, state: flag('state') || null };
+  // The same hints the route derives from the meeting itself, so a flagless run
+  // behaves exactly like the app.
+  let derived = {};
+  try {
+    derived = await require('../src/enrichment/context').hintsFromEvent(ev, { selfEmail: REP });
+  } catch {
+    /* hints are a bonus */
+  }
+  const hints = {
+    city: flag('city') || derived.city || null,
+    state: flag('state') || derived.state || null,
+    taxonomy: flag('taxonomy') || derived.taxonomy || null,
+  };
+  if (derived.taxonomy) console.log(`labelled taxonomy on the meeting: “${derived.taxonomy}”`);
 
   let best = null;
   if (match.npi) {
@@ -201,7 +214,7 @@ async function main() {
           lastName,
           city: hints.city,
           state: hints.state,
-          taxonomy: flag('taxonomy'),
+          taxonomy: flag('taxonomy') || hints.taxonomy,
           address: flag('address'),
           zip: flag('zip'),
           phone: flag('phone'),

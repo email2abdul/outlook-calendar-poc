@@ -123,3 +123,23 @@ test('"Internal Medicine" survives the negative word list', () => {
   assert.strictEqual(classify({ desc: 'Student in an Organized Health Care Education/Training Program' }).kind, 'not_doctor');
   assert.strictEqual(classify({ desc: 'Technician, Personal Care Attendant' }).kind, 'not_doctor');
 });
+
+// ── The labelled taxonomy, and why it must leave the facility analysis ──────
+
+test('a labelled taxonomy is read as a taxonomy and removed from the text', () => {
+  const { taxonomyFromText } = require('../src/enrichment/context');
+
+  // The real meeting. "Internal Medicine" left in the text matched a BIS
+  // facility ("Barkstone Internal Medicine Laguna Hills California"), whose
+  // city and state were then sent to NPPES as filters and eliminated every
+  // real candidate — including the Chicago physician the rep meant.
+  const read = taxonomyFromText('Meeting with Dr ABESELOM. Primary Taxonomy - Internal Medicine from CHICAGO');
+  assert.strictEqual(read.taxonomy, 'Internal Medicine');
+  assert.ok(!/Internal Medicine/i.test(read.rest), 'the clause must not reach the facility matcher');
+  assert.match(read.rest, /ABESELOM/, 'and the rest of the meeting survives');
+
+  assert.strictEqual(taxonomyFromText('Taxonomy: Dentist').taxonomy, 'Dentist');
+  assert.strictEqual(taxonomyFromText('Specialty — Gastroenterology, plus notes').taxonomy, 'Gastroenterology');
+  assert.strictEqual(taxonomyFromText('no label here').taxonomy, null);
+  assert.strictEqual(taxonomyFromText('no label here').rest, 'no label here');
+});

@@ -258,3 +258,19 @@ test('a city the meeting mentions decides between two physicians of the same nam
     'and clearly enough ahead that it is not a coin toss'
   );
 });
+
+test('a labelled taxonomy on the meeting is used, and beats a mere mention', () => {
+  // "Primary Taxonomy - Internal Medicine" is the rep answering the question
+  // outright; hintsFromEvent reads it and passes it as `taxonomy`.
+  const ny = {
+    npi: '1780317891', name: 'ABESELOM ASHENAFI', firstName: 'ABESELOM', lastName: 'ASHENAFI',
+    taxonomyCode: '207R00000X', primaryTaxonomy: 'Internal Medicine', city: 'NEW YORK', state: 'NY',
+  };
+  const r = scoreCandidate(ny, {
+    firstName: 'Abeselom',
+    taxonomy: 'Internal Medicine',
+    text: 'Meeting with Dr ABESELOM · Primary Taxonomy - Internal Medicine from CHICAGO',
+  });
+  assert.ok(r.reasons.includes('primary taxonomy matches exactly'));
+  assert.ok(r.confidence >= CONFIDENCE_SHOW);
+});

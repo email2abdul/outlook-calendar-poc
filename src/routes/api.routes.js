@@ -860,6 +860,10 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
           lastName,
           city: hints.city,
           state: hints.state,
+          // What the rep labelled on the meeting ("Primary Taxonomy - Internal
+          // Medicine"), which is a stronger signal than the same words merely
+          // appearing somewhere in the text.
+          taxonomy: hints.taxonomy || undefined,
           // The meeting's own words, so a candidate whose taxonomy, street or
           // ZIP the rep wrote down scores for it. This is what turns "nine
           // Aagaards" into "the dentist one".

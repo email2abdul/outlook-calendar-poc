@@ -113,13 +113,21 @@ async function searchByName({ firstName, lastName, state, city, limit = 5 } = {}
   if (!lastName && !(firstName && firstName.replace(/[.]/g, '').length > 1)) return [];
 
   return health.run(async () => {
-    const hits = await registry.searchIndividuals({
-      lastName,
-      // A single initial is rejected by the API, so only send a real first name.
-      firstName: firstName && firstName.replace(/[.]/g, '').length > 1 ? firstName : undefined,
-      state: states.toCode(state),
-      limit: 20,
-    });
+    // A single initial is rejected by the API, so only send a real first name.
+    const sendFirst = firstName && firstName.replace(/[.]/g, '').length > 1 ? firstName : undefined;
+    const query = { lastName, firstName: sendFirst, limit: 20 };
+
+    let hits = await registry.searchIndividuals({ ...query, state: states.toCode(state) });
+
+    // A STATE hint is a guess about where the meeting is, and a guess must not
+    // be able to delete the answer: a description reading "Internal Medicine
+    // from CHICAGO" was mis-read as a facility in California, whose state then
+    // filtered every real candidate out of the registry (found 2026-09-02). So
+    // a filtered search that finds nobody is retried unfiltered, and the hint
+    // goes back to doing what it should — ranking, in score.js.
+    if (!hits.length && states.toCode(state)) {
+      hits = await registry.searchIndividuals(query);
+    }
 
     // An empty list from an unreachable host is not an empty registry.
     if (!hits.length) assertReached('search');
