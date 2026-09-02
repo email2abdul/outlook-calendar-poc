@@ -132,9 +132,9 @@ test('distinct series stay separate', async () => {
     seriesMasterId: 'AAMkAG-series-A',
     attendee: { name: 'Geoffrey Aaron', email: 'geoffrey.aaron@unchealth.org' },
   });
-  // Same TITLE, different series and different person — must not collide.
+  // A different series with a different person — must not collide.
   const b = occurrences(5, {
-    title: 'Meeting with Dr Geoffrey Aaron',
+    title: 'Meeting with Dr Nicholas Shaheen',
     seriesMasterId: 'AAMkAG-series-B',
     attendee: { name: 'Nicholas Shaheen', email: 'nshaheen@med.unc.edu' },
   });
@@ -142,9 +142,15 @@ test('distinct series stay separate', async () => {
   for (const ev of [...a, ...b]) await ingest.briefUnknownAttendees('token', USER, ev);
 
   assert.strictEqual(calls.enrich.length, 2);
+  // The name the MEETING gives is what is looked up — never the address, which
+  // is not a name and cannot be turned into one.
   assert.deepStrictEqual(
-    calls.enrich.map((q) => q.email).sort(),
-    ['geoffrey.aaron@unchealth.org', 'nshaheen@med.unc.edu']
+    calls.enrich.map((q) => q.name).sort(),
+    ['Geoffrey Aaron', 'Nicholas Shaheen']
+  );
+  assert.ok(
+    calls.enrich.every((q) => q.email === undefined),
+    'no lookup is ever made on an attendee address'
   );
 });
 
@@ -158,6 +164,7 @@ test('an edited occurrence (Graph "exception") with a different person is enrich
   series[2] = {
     ...series[2],
     type: 'exception',
+    title: 'Meeting with Dr Nicholas Shaheen',
     attendees: [{ name: 'Nicholas Shaheen', email: 'nshaheen@med.unc.edu', type: 'required' }],
   };
 

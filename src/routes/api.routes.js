@@ -246,8 +246,10 @@ async function dayHandler(req, res, next) {
         // The gate said no: the title never calls anyone a doctor. Person
         // chips from the title are exactly what the gate withholds, so they
         // are not computed at all (nor is the analysis that produces them).
-        // An attendee who HAS an address is still looked up outside BIS — that
-        // is an email path, not a name path, and the gate does not govern it.
+        // Nothing else is looked up either — an attendee's address used to be
+        // treated as its own path around the gate, and it is not one: an
+        // address is not a name, so anything built from it was a guess. The
+        // panel renders nothing for this meeting at all.
         if (match.status === 'gate_blocked') {
           return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match };
         }
@@ -926,10 +928,12 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
  * provenance-tagged profile for them — every field carrying the source it came
  * from (see docs/external-enrichment-agent.md).
  *
- * Free tiers (BIS + NPPES + CMS) always run. The paid web-identity tier runs
- * only when there is something to buy — no name supplied and a personal-looking
- * mailbox; pass `useWeb=never` to force it off or `useWeb=always` to force it
- * on. `context` passes the meeting title/description for disambiguation.
+ * Free tiers (BIS + NPPES + CMS) always run, and they need a NAME — supplied
+ * here by the rep or read off the meeting. A name is never derived from the
+ * address: `?email=` alone resolves the master, the domain and nothing else.
+ * The paid web-identity tier is the only thing that can turn an address into a
+ * person, so it runs ONLY on an explicit `useWeb=always`. `context` passes the
+ * meeting title/description for disambiguation.
  *
  * `status` tells the caller what happened:
  *   in_bis            → already in bis_physicians, use the normal brief

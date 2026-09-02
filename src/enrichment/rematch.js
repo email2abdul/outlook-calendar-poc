@@ -221,7 +221,7 @@ function facilityFromDomain(email) {
   };
 }
 
-// ── Email → name hints ──────────────────────────────────────────────────────
+// ── Email → mailbox kind ────────────────────────────────────────────────────
 
 /** Mailboxes that belong to an organisation, not a person. */
 const GENERIC_MAILBOXES = new Set([
@@ -232,63 +232,28 @@ const GENERIC_MAILBOXES = new Set([
 ]);
 
 /**
- * Guess a person's name from an email local-part.
+ * Is this a shared/organisational mailbox rather than a person's?
  *
- * Returns ranked interpretations rather than one answer — "nshaheen" could be
- * N. Shaheen or someone called Nshaheen, and the caller (index.js) simply tries
- * each against NPPES until one resolves.
+ * ── A name is never guessed from an address ──────────────────────────────────
+ * This used to return ranked *name* guesses too: "nshaheen" → N. Shaheen, and
+ * the caller tried each against NPPES. The rep's rule is that it must not, and
+ * the reason is on the record: `email2@gmail.com` became "e" + "mail", NPPES
+ * held eight people surnamed MAIL, exactly one of them had a first name
+ * starting with E — and a clinical social worker in Indianapolis was presented
+ * as the physician for a meeting called "Meeting with Best friend". An address
+ * is not a name, and a lookup built on a guessed name inherits none of the
+ * address's certainty while looking just as authoritative.
  *
- * @returns {{generic:boolean, candidates:Array<{firstName:string,lastName:string,confidence:number,rule:string}>}}
+ * A name now comes only from someone who actually knows it: the rep (typed, or
+ * written on the meeting) or the master.
+ *
+ * @param {string} email
+ * @returns {boolean}
  */
-function nameHintsFromEmail(email) {
+function isGenericMailbox(email) {
   const local = String(email || '').toLowerCase().split('@')[0] || '';
-  const clean = local.replace(/\d+$/, ''); // drop trailing digits: jsmith2 → jsmith
-
-  if (!clean || GENERIC_MAILBOXES.has(clean)) {
-    return { generic: true, candidates: [] };
-  }
-
-  const parts = clean.split(/[._\-+]/).filter(Boolean);
-  const candidates = [];
-
-  if (parts.length >= 2) {
-    // first.last / first.m.last — the unambiguous, common case.
-    const first = parts[0];
-    const last = parts[parts.length - 1];
-    if (first.length >= 2 && last.length >= 2) {
-      candidates.push({ firstName: first, lastName: last, confidence: 85, rule: 'first.last' });
-    }
-    // Some organisations invert it (last.first).
-    if (last.length >= 2 && first.length >= 2) {
-      candidates.push({ firstName: last, lastName: first, confidence: 45, rule: 'last.first' });
-    }
-  } else if (parts.length === 1) {
-    const one = parts[0];
-    // "nshaheen" → N. Shaheen. The dominant institutional convention.
-    if (one.length >= 4) {
-      candidates.push({
-        firstName: one[0],
-        lastName: one.slice(1),
-        confidence: 60,
-        rule: 'initial+last',
-      });
-    }
-    // "shaheenn" → Shaheen N.
-    if (one.length >= 4) {
-      candidates.push({
-        firstName: one[one.length - 1],
-        lastName: one.slice(0, -1),
-        confidence: 35,
-        rule: 'last+initial',
-      });
-    }
-    // The whole thing may just be a surname.
-    if (one.length >= 3) {
-      candidates.push({ firstName: '', lastName: one, confidence: 40, rule: 'surname-only' });
-    }
-  }
-
-  return { generic: false, candidates: candidates.sort((a, b) => b.confidence - a.confidence) };
+  const clean = local.replace(/\d+$/, ''); // jsmith2 → jsmith
+  return !clean || GENERIC_MAILBOXES.has(clean);
 }
 
 // ── BIS lookups ─────────────────────────────────────────────────────────────
@@ -308,7 +273,7 @@ module.exports = {
   nameTokens,
   facilityFromDomain,
   buildDomainIndex,
-  nameHintsFromEmail,
+  isGenericMailbox,
   physicianByNpi,
   colleaguesAt,
   // exported for tests / tuning
