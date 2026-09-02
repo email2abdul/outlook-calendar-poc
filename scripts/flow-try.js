@@ -197,6 +197,18 @@ async function main() {
         { max: meetingMatch.MAX_CANDIDATES }
       );
 
+      // Named, not silently missing: a registry name search returns whoever
+      // holds an NPI, and a rep needs to see WHY somebody was not offered.
+      for (const c of ranked.refused || []) {
+        console.log(`🚫      ${c.name} · ${c.providerKind.label || '—'} · NPI ${c.npi} — not offered`);
+        console.log(`        ${c.providerKind.reason}`);
+      }
+      if (ranked.notDoctor) {
+        console.log(`\nNOT A PHYSICIAN — ${ranked.notDoctor.name}: ${ranked.notDoctor.providerKind.reason}`);
+        console.log('No pre-meeting brief is produced. The rep is shown this instead.');
+        continue;
+      }
+
       if (!ranked.ranked.length) {
         console.log(found.failures.length ? 'no candidates (see the outage above)' : 'no candidates — the registry answered and has nobody by that name');
         continue;

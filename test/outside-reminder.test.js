@@ -111,3 +111,18 @@ test('a source outage does not consume the one reminder', async () => {
   assert.strictEqual(sent.length, 0);
   assert.deepStrictEqual(marked, [], 'the next tick has to be able to try again');
 });
+
+test('a non-physician the rep recorded is never mailed a brief', async () => {
+  sent.length = 0;
+  marked.length = 0;
+  // The rep picked the social worker from the shortlist — their choice stands as
+  // the meeting's contact, but no brief was ever produced for them, and one must
+  // not appear in the inbox half an hour before the meeting.
+  decision = { ...CONFIRMED, name: 'TAYLOR M AAGAARD', status: 'not_doctor' };
+  profile = PROFILE;
+
+  await reminders.tick();
+
+  assert.strictEqual(sent.length, 0);
+  assert.deepStrictEqual(marked, []);
+});

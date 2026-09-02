@@ -45,6 +45,7 @@ const MEETINGS = [
   { title: 'Meeting with Dr Aagaard (Dentist)', note: 'the taxonomy the meeting mentions decides it' },
   { title: 'Meeting with Dr Katie, Counselor at 200 CASENTINI ST SALINAS CA', note: 'first name + taxonomy + address' },
   { title: 'Review NPI 1003000126', note: 'an NPI on the meeting wins outright' },
+  { title: 'Meeting with Dr Taylor Aagaard', note: 'the registry answers — and says this is not a physician' },
 ];
 
 const at = (h) => {
@@ -99,6 +100,7 @@ async function outsideFor(ev, match) {
 
   let brief = null;
   let confidence = null;
+  let notDoctor = null;
   for (const name of match.unresolvedNames) {
     const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
     const found = await sources.searchByName({ firstName, lastName, ...hints }, { limit: 20 });
@@ -118,7 +120,23 @@ async function outsideFor(ev, match) {
       total: ranked.offered.length, dropped: ranked.dropped, cleared: ranked.cleared,
       ambiguous: ranked.ambiguous, primaryNpi: ranked.primary?.npi || null,
       partial: Boolean(match.nameIncomplete), candidates: ranked.offered,
+      refused: (ranked.refused || []).map((c) => ({
+        npi: c.npi, name: c.name, taxonomy: c.providerKind.label, reason: c.providerKind.reason,
+      })),
     });
+
+    // Nobody but non-doctors: that is the answer the panel shows.
+    if (ranked.notDoctor && !ranked.offered.length) {
+      const nd = ranked.notDoctor;
+      notDoctor = {
+        npi: nd.npi, name: nd.name, taxonomy: nd.providerKind.label,
+        html: graph.notDoctorHtml({
+          name: nd.name, npi: nd.npi, kind: nd.providerKind,
+          sourceName: 'NPPES NPI Registry',
+          sourceUrl: `https://npiregistry.cms.hhs.gov/provider-view/${nd.npi}`,
+        }),
+      };
+    }
 
     // Pre-render the notes for everything a rep can click, so the demo page
     // behaves like the app rather than like a screenshot.
@@ -143,9 +161,9 @@ async function outsideFor(ev, match) {
   }
 
   return {
-    eventId: ev.id, status: match.status, searched: true, reason: match.reason,
+    eventId: ev.id, status: notDoctor ? 'not_doctor' : match.status, searched: true, reason: match.reason,
     names: match.unresolvedNames, nameIncomplete: match.nameIncomplete || null,
-    hints, groups, brief, confidence, threshold: score.CONFIDENCE_SHOW, failures,
+    hints, groups, brief, confidence, notDoctor, threshold: score.CONFIDENCE_SHOW, failures,
     sources: sources.list().map((s) => ({ id: s.id, name: s.name, url: s.url })),
   };
 }

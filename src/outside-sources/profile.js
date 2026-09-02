@@ -2,6 +2,7 @@
 
 const sources = require('./index');
 const score = require('./score');
+const taxonomy = require('./taxonomy');
 
 /**
  * Everything the public sources can say about one NPI, assembled once.
@@ -17,7 +18,7 @@ const score = require('./score');
  *
  * @param {string} npi
  * @param {string} [preferredSourceId] the source the rep picked from
- * @returns {Promise<{record, extra, cms, sourceName, sourceUrl, failures}|null>}
+ * @returns {Promise<{record, extra, cms, agreement, providerKind, sourceName, sourceUrl, failures}|null>}
  */
 async function assembleProfile(npi, preferredSourceId) {
   const failures = [];
@@ -85,11 +86,20 @@ async function assembleProfile(npi, preferredSourceId) {
   delete record.medicareParticipating;
   delete record.credential;
 
+  // Whether this person gets a brief at all. NPPES's structured taxonomy code
+  // decides it when there is one; CMS supplies only a provider-type string, so
+  // that is the fallback — and anything unplaceable is briefed, never suppressed.
+  const providerKind = taxonomy.classify({
+    code: identity?.taxonomyCode || null,
+    desc: identity?.primaryTaxonomy || record.specialty || null,
+  });
+
   return {
     record,
     extra: { ...(cms?.extra || {}), ...(identity?.extra || {}) },
     cms,
     agreement,
+    providerKind,
     sourceName: identity ? registry.name : cmsSource.name,
     sourceUrl: identity?.externalSourceUrl || registry?.url || cmsSource?.url || null,
     failures,

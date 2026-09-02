@@ -582,10 +582,94 @@
     </tbody>
   </table>
   </div>
-  <figcaption>Real NPPES records, real scores. One line added to a meeting title moves the answer from “nothing shown” to “exact”.</figcaption>
+  <figcaption>
+    Real NPPES records, real scores. One line added to a meeting title moves the answer from
+    “nothing shown” to “exact”. These are <em>identity</em> scores — whether a brief is then produced
+    is a separate question, answered in §05: Charlotte Aagaard is identified at 95% and briefed at
+    none, because a behaviour technician is not a doctor.
+  </figcaption>
 </figure>
 
-<h2 class="pb"><span class="num">05</span> The test run that shaped these rules</h2>
+<h2><span class="num">05</span> Who gets a brief at all</h2>
+
+<p>
+  A national registry lists whoever holds an NPI, and an NPI is not a medical degree. The nine
+  people called AAGAARD include four physicians, a dentist, a counsellor, a social worker, a
+  behaviour technician and a physical therapy assistant. A pre-meeting brief for the social worker
+  is worse than no brief: it spends the rep’s two minutes on the wrong person and implies the app
+  checked who they were.
+</p>
+
+<p>
+  So a brief is produced for <strong>physicians, dentists and podiatrists</strong>. Everybody else
+  is <em>named, not briefed</em> — the panel says who the registry says they are, and links the page
+  that proves it.
+</p>
+
+<div class="note note--rule">
+  <b>Decided on the code, not the words.</b> NPPES returns each provider’s NUCC taxonomy code
+  (<code>207RC0001X</code>), and its first two digits are the official Provider Grouping — a
+  structured, stable fact. Classifying by description would call a <strong>Physician
+  Assistant</strong> a physician, because the word is right there.
+</div>
+
+<figure class="scroll">
+  <div class="t-card">
+  <table>
+    <thead><tr><th class="num">NUCC</th><th>Grouping</th><th>Example, as the registry writes it</th><th>Brief?</th></tr></thead>
+    <tbody>
+      <tr><td class="num">20</td><td>Allopathic &amp; Osteopathic Physicians</td><td class="mono">207RC0001X Internal Medicine, Cardiac EP</td><td><span class="pill pill--pass">yes</span></td></tr>
+      <tr><td class="num">21</td><td>Podiatric Medicine &amp; Surgery</td><td class="mono">213E00000X Podiatrist</td><td><span class="pill pill--pass">yes</span></td></tr>
+      <tr><td class="num">12</td><td>Dental Providers — <em>only</em> <code>1223…</code></td><td class="mono">122300000X Dentist</td><td><span class="pill pill--pass">yes</span></td></tr>
+      <tr><td class="num">12</td><td>…the rest of the dental grouping</td><td class="mono">124Q00000X Dental Hygienist</td><td><span class="pill pill--stop">no</span></td></tr>
+      <tr><td class="num">10</td><td>Behavioral Health &amp; Social Service</td><td class="mono">104100000X Social Worker · 101YM0800X Counselor · 106S00000X Behavior Technician</td><td><span class="pill pill--stop">no</span></td></tr>
+      <tr><td class="num">17</td><td>Other Service Providers</td><td class="mono">171M00000X Case Manager/Care Coordinator</td><td><span class="pill pill--stop">no</span></td></tr>
+      <tr><td class="num">36</td><td>Physician Assistants &amp; Advanced Practice Nursing</td><td class="mono">363A00000X Physician Assistant</td><td><span class="pill pill--stop">no</span></td></tr>
+      <tr><td class="num">16 · 18 · 22 · 23 · 24 · 25 · 11 · 15</td><td>Nursing · Pharmacy · Rehab · Hearing · Technicians · Agencies · Chiropractic · Vision</td><td class="mono">163W… RN · 183500000X Pharmacist · 225200000X PTA · 2471… Radiologic Technologist</td><td><span class="pill pill--stop">no</span></td></tr>
+      <tr><td class="num">—</td><td><strong>Anything this table does not carry</strong></td><td class="mono">999900000X, or no taxonomy at all</td><td><span class="pill pill--offer">yes — never suppressed</span></td></tr>
+    </tbody>
+  </table>
+  </div>
+  <figcaption>
+    Every prefix verified against the live NPPES API on 2 September 2026 by reading back the code of
+    a provider the registry itself returned. The dental grouping is the one that is not uniform, so
+    it gets its own rule.
+  </figcaption>
+</figure>
+
+<div class="note note--warn">
+  <b>An unplaceable taxonomy is briefed, not suppressed.</b> While building that table, a grouping
+  remembered as chiropractic (16) turned out to be nursing, and chiropractic to be 11. An incomplete
+  table costs a little noise; a wrong one silently eats a real physician’s brief. So the third
+  outcome — <em>unknown</em> — always shows the brief.
+</div>
+
+<h3>What the rep sees instead</h3>
+
+<pre><code>🚫 Not a physician — no pre-meeting brief.
+
+NPPES NPI Registry lists TAYLOR M AAGAARD (NPI 1487300471) as Social Worker
+(NUCC grouping 10). Pre-meeting briefs are produced for physicians, dentists
+and podiatrists, so none was assembled.  [Verify on NPPES NPI Registry]
+
+Wrong person? Pick another match, or write the physician's full name
+on the meeting.</code></pre>
+
+<p>
+  When the registry returns a mix, the non-doctors are simply not offered — and are still
+  <strong>named</strong>: “4 further matches are not a physician (Behavior Technician, Counselor,
+  Social Worker, Physical Therapy Assistant) and were not offered.” Silence would send a rep hunting
+  for a different spelling.
+</p>
+
+<p>
+  A rep can still pick one of them from the list; the click is honoured and recorded as the meeting’s
+  contact. What is not invented is a brief — and because the decision is stored as
+  <code>not_doctor</code>, neither the reminder nor the meeting-body injection will produce one
+  later, unattended.
+</p>
+
+<h2 class="pb"><span class="num">06</span> The test run that shaped these rules</h2>
 
 <p>
   Six cases, run one at a time against the live system. Four fixes came out of them, listed after
@@ -620,7 +704,13 @@
       <tr>
         <td><code>Dr Katie, Counselor at 200 Casentini St Salinas CA</code></td>
         <td class="mono">5</td>
-        <td><span class="pill pill--pass">100%</span> KATIE AAB (NPI 1205257284) — first name, taxonomy and practice address all mentioned; Katie Diblin Aagaard 80%; three others withheld</td>
+        <td>
+          <span class="pill pill--pass">100%</span> KATIE AAB (NPI 1205257284) — first name, taxonomy
+          and practice address all mentioned. <strong>Identified, not briefed:</strong> the registry
+          lists her as <em>Counselor, Mental Health</em>, so §05 refuses the brief and states that
+          instead. Every other Katie came back a counsellor, athletic trainer, PA or nurse
+          practitioner — all named, none briefed.
+        </td>
       </tr>
       <tr>
         <td><code>Meeting with Dr Aagaard</code><br><span class="mono">last name only</span></td>
@@ -630,12 +720,16 @@
       <tr>
         <td><code>… (Dentist)</code> / <code>… (Behavior Technician)</code> / <code>…, Counselor</code></td>
         <td class="mono">5</td>
-        <td><span class="pill pill--pass">75%</span> Jeffrey Lynn / Charlotte Sue / Katie Diblin Aagaard respectively — one word decided each</td>
+        <td>
+          <span class="pill pill--pass">75%</span> Jeffrey Lynn / Charlotte Sue / Katie Diblin
+          Aagaard respectively — one word decided each. Only the <strong>dentist</strong> is briefed;
+          the behaviour technician and the counsellor are named and refused (§05).
+        </td>
       </tr>
       <tr>
         <td><code>Meeting with Dr Charlotte Aagaard</code><br><span class="mono">full name</span></td>
         <td class="mono">5</td>
-        <td><span class="pill pill--pass">95%</span> NPI 1194350884 · 4800 Sand Point Way NE, Seattle WA 98105 · phone from NPPES · CMS: no Medicare services (a behaviour technician bills none)</td>
+        <td><span class="pill pill--pass">95%</span> NPI 1194350884 · 4800 Sand Point Way NE, Seattle WA 98105 · phone from NPPES. A behaviour technician, so <strong>no brief</strong> (§05) — and CMS lists no Medicare services for her either, which is consistent</td>
       </tr>
       <tr>
         <td><code>Review NPI 1003000126</code></td>
@@ -675,9 +769,15 @@
     “the public registries have nobody by ‘Aagaard’”. They had nine. That sends a rep looking for
     a different spelling instead of adding one word to the title.
   </li>
+  <li>
+    <strong>Only doctors are briefed.</strong> The run made it obvious that a name search returns
+    social workers, case managers, nurse practitioners and behaviour technicians as readily as
+    physicians — and that briefing them was the wrong answer delivered confidently. §05 is the rule
+    that came out of it.
+  </li>
 </ol>
 
-<h2><span class="num">06</span> The rules that keep it honest</h2>
+<h2><span class="num">07</span> The rules that keep it honest</h2>
 
 <p>
   Most of the work in this system is not finding data. It is refusing to state more than the data
@@ -723,7 +823,7 @@
   automatic guess in front of someone in Outlook gives them no way to tell it was a guess.
 </div>
 
-<h2><span class="num">07</span> What the rep actually gets</h2>
+<h2><span class="num">08</span> What the rep actually gets</h2>
 
 <p>
   One renderer produces the brief, so the four places cannot disagree with each other. An outside
@@ -752,7 +852,7 @@
   <li>“Schedule a call” is replaced by <strong>the reason it cannot work</strong>: NPPES publishes no email address at all, so a form that needs one is worse than an explanation.</li>
 </ul>
 
-<h2><span class="num">08</span> Where the answer is kept</h2>
+<h2><span class="num">09</span> Where the answer is kept</h2>
 
 <p>
   Decisions live in their own table, <code>outside_physician_app_meeting</code> — not bolted onto the
@@ -772,7 +872,7 @@
   <dd>The store falls back to a local SQLite file and says so, so the whole flow is testable before anybody runs the setup SQL.</dd>
 </dl>
 
-<h2><span class="num">09</span> Run it yourself</h2>
+<h2><span class="num">10</span> Run it yourself</h2>
 
 <h4>The whole ladder, from the command line — no sign-in needed</h4>
 <pre><code>npm run flow:try -- "Meeting with Dr Aagaard (Dentist)"
@@ -809,7 +909,7 @@ open data/demo/index.html  # ?open=7 jumps straight to a case</code></pre>
   </div>
 </figure>
 
-<h2><span class="num">10</span> Open items</h2>
+<h2><span class="num">11</span> Open items</h2>
 <ul>
   <li><strong>Both registries flap on this machine.</strong> NPPES was unreachable for stretches of the test session (<code>ESERVFAIL</code>) and CMS had been the unreliable one earlier. Re-run before concluding anything about a source; <code>npm run enrich:doctor</code> diagnoses the resolver.</li>
   <li><strong>Sending a brief for real needs the rep’s Microsoft sign-in.</strong> The message itself — subject, first line, the brief intact with its “Data not available” rows, the meeting line, the notes — is asserted in tests.</li>

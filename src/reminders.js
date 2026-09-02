@@ -118,6 +118,10 @@ async function remindOutside(token, user, ev, minutes) {
   if (!decision?.npi || decision.decidedBy !== 'user') return false;
   // In the master after all → the standard path above owns them.
   if (physiciansDir.getByNpi(decision.npi)) return false;
+  // The rep picked somebody the registry says is not a physician, dentist or
+  // podiatrist. Their pick stands, but a brief was never produced for them and
+  // one must not appear in their inbox half an hour before the meeting.
+  if (decision.status === 'not_doctor') return false;
 
   const profile = await assembleProfile(decision.npi, decision.externalSource);
   if (!profile) {

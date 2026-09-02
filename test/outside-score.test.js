@@ -169,13 +169,59 @@ test('an explicit taxonomy hint is used, and a wrong one counts against', () => 
 });
 
 test('nothing under the offer bar is handed to the rep, but it is counted', () => {
+  // Physicians on purpose: this test is about the CONFIDENCE bar, and a
+  // non-doctor would be held back by the eligibility rule instead (see below),
+  // which is a different number.
   const nine = Array.from({ length: 9 }, (_, i) => ({
     npi: `${1000000000 + i}`, name: `X${i} AAGAARD`, firstName: `X${i}`, lastName: 'AAGAARD',
-    primaryTaxonomy: 'Social Worker', city: 'JANESVILLE', state: 'WI',
+    taxonomyCode: '207Q00000X', primaryTaxonomy: 'Family Medicine', city: 'JANESVILLE', state: 'WI',
   }));
   const r = rankCandidates(nine, { lastName: 'Aagaard', text: 'Dr Aagaard' }, { max: 5 });
 
   assert.deepStrictEqual(r.offered, [], 'a list of 55% guesses teaches clicking through noise');
   assert.strictEqual(r.dropped, 9, 'the silence still has to be explained');
   assert.strictEqual(r.primary, null);
+});
+
+// ── Who is even eligible ─────────────────────────────────────────────────────
+
+test('a registry name search returns whoever holds an NPI — only doctors are offered', () => {
+  // Real NPPES codes. A brief is produced for physicians, dentists and
+  // podiatrists; everyone else is named rather than briefed.
+  const list = [
+    { npi: '1', name: 'JON AAGAARD', firstName: 'JON', lastName: 'AAGAARD', taxonomyCode: '207Q00000X', primaryTaxonomy: 'Family Medicine' },
+    { npi: '2', name: 'TAYLOR AAGAARD', firstName: 'TAYLOR', lastName: 'AAGAARD', taxonomyCode: '104100000X', primaryTaxonomy: 'Social Worker' },
+    { npi: '3', name: 'KATIE AAGAARD', firstName: 'KATIE', lastName: 'AAGAARD', taxonomyCode: '101YM0800X', primaryTaxonomy: 'Counselor, Mental Health' },
+  ];
+  const r = rankCandidates(list, { firstName: 'Jon', lastName: 'Aagaard' }, { max: 5 });
+
+  assert.deepStrictEqual(r.offered.map((c) => c.npi), ['1'], 'only the family physician');
+  assert.deepStrictEqual(r.refused.map((c) => c.npi), ['2', '3']);
+  assert.strictEqual(r.notDoctor, null, 'a doctor was found, so this is not the answer');
+  // The two counts must not overlap: 1 offered + 0 under the bar + 2 refused = 3.
+  assert.strictEqual(r.dropped, 0);
+});
+
+test('when the registry has nobody but non-doctors, that IS the answer', () => {
+  const list = [
+    { npi: '2', name: 'TAYLOR AAGAARD', lastName: 'AAGAARD', taxonomyCode: '104100000X', primaryTaxonomy: 'Social Worker' },
+    { npi: '4', name: 'CASEY C', lastName: 'AAGAARD', taxonomyCode: '171M00000X', primaryTaxonomy: 'Case Manager/Care Coordinator' },
+  ];
+  const r = rankCandidates(list, { lastName: 'Aagaard' }, { max: 5 });
+
+  assert.deepStrictEqual(r.offered, []);
+  assert.strictEqual(r.primary, null, 'nothing is briefed');
+  assert.ok(r.notDoctor, 'the caller states what they are instead');
+  assert.strictEqual(r.notDoctor.providerKind.kind, 'not_doctor');
+  assert.match(r.notDoctor.providerKind.reason, /not a physician, dentist or podiatrist/);
+});
+
+test('a candidate whose taxonomy cannot be placed is still offered', () => {
+  const r = rankCandidates(
+    [{ npi: '9', name: 'JO X', firstName: 'JO', lastName: 'X', taxonomyCode: '999900000X', primaryTaxonomy: 'Something Unheard Of' }],
+    { firstName: 'Jo', lastName: 'X' },
+    { max: 5 }
+  );
+  assert.deepStrictEqual(r.offered.map((c) => c.npi), ['9']);
+  assert.deepStrictEqual(r.refused, []);
 });

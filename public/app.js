@@ -86,6 +86,12 @@ function lookupHint(ev) {
       : '🔎 Not in BIS — click for a registry lookup';
   }
 
+  // Only set once a lookup has run and come back with a non-physician; the
+  // ladder itself never decides this.
+  if (m && m.status === 'not_doctor') {
+    return '🚫 Not a physician — click to see why';
+  }
+
   if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
 
   const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
@@ -1122,6 +1128,18 @@ async function buildOutside(detail, ev) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.message || 'The registry lookup failed.');
 
+      // The registry answered, and the answer is that this person is not a
+      // physician. That IS the finding — it is stated, with what they are and
+      // the page that proves it, instead of an empty panel or a brief nobody
+      // should read.
+      if (data.notDoctor) {
+        head.textContent = 'Not in the BIS directory, and the public registries say this is not a physician:';
+        const box = document.createElement('div');
+        box.className = 'physician-analytics';
+        box.innerHTML = data.notDoctor.html || '';
+        list.appendChild(box);
+      }
+
       const rawGroups = data.groups || [];
       const groups = rawGroups.filter((g) => (g.candidates || []).length);
       const failed = data.failures || [];
@@ -1136,7 +1154,9 @@ async function buildOutside(detail, ev) {
         : (data.groups || []).map((g) => g.name).filter(Boolean);
       const who = names.length ? `“${names.join('”, “')}”` : 'that name';
 
-      if (groups.length) {
+      if (data.notDoctor) {
+        // heading already set above
+      } else if (groups.length) {
         head.textContent = data.brief
           ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
             'anything less certain is listed as an option.'
@@ -1181,6 +1201,18 @@ async function buildOutside(detail, ev) {
           ul.className = 'physician-results';
           for (const c of strong) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
           list.appendChild(ul);
+        }
+
+        if ((g.refused || []).length) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          const roles = g.refused.map((r) => r.taxonomy).filter(Boolean);
+          note.textContent =
+            `${g.refused.length} further match${g.refused.length > 1 ? 'es are' : ' is'} not a ` +
+            `physician${roles.length ? ` (${roles.join(', ')})` : ''} and ${
+              g.refused.length > 1 ? 'were' : 'was'
+            } not offered.`;
+          list.appendChild(note);
         }
 
         if (g.dropped > 0) {
@@ -1279,6 +1311,22 @@ async function pickOutside(candidate, ev, picked) {
     saved = await saveMeetingChoice(ev, candidate.npi, candidate.externalSource);
   } catch (err) {
     status.textContent = `⚠️ ${err.message}`;
+    return;
+  }
+
+  // The rep's click is honoured either way; what changes is whether a brief
+  // exists to show them.
+  if (saved.notDoctor) {
+    status.textContent =
+      `Recorded ${saved.physician?.name || candidate.name} as this meeting's contact — ` +
+      'but no pre-meeting brief is produced for them.';
+    const box = document.createElement('section');
+    box.className = 'physician-block';
+    const body = document.createElement('div');
+    body.className = 'physician-analytics';
+    body.innerHTML = saved.html || '';
+    box.appendChild(body);
+    picked.appendChild(box);
     return;
   }
 

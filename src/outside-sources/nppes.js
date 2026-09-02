@@ -2,6 +2,7 @@
 
 const registry = require('../enrichment/sources/nppes');
 const health = require('../enrichment/health');
+const taxonomy = require('./taxonomy');
 const states = require('../enrichment/states');
 const territory = require('../territory');
 
@@ -46,6 +47,10 @@ function toCandidate(p) {
     // same-named candidates on screen it is the line that tells a rep which one
     // is the gastroenterologist they are meeting.
     primaryTaxonomy: p.specialty || null,
+    // …and its NUCC code, which is what decides whether a brief is produced at
+    // all. The code is structured and stable; the words are neither ("Physician
+    // Assistant" is not a physician). See ./taxonomy.js.
+    taxonomyCode: (p.taxonomies || []).find((t) => t.primary)?.code || (p.taxonomies || [])[0]?.code || null,
     email: null, // NPPES has no email field at all
     phone: p.phone || null,
     esdProcedure: null, // unknown, NOT false
@@ -65,6 +70,10 @@ function toCandidate(p) {
     inBis: false,
     externalSource: ID,
     externalSourceUrl: p.sourceUrl || URL,
+    providerKind: taxonomy.classify({
+      code: (p.taxonomies || []).find((t) => t.primary)?.code || null,
+      desc: p.specialty || null,
+    }),
 
     // ── EXTRA: no BIS column exists for these. Shown in the pre-meeting notes
     //    tagged as extra; not stored (see outside-sources/index.js).

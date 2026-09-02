@@ -995,6 +995,49 @@ function outsideBriefHtml({
   return out.join('');
 }
 
+/**
+ * What is shown INSTEAD of a brief, when the person the registry found is not a
+ * doctor.
+ *
+ * A national registry lists whoever holds an NPI — social workers, case
+ * managers, behaviour technicians, dental hygienists. A pre-meeting brief for
+ * one of them is worse than none: it spends the rep's two minutes on the wrong
+ * person and implies the app checked who they were.
+ *
+ * So this says exactly what the registry says, names the taxonomy and its code,
+ * links the page that proves it, and leaves the rep a way out — because the one
+ * thing worse than briefing the wrong person is refusing to brief the right one
+ * with no explanation.
+ *
+ * @param {object} opts
+ * @param {string} opts.name
+ * @param {string} [opts.npi]
+ * @param {object} opts.kind        the taxonomy verdict (outside-sources/taxonomy.js)
+ * @param {string} [opts.sourceName]
+ * @param {string} [opts.sourceUrl]
+ */
+function notDoctorHtml({ name, npi, kind, sourceName, sourceUrl } = {}) {
+  const who = escapeHtml(name || (npi ? `NPI ${npi}` : 'this contact'));
+  const role = kind?.label ? `<b>${escapeHtml(kind.label)}</b>` : 'not a physician';
+  const code = kind?.grouping && kind.via === 'code' ? ` (NUCC grouping ${escapeHtml(kind.grouping)})` : '';
+  const link = sourceUrl
+    ? ` <a href="${escapeHtml(sourceUrl)}">Verify on ${escapeHtml(sourceName || 'the registry')}</a>.`
+    : '';
+
+  return [
+    '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #7a2048;background:#fdf0f4;' +
+      `color:#7a2048"><b>🚫 Not a physician — no pre-meeting brief.</b></p>`,
+    `<p>${sourceName ? escapeHtml(sourceName) : 'The registry'} lists ${who}` +
+      `${npi ? ` (NPI ${escapeHtml(npi)})` : ''} as ${role}${code}. Pre-meeting briefs are ` +
+      'produced for physicians, dentists and podiatrists, so none was assembled.' +
+      link +
+      '</p>',
+    kind?.reason ? `<p style="color:#5a6672;font-size:12px">${escapeHtml(kind.reason)}</p>` : '',
+    '<p style="color:#5a6672;font-size:12px">Wrong person? Pick another match, or write the ' +
+      'physician\'s full name on the meeting.</p>',
+  ].join('');
+}
+
 // ── External (enriched) brief ────────────────────────────────────────────────
 
 /**
@@ -1750,6 +1793,7 @@ async function getMe(accessToken) {
 
 module.exports = {
   getEventById,
+  notDoctorHtml,
   sendOutsideBriefing,
   outsideBriefHtml,
   getEventsForDay,

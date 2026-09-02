@@ -19,6 +19,7 @@ const meetingMatch = require('../meeting-match');
 const outsideStore = require('../outside-physician-store');
 const outsideSources = require('../outside-sources');
 const outsideScore = require('../outside-sources/score');
+const outsideTaxonomy = require('../outside-sources/taxonomy');
 const outsideProfile = require('../outside-sources/profile');
 const verify = require('../enrichment/verify');
 
@@ -743,6 +744,38 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       failures.push(...(profile?.failures || []));
 
       if (profile) {
+        // Even an NPI written on the meeting can belong to somebody a rep does
+        // not brief — the number is proof of identity, not of a medical degree.
+        if (!physicians.getByNpi(match.npi) && profile.providerKind.kind === 'not_doctor') {
+          return res.json({
+            eventId,
+            status: 'not_doctor',
+            searched: true,
+            via: 'meeting-npi',
+            npi: match.npi,
+            reason: profile.providerKind.reason,
+            names: [],
+            nameIncomplete: null,
+            groups: [],
+            brief: null,
+            notDoctor: {
+              npi: match.npi,
+              name: profile.record.name || null,
+              taxonomy: profile.providerKind.label,
+              code: profile.record.taxonomyCode || null,
+              html: graph.notDoctorHtml({
+                name: profile.record.name,
+                npi: match.npi,
+                kind: profile.providerKind,
+                sourceName: profile.sourceName,
+                sourceUrl: profile.sourceUrl,
+              }),
+            },
+            failures,
+            sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
+          });
+        }
+
         const bis = physicians.getByNpi(match.npi);
         const candidate = bis
           ? { ...outsideStore.mirrorFromPhysician(bis), inBis: true, externalSource: 'nppes' }
@@ -807,7 +840,7 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
       // number they can act on instead of a list. Below the bar a candidate is
       // an option they open on purpose; at or above it, and clearly ahead of
       // the runner-up, its data is put in front of them.
-      const { offered, dropped, primary, ambiguous, cleared } = outsideScore.rankCandidates(
+      const { offered, dropped, refused, notDoctor, primary, ambiguous, cleared } = outsideScore.rankCandidates(
         candidates,
         {
           firstName,
@@ -827,6 +860,14 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
         source: match.nameIncomplete ? match.nameIncomplete.source : 'title',
         total: offered.length,
         candidates: offered,
+        // Named, not hidden: "3 further matches are a social worker, a case
+        // manager and a behaviour technician" beats going quiet.
+        refused: refused.map((c) => ({
+          npi: c.npi,
+          name: c.name,
+          taxonomy: c.providerKind.label,
+          reason: c.providerKind.reason,
+        })),
         // Below the offer bar nothing is shown: a list of 55% guesses teaches a
         // rep to click through noise. The count is stated so the silence is not
         // mistaken for "the registry has nobody".
@@ -837,6 +878,40 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
         // Half a name cannot score a first-name match, which is exactly why so
         // little clears the bar here — the tag asks the rep to complete it.
         partial: Boolean(match.nameIncomplete),
+      });
+    }
+
+    // Every name came back with nobody but non-doctors: that IS the answer, and
+    // it is stated rather than left as an empty panel.
+    const onlyRefused =
+      groups.length &&
+      groups.every((g) => !g.candidates.length && g.refused.length) &&
+      groups[0].refused[0];
+    if (onlyRefused) {
+      const worst = groups[0].refused[0];
+      return res.json({
+        eventId,
+        status: 'not_doctor',
+        searched: true,
+        reason: worst.reason,
+        names: match.unresolvedNames,
+        nameIncomplete: match.nameIncomplete || null,
+        groups,
+        brief: null,
+        notDoctor: {
+          npi: worst.npi,
+          name: worst.name,
+          taxonomy: worst.taxonomy,
+          html: graph.notDoctorHtml({
+            name: worst.name,
+            npi: worst.npi,
+            kind: { label: worst.taxonomy, reason: worst.reason, via: 'code' },
+            sourceName: 'NPPES NPI Registry',
+            sourceUrl: worst.npi ? `https://npiregistry.cms.hhs.gov/provider-view/${worst.npi}` : null,
+          }),
+        },
+        failures,
+        sources: outsideSources.list().map((x) => ({ id: x.id, name: x.name, url: x.url })),
       });
     }
 
@@ -1004,6 +1079,13 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
     delete mirror.extra;
 
     const who = physician?.name || outside?.name || npi;
+
+    // Is this somebody a brief is produced for? Decided BEFORE the row is
+    // written, because the STATUS is what the reminder engine and the
+    // meeting-body injection read: recording a non-doctor as "briefed" would
+    // have them mail a brief for a social worker half an hour later.
+    const notDoctor = Boolean(outside) && profile?.providerKind?.kind === 'not_doctor';
+
     const record = await outsideStore.record({
       ownerUserId: ownerId(req),
       ownerEmail: organizerEmail(req),
@@ -1013,11 +1095,13 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       source: 'user',
       decidedBy: 'user',
       confidence: 100,
-      status: npi ? 'briefed' : 'needs_confirm',
-      reason: npi
-        ? `${who} confirmed by ${organizerEmail(req) || 'the rep'}` +
-          (outside ? ` (from ${outsideSources.byId(sourceId)?.name || sourceId}; not in BIS).` : '.')
-        : `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`,
+      status: !npi ? 'needs_confirm' : notDoctor ? 'not_doctor' : 'briefed',
+      reason: !npi
+        ? `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`
+        : notDoctor
+          ? `${who} confirmed by ${organizerEmail(req) || 'the rep'}, but ${profile.providerKind.reason} No brief is produced.`
+          : `${who} confirmed by ${organizerEmail(req) || 'the rep'}` +
+            (outside ? ` (from ${outsideSources.byId(sourceId)?.name || sourceId}; not in BIS).` : '.'),
     });
 
     // Keep the meeting row pointing at the same physician, using the column it
@@ -1035,6 +1119,28 @@ router.post('/meetings/choose', requireAuth, async (req, res, next) => {
       entityId: record?.id ? String(record.id) : null,
       details: { eventId, npi, title: event.title, by: organizerEmail(req) },
     });
+
+    // A rep can still pick somebody the registry says is not a doctor (the panel
+    // lists them by name). Their click is honoured and recorded — but a brief is
+    // not invented for them; they get the same statement of what they are.
+    if (notDoctor) {
+      return res.json({
+        saved: true,
+        eventId,
+        cleared: false,
+        storedIn: outsideStore.backendName(),
+        inBis: false,
+        notDoctor: true,
+        physician: { npi: who.npi, name: profile.record.name, specialty: profile.providerKind.label },
+        html: graph.notDoctorHtml({
+          name: profile.record.name,
+          npi: who.npi,
+          kind: profile.providerKind,
+          sourceName: profile.sourceName,
+          sourceUrl: profile.sourceUrl,
+        }),
+      });
+    }
 
     // An outside physician has no /api/physicians/:npi/brief to fetch, so the
     // notes come back with the save — same sections as the BIS brief, with

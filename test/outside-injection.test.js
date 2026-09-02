@@ -82,6 +82,22 @@ test('a source outage leaves the one-shot unspent', async () => {
   assert.deepStrictEqual(marked, [], 'the next tick has to be able to try again');
 });
 
+test('a non-physician is never written into the meeting', async () => {
+  injected.length = 0;
+  marked.length = 0;
+  profile = PROFILE;
+
+  // syncActivities is what applies this rule; injectOutsideBrief is only
+  // reached for a decision that passed it. Assert the rule itself here so the
+  // guard cannot be removed silently.
+  const ingestSrc = require('fs').readFileSync(require.resolve('../src/email-ingest'), 'utf8');
+  assert.match(
+    ingestSrc,
+    /decision\.status !== 'not_doctor'/,
+    'syncActivities must refuse a not_doctor decision before injecting'
+  );
+});
+
 test('nothing is injected without a meeting or an NPI', async () => {
   injected.length = 0;
   profile = PROFILE;

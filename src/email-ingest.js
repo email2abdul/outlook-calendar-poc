@@ -180,7 +180,12 @@ async function syncActivities(token, user) {
       // the agent would go and guess, so it is what goes on the meeting — and
       // the agent is not run at all (nothing to look up, nothing to spend).
       const outsideChoice =
-        decision?.decidedBy === 'user' && decision.npi && !physiciansDir.getByNpi(decision.npi)
+        decision?.decidedBy === 'user' &&
+        decision.npi &&
+        // A non-doctor was recorded as the meeting's contact on purpose; what
+        // must not happen is a brief for them appearing inside the meeting.
+        decision.status !== 'not_doctor' &&
+        !physiciansDir.getByNpi(decision.npi)
           ? decision
           : null;
 

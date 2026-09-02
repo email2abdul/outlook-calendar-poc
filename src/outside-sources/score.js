@@ -1,6 +1,7 @@
 'use strict';
 
 const states = require('../enrichment/states');
+const taxonomy = require('./taxonomy');
 
 /**
  * How sure are we that THIS candidate is the physician on the meeting?
@@ -232,26 +233,49 @@ function rankCandidates(candidates, wanted = {}, opts = {}) {
   const ranked = candidates
     .map((c) => {
       const { confidence, reasons } = scoreCandidate(c, wanted, { ...opts, total });
-      return { ...c, confidence, matchReasons: reasons };
+      // Classified, never scored down: whether someone is a doctor has nothing
+      // to do with whether they are the RIGHT person, and mixing the two would
+      // make a social worker look like a weak identity match rather than a
+      // confident identification of somebody a rep does not brief.
+      const kind = c.providerKind || taxonomy.classifyCandidate(c);
+      return { ...c, confidence, matchReasons: reasons, providerKind: kind };
     })
     .sort((a, b) => b.confidence - a.confidence);
 
-  const best = ranked[0] || null;
-  const runnerUp = ranked[1] || null;
+  // A registry name search returns whoever holds an NPI. When it has produced
+  // even one doctor, the rest are not who the rep is meeting, so they are not
+  // offered — but they are counted, and the caller says what they were.
+  const doctors = ranked.filter((c) => c.providerKind.kind !== 'not_doctor');
+  const refused = ranked.filter((c) => c.providerKind.kind === 'not_doctor');
+  const eligible = doctors.length ? doctors : [];
+
+  const best = eligible[0] || null;
+  const runnerUp = eligible[1] || null;
   const ambiguous = Boolean(
     best && runnerUp && best.confidence - runnerUp.confidence < AMBIGUOUS_MARGIN
   );
 
   const primary = best && best.confidence >= CONFIDENCE_SHOW && !ambiguous ? best : null;
-  const offered = ranked.filter((c) => c.confidence >= CONFIDENCE_OFFER);
+  const offered = eligible.filter((c) => c.confidence >= CONFIDENCE_OFFER);
   return {
     // Everything, scored — callers that need the full picture (diagnostics) can
     // still see it.
     ranked,
+    // Whoever the registry returned who is not a doctor: not offered, but named
+    // so the panel can say "3 further matches are a social worker, a case
+    // manager and a behaviour technician" instead of going quiet.
+    refused,
+    // Set when the ONLY thing the registry found is somebody a rep does not
+    // brief — the caller shows a plain statement of what they are instead.
+    notDoctor: !doctors.length && refused.length ? refused[0] : null,
     // What a rep should be shown: nothing under the offer bar, at most a
     // handful, best first.
     offered: offered.slice(0, opts.max || 5),
-    dropped: ranked.length - offered.length,
+    // Only the ELIGIBLE ones the confidence bar held back. Counting the
+    // non-doctors here too would report the same person twice — once as "under
+    // the bar" and once as "not a physician" — and the two numbers would not
+    // add up to what the registry returned.
+    dropped: eligible.length - offered.length,
     primary,
     ambiguous,
     cleared: ranked.filter((c) => c.confidence >= CONFIDENCE_SHOW).length,
