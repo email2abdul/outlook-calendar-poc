@@ -48,6 +48,10 @@ const MEETINGS = [
   { title: 'Meeting with Dr Khan', note: 'half a name — 62 in BIS' },
   { title: 'Endoscopy sync', attendee: { name: 'Dr Nicholas Shaheen', email: 'nshaheen@med.unc.edu' }, city: 'CHAPEL HILL', state: 'NC', note: 'email NOT in BIS → jumps to the name' },
   { title: 'Meeting with Dr Aagaard', note: 'last name only — nine found, none over 60%' },
+  {
+    title: 'Meeting with Dr. AJJARAPU',
+    note: 'a surname with 5 registry matches — 3 physicians offered, the student and the pharmacist named',
+  },
   { title: 'Meeting with Dr Aagaard (Dentist)', note: 'the taxonomy the meeting mentions decides it' },
   { title: 'Meeting with Dr Katie, Counselor at 200 CASENTINI ST SALINAS CA', note: 'first name + taxonomy + address' },
   { title: 'Review NPI 1003000126', note: 'an NPI on the meeting wins outright' },

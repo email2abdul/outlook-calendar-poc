@@ -784,6 +784,13 @@ body {
   font-size: 14px;
 }
 
+/* What kind of doctor — the line a rep picks by when several people share a
+   surname, so it reads as content rather than as metadata. */
+.physician-result__what {
+  font-size: 13px;
+  color: var(--primary-dark);
+}
+
 .physician-result:first-child {
   border-radius: 10px 10px 0 0;
 }

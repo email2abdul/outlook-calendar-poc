@@ -168,19 +168,26 @@ test('an explicit taxonomy hint is used, and a wrong one counts against', () => 
   assert.ok(wrong.confidence < CONFIDENCE_OFFER);
 });
 
-test('nothing under the offer bar is handed to the rep, but it is counted', () => {
+test('when nothing clears the offer bar, the shortlist is still offered', () => {
   // Physicians on purpose: this test is about the CONFIDENCE bar, and a
   // non-doctor would be held back by the eligibility rule instead (see below),
   // which is a different number.
+  //
+  // The rep's ruling: nine people called Aagaard all score 55% off a surname
+  // alone, and an empty panel is not the answer — the options are, with the
+  // name, the taxonomy and the address, so they can pick. The bar still decides
+  // what is SHOWN as the answer (primary), and still filters the list whenever
+  // a better match exists (see the FORT WORTH case in outside-shortlist).
   const nine = Array.from({ length: 9 }, (_, i) => ({
     npi: `${1000000000 + i}`, name: `X${i} AAGAARD`, firstName: `X${i}`, lastName: 'AAGAARD',
     taxonomyCode: '207Q00000X', primaryTaxonomy: 'Family Medicine', city: 'JANESVILLE', state: 'WI',
   }));
   const r = rankCandidates(nine, { lastName: 'Aagaard', text: 'Dr Aagaard' }, { max: 5 });
 
-  assert.deepStrictEqual(r.offered, [], 'a list of 55% guesses teaches clicking through noise');
-  assert.strictEqual(r.dropped, 9, 'the silence still has to be explained');
-  assert.strictEqual(r.primary, null);
+  assert.strictEqual(r.offered.length, 5, 'at most a handful, so it stays a choice');
+  assert.ok(r.offered.every((c) => c.confidence < CONFIDENCE_OFFER));
+  assert.strictEqual(r.dropped, 4, 'the four not shown still have to be explained');
+  assert.strictEqual(r.primary, null, 'nothing is presented as the answer');
 });
 
 // ── Who is even eligible ─────────────────────────────────────────────────────

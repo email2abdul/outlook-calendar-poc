@@ -29,12 +29,16 @@ const taxonomy = require('./taxonomy');
 const CONFIDENCE_SHOW = 70;
 
 /**
- * Below this a candidate is not even offered.
+ * Below this a candidate is not offered — while somebody better exists.
  *
- * Nine people share a surname; listing all nine at 55% teaches a rep to click
- * through noise. So only the ones a meeting's own details actually support are
- * shown, and when nothing clears this bar the answer is the ASK — add the first
- * name, the taxonomy, the city — not a longer list.
+ * Nine people share a surname; listing all nine at 55% next to a 90% match
+ * teaches a rep to click through noise. But when NOTHING clears this bar the
+ * bar cannot be the answer: a meeting that says only "Dr Ajjarapu" scores every
+ * real match the same 55%, and hiding all of them left the panel with nothing to
+ * show while five physicians sat in the registry — one of whom the rep is
+ * actually meeting. So this bar filters a list; it never empties one. The rep's
+ * rule: show the options, with the name, the taxonomy and the address, and let
+ * them pick whose brief to read.
  */
 const CONFIDENCE_OFFER = 60;
 
@@ -270,7 +274,12 @@ function rankCandidates(candidates, wanted = {}, opts = {}) {
   );
 
   const primary = best && best.confidence >= CONFIDENCE_SHOW && !ambiguous ? best : null;
-  const offered = eligible.filter((c) => c.confidence >= CONFIDENCE_OFFER);
+
+  // The bar filters, but never empties: if nobody clears it, everybody eligible
+  // is the shortlist, because "here are the five people called Ajjarapu" is an
+  // answer a rep can act on and "none is shown" is not.
+  const cleared = eligible.filter((c) => c.confidence >= CONFIDENCE_OFFER);
+  const shown = (cleared.length ? cleared : eligible).slice(0, opts.max || 5);
   return {
     // Everything, scored — callers that need the full picture (diagnostics) can
     // still see it.
@@ -282,14 +291,14 @@ function rankCandidates(candidates, wanted = {}, opts = {}) {
     // Set when the ONLY thing the registry found is somebody a rep does not
     // brief — the caller shows a plain statement of what they are instead.
     notDoctor: !doctors.length && refused.length ? refused[0] : null,
-    // What a rep should be shown: nothing under the offer bar, at most a
-    // handful, best first.
-    offered: offered.slice(0, opts.max || 5),
-    // Only the ELIGIBLE ones the confidence bar held back. Counting the
-    // non-doctors here too would report the same person twice — once as "under
-    // the bar" and once as "not a physician" — and the two numbers would not
-    // add up to what the registry returned.
-    dropped: eligible.length - offered.length,
+    // What a rep should be shown: at most a handful, best first.
+    offered: shown,
+    // Eligible people who are NOT on that shortlist — held back by the bar
+    // while better matches exist, or past the cap. Counting the non-doctors
+    // here too would report the same person twice — once as "not shown" and
+    // once as "not a physician" — and the two numbers would not add up to what
+    // the registry returned.
+    dropped: eligible.length - shown.length,
     primary,
     ambiguous,
     cleared: ranked.filter((c) => c.confidence >= CONFIDENCE_SHOW).length,

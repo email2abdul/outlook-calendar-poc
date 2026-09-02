@@ -1100,7 +1100,15 @@ function appendNameTag(detail, incomplete, total) {
   detail.appendChild(p);
 }
 
-/** One candidate → the list row a rep reads, with its confidence. */
+/**
+ * One candidate → the row a rep chooses from.
+ *
+ * The same three things the registry's own results table leads with, because
+ * they are what a person actually picks by: the FULL NAME, the primary taxonomy
+ * (five people share a surname; "Obstetrics & Gynecology" vs "Hospitalist" is
+ * what separates them) and the practice address. The NPI, the source and the
+ * confidence follow — useful, but not how anybody recognises a doctor.
+ */
 function candidateRow(c, threshold, onPick) {
   const li = document.createElement('li');
   li.className = 'physician-result';
@@ -1109,13 +1117,25 @@ function candidateRow(c, threshold, onPick) {
   const pct = Number.isFinite(c.confidence) ? ` — ${c.confidence}%` : '';
   name.textContent = `${c.inBis ? '🩺 ' : ''}${c.name || `NPI ${c.npi}`}${pct}`;
 
+  const what = document.createElement('span');
+  what.className = 'physician-result__what';
+  what.textContent = c.primaryTaxonomy || c.specialty || 'Specialty not stated in the registry';
+
+  // The registry's address line already reads "801 7TH AVE, FORT WORTH, TX,
+  // 76104"; the city/state fields are the same values parsed out, so they are a
+  // fallback rather than an addition.
+  const where = document.createElement('span');
+  where.className = 'muted';
+  where.textContent = [
+    c.facilityAddress || [c.city, c.state, c.zip].filter(Boolean).join(', '),
+    c.phone || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
   const meta = document.createElement('span');
   meta.className = 'muted';
-  // Primary taxonomy leads: with five people who share a surname, "what kind of
-  // doctor" is what tells the rep which one they are meeting.
   meta.textContent = [
-    c.primaryTaxonomy || c.specialty,
-    [c.city, c.state].filter(Boolean).join(', '),
     c.npi ? `NPI ${c.npi}` : null,
     c.inBis ? 'in your BIS directory' : c.externalSource,
     Number.isFinite(c.confidence) && c.confidence < threshold ? 'below the confidence bar' : null,
@@ -1123,7 +1143,9 @@ function candidateRow(c, threshold, onPick) {
     .filter(Boolean)
     .join(' · ');
 
-  li.append(name, meta);
+  li.append(name, what);
+  if (where.textContent) li.appendChild(where);
+  li.appendChild(meta);
   if (!c.npi) li.classList.add('physician-result--noemail');
   li.addEventListener('click', () => onPick(c));
   return li;
@@ -1256,19 +1278,35 @@ async function buildOutside(detail, ev) {
           const note = document.createElement('p');
           note.className = 'muted event__detail-intro';
           note.textContent =
-            `${g.dropped} further match${g.dropped > 1 ? 'es were' : ' was'} under ` +
-            `${threshold - 10}% and not shown — add the first name, the taxonomy, the city or ` +
-            'the practice address to the meeting to narrow it down.';
+            `${g.dropped} further match${g.dropped > 1 ? 'es are' : ' is'} further from what this ` +
+            'meeting says and ' +
+            `${g.dropped > 1 ? 'are' : 'is'} not shown — add the first name, the taxonomy, the ` +
+            'city or the practice address to the meeting to narrow it down.';
           list.appendChild(note);
         }
 
-        if (weak.length) {
+        // Under the bar, and there is nothing better: this IS the shortlist, so
+        // it is shown, not folded away. Hiding it behind a summary is how the
+        // rep ended up with a page that named a medical student and offered no
+        // way to reach the three physicians the registry had returned.
+        if (weak.length && !strong.length) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          note.textContent =
+            `Nothing in this meeting says which ${g.name} it is, so none of these is over ` +
+            `${threshold}% — pick the one you are meeting and their notes open below.`;
+          list.appendChild(note);
+
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of weak) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          list.appendChild(ul);
+        } else if (weak.length) {
+          // A stronger match is already on screen; these stay one click away so
+          // a 55% guess cannot be mistaken for the answer.
           const box = document.createElement('details');
           const sum = document.createElement('summary');
-          sum.textContent = strong.length
-            ? `Other possible matches (${weak.length}) — under ${threshold}% confidence`
-            : `${weak.length} possible match${weak.length > 1 ? 'es' : ''}, none over ${threshold}% ` +
-              '— open to see them';
+          sum.textContent = `Other possible matches (${weak.length}) — under ${threshold}% confidence`;
           box.appendChild(sum);
           const ul = document.createElement('ul');
           ul.className = 'physician-results';
