@@ -88,6 +88,59 @@ function dayRange(timeZone, dateYmd) {
 /**
  * Map a raw Graph event onto the lean shape our frontend (and agent) consumes.
  */
+// Hidden marker that makes brief injection idempotent (never inject twice).
+const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
+/** The visible heading of an injected block — its signature in plain text. */
+const BRIEF_HEADING = '🩺 BIS pre-meeting brief';
+
+/**
+ * The rep's OWN words, with our injected brief taken back out.
+ *
+ * The brief is written into the meeting body, and the meeting body is then read
+ * back for hints — the taxonomy and the city that identify the physician. Left
+ * alone, that is a feedback loop with teeth: once a brief had been injected, the
+ * 255-character bodyPreview was entirely our own text, "Primary Taxonomy -
+ * Internal Medicine from CHICAGO" was gone, and the panel dropped from one
+ * candidate at 100% to "2 possible matches, none over 70%" (2026-09-02).
+ *
+ * The HTML body is authoritative when we have it: our block runs from the
+ * marker to the `<hr>` that closes it, so removing that range leaves exactly
+ * what the rep wrote. The preview is a fallback and can only be cut at the
+ * heading, which is why the callers that decide anything read the body.
+ */
+function stripInjectedBrief({ html, preview }) {
+  const body = String(html || '');
+  if (body.includes(BRIEF_MARKER)) {
+    const from = body.indexOf(BRIEF_MARKER);
+    const closing = body.indexOf('</div><hr>', from);
+    const rest = closing === -1 ? '' : body.slice(closing + '</div><hr>'.length);
+    return htmlToText(body.slice(0, from) + rest);
+  }
+  if (body) return htmlToText(body);
+
+  const text = String(preview || '');
+  const at = text.indexOf(BRIEF_HEADING);
+  return (at === -1 ? text : text.slice(0, at)).trim() || null;
+}
+
+/** Crude HTML → text, enough for reading hints out of a meeting body. */
+function htmlToText(html) {
+  return (
+    String(html || '')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|tr|h\d)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n')
+      .trim() || null
+  );
+}
+
 function normalizeEvent(event) {
   return {
     id: event.id,
@@ -105,8 +158,11 @@ function normalizeEvent(event) {
     type: event.type || 'singleInstance', // singleInstance|occurrence|exception|seriesMaster
     seriesMasterId: event.seriesMasterId || null,
     location: event.location?.displayName || null,
-    // bodyPreview is plain text — safe and concise for a list view.
-    description: event.bodyPreview?.trim() || null,
+    // The rep's own words only. bodyPreview is plain text and concise for a list
+    // view, but once a brief has been injected the preview IS that brief — so
+    // the full body is used when it was fetched, and our own block is removed
+    // either way (see stripInjectedBrief).
+    description: stripInjectedBrief({ html: event.body?.content, preview: event.bodyPreview }),
     organizer: {
       name: event.organizer?.emailAddress?.name || null,
       email: event.organizer?.emailAddress?.address || null,
@@ -146,7 +202,7 @@ async function getEventsForDay(accessToken, timeZone, dateYmd) {
     .query({ startDateTime, endDateTime })
     // Return start/end times already converted to the user's time zone.
     .header('Prefer', `outlook.timezone="${tz}"`)
-    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
+    .select('subject,start,end,location,bodyPreview,body,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
     .orderby('start/dateTime')
     .top(100)
     .get();
@@ -1597,13 +1653,14 @@ async function getEventById(accessToken, eventId) {
   const event = await client
     .api(`/me/events/${eventId}`)
     .header('Prefer', 'outlook.timezone="UTC"')
-    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
+    // `body` as well as the preview: anything that DECIDES who a meeting is with
+    // has to read the rep's own words, and a meeting we have already written a
+    // brief into has nothing else left in its 255-character preview.
+    .select('subject,start,end,location,bodyPreview,body,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
     .get();
   return normalizeEvent(event);
 }
 
-// Hidden marker that makes brief injection idempotent (never inject twice).
-const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
 
 /**
  * Embed the BIS pre-meeting brief INTO a calendar event's own body, so opening
@@ -1793,6 +1850,8 @@ async function getMe(accessToken) {
 
 module.exports = {
   getEventById,
+  stripInjectedBrief,
+  BRIEF_HEADING,
   notDoctorHtml,
   sendOutsideBriefing,
   outsideBriefHtml,

@@ -34,9 +34,13 @@ stub('src/token-store', {
   wasReminderSent: async (u, key) => marked.includes(key),
   markReminderSent: async (u, key) => marked.push(key),
 });
+let reread = null; // what the tick gets when it re-reads the meeting
 stub('src/graph', {
   outsideBriefHtml: ({ record }) => `<p>brief for ${record.name}</p>`,
   notDoctorHtml: () => '<p>not a doctor</p>',
+  async getEventById() {
+    return reread;
+  },
   async injectBriefIntoEvent(token, eventId, html) {
     injected.push({ eventId, html });
     return true;
@@ -54,7 +58,11 @@ stub('src/outside-physician-store', {
     return { id: recorded.length, ...row };
   },
 });
-stub('src/outside-sources/resolve', async () => answer);
+const resolvedOn = [];
+stub('src/outside-sources/resolve', async (event) => {
+  resolvedOn.push(event);
+  return answer;
+});
 stub('src/outside-sources/profile', async () => null);
 
 const ingest = require('../src/email-ingest');
@@ -94,6 +102,8 @@ const reset = () => {
   injected.length = 0;
   marked.length = 0;
   recorded.length = 0;
+  resolvedOn.length = 0;
+  reread = EVENT;
 };
 
 test('a confident answer is written onto the meeting and recorded', async () => {
@@ -127,11 +137,11 @@ test('the lookup runs once per meeting, and once more when the text changes', as
   assert.strictEqual(await ingest.briefOutsideMatch('token', USER, EVENT), false);
   assert.strictEqual(recorded.length, 1);
 
-  // The rep adds the taxonomy to the description — that edit IS the answer, so
-  // it must be picked up. (The brief itself is still one per meeting: the
-  // injection has its own marker.)
-  const edited = { ...EVENT, description: 'Primary Taxonomy - Gastroenterology from CHICAGO' };
-  assert.strictEqual(await ingest.briefOutsideMatch('token', USER, edited), true);
+  // The rep edits the description in Outlook — so it is what GRAPH returns that
+  // changes, and that edit IS the answer, so it must be picked up. (The brief
+  // itself is still one per meeting: the injection has its own marker.)
+  reread = { ...EVENT, description: 'Primary Taxonomy - Gastroenterology from CHICAGO' };
+  assert.strictEqual(await ingest.briefOutsideMatch('token', USER, EVENT), true);
   assert.strictEqual(recorded.length, 2);
 });
 
@@ -179,4 +189,54 @@ test('an answer that is not confident enough is left for the rep', async () => {
   assert.strictEqual(await ingest.briefOutsideMatch('token', USER, EVENT), true);
   assert.deepStrictEqual(injected, []);
   assert.deepStrictEqual(recorded, []);
+});
+
+test("the tick decides on the meeting re-read in full, not on our own brief", async () => {
+  reset();
+  answer = CONFIDENT;
+
+  // What the 30-day sync hands the tick once a brief has been injected: the
+  // preview is our own text and the rep's line is past Outlook's 255 characters.
+  const fromSync = {
+    ...EVENT,
+    description: '🩺 BIS pre-meeting brief ABESELOM GELETU is not in the BIS directory. The notes below…',
+  };
+  // What graph.getEventById returns — the body, with our block stripped out.
+  reread = { ...EVENT, description: 'Primary Taxonomy - Internal Medicine from CHICAGO' };
+
+  await ingest.briefOutsideMatch('token', USER, fromSync);
+
+  assert.strictEqual(resolvedOn.length, 1);
+  assert.strictEqual(
+    resolvedOn[0].description,
+    'Primary Taxonomy - Internal Medicine from CHICAGO',
+    'deciding on our own output is how a 100% match became "none over 70%"'
+  );
+  // …and the dedupe key follows the re-read text, so a brief already injected
+  // does not look like an edit on the next tick. (`marked` also holds the
+  // injection's own one-shot key, which is a different guard.)
+  const lookupKeys = marked.filter((k) => k.startsWith('outside:'));
+  assert.strictEqual(lookupKeys.length, 1);
+  assert.ok(marked.some((k) => k.startsWith('enriched:')), 'and the brief was written once');
+});
+
+test('the injected brief says how it was decided', async () => {
+  reset();
+  answer = CONFIDENT;
+  // A system match must not claim the rep confirmed it — that changes how much
+  // they trust the numbers underneath.
+  await ingest.injectOutsideBrief(
+    'token',
+    USER,
+    EVENT,
+    { npi: '1', name: 'ABESELOM GELETU', decidedBy: 'system', confidence: 95, matchReasons: ['first name matches'] },
+    CONFIDENT.profile
+  );
+  assert.match(injected[0].html, /Matched outside BIS at 95% confidence/);
+  assert.ok(!/You confirmed them/.test(injected[0].html));
+
+  injected.length = 0;
+  marked.length = 0;
+  await ingest.injectOutsideBrief('token', USER, EVENT, { npi: '1', name: 'X', decidedBy: 'user' }, CONFIDENT.profile);
+  assert.match(injected[0].html, /You confirmed them for this meeting/);
 });

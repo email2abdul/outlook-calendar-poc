@@ -424,9 +424,17 @@ async function injectOutsideBrief(token, user, ev, decision, ready = null) {
   }
 
   const name = profile.record.name || decision.name || `NPI ${decision.npi}`;
+  // Say which it was. "You confirmed them" on an automatic match is a small lie
+  // that changes how much a rep trusts the numbers underneath it.
+  const how =
+    decision.decidedBy === 'system'
+      ? `Matched outside BIS at ${decision.confidence || '?'}% confidence` +
+        ((decision.matchReasons || []).length ? ` — ${decision.matchReasons.join(', ')}` : '') +
+        '. Open the meeting in the app to pick someone else.'
+      : 'You confirmed them for this meeting.';
   const content = [
-    `<p>${name} is <b>not in the BIS directory</b>. You confirmed them for this meeting; ` +
-      'the notes below were assembled from public sources, and anything those sources could ' +
+    `<p>${name} is <b>not in the BIS directory</b>. ${how} ` +
+      'The notes below were assembled from public sources, and anything those sources could ' +
       'not supply is marked "Data not available".</p>',
     graph.outsideBriefHtml({
       record: profile.record,
@@ -517,12 +525,24 @@ async function sendInstantBrief(token, user, ev, physicians) {
 async function briefOutsideMatch(token, user, ev) {
   if (!ev.id || !outsideStore.enabled) return false;
 
-  const key = `outside:${context.seriesKey(ev, [])}:${context.textFingerprint(ev)}`;
+  // Read the meeting back with its BODY. The 30-day sync fetches previews only,
+  // and once a brief has been injected the preview IS that brief — the rep's own
+  // "Primary Taxonomy - Internal Medicine from CHICAGO" is past the 255
+  // characters Outlook returns. Deciding on that text meant deciding on our own
+  // output.
+  let full = ev;
+  try {
+    full = await graph.getEventById(token, ev.id);
+  } catch (err) {
+    console.warn('[ingest] event re-read failed, using the preview:', err.message);
+  }
+
+  const key = `outside:${context.seriesKey(full, [])}:${context.textFingerprint(full)}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
 
   let answer;
   try {
-    answer = await resolveOutside(ev, { selfEmail: user.email });
+    answer = await resolveOutside(full, { selfEmail: user.email });
   } catch (err) {
     console.warn('[ingest] outside resolve failed:', err.message);
     return false;
@@ -546,7 +566,7 @@ async function briefOutsideMatch(token, user, ev) {
       await outsideStore.record({
         ownerUserId: user.homeAccountId,
         ownerEmail: user.email || null,
-        event: ev,
+        event: full,
         source: 'outside',
         decidedBy: 'system',
         ...fields,
@@ -590,12 +610,15 @@ async function briefOutsideMatch(token, user, ev) {
     await injectOutsideBrief(
       token,
       user,
-      ev,
+      full,
       {
         npi: answer.primary.npi,
         name: answer.primary.name,
         confidence: answer.confidence,
         externalSource: answer.primary.externalSource,
+        // How it was decided, so the injected brief can say so honestly.
+        decidedBy: 'system',
+        matchReasons: answer.primary.matchReasons,
       },
       answer.profile
     );
