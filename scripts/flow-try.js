@@ -169,14 +169,27 @@ async function main() {
     best = { npi: match.npi, confidence: 100, matchReasons: ['the NPI was written on the meeting itself'] };
   } else {
     for (const name of names) {
-      const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
-      h(`SOURCES — searching “${name}” (first: ${firstName || '—'}, last: ${lastName})`);
-      // Wide fetch, then score and trim — see the note in api.routes.js.
-      const found = await sources.searchByName(
-        { firstName, lastName, city: hints.city, state: hints.state },
-        { limit: 20 }
-      );
-      for (const f of found.failures) console.log(`📡 ${f.name}: ${f.error}`);
+      // Both halves in turn when nobody can place the name — see api.routes.js.
+      let firstName = '';
+      let lastName = '';
+      let found = { candidates: [], failures: [] };
+      h(`SOURCES — searching “${name}”`);
+      for (const attempt of meetingMatch.nameSearchKeys(name, match.nameIncomplete)) {
+        const r = await sources.searchByName(
+          { ...attempt, city: hints.city, state: hints.state },
+          { limit: 20 }
+        );
+        console.log(
+          `  tried first: ${attempt.firstName || '—'}, last: ${attempt.lastName || '—'} → ` +
+            `${r.candidates.length} candidate(s)`
+        );
+        for (const f of r.failures) console.log(`📡 ${f.name}: ${f.error}`);
+        found = { candidates: r.candidates, failures: [...found.failures, ...r.failures] };
+        if (r.candidates.length) {
+          ({ firstName, lastName } = attempt);
+          break;
+        }
+      }
 
       const ranked = score.rankCandidates(
         found.candidates.map((c) => {

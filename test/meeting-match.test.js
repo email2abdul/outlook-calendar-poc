@@ -69,6 +69,7 @@ const {
   cleanPersonName,
   isValidNpi,
   nameSearchKey,
+  nameSearchKeys,
 } = require('../src/meeting-match');
 
 const REP = 'rep@lumendi-example.com';
@@ -392,5 +393,32 @@ test('a half name is searched on the field it actually belongs to', () => {
   assert.deepStrictEqual(nameSearchKey('John R Abernathy', null), {
     firstName: 'John',
     lastName: 'Abernathy',
+  });
+});
+
+test('a name nobody can place is tried as BOTH halves, surname first', () => {
+  // "Dr ABESELOM" — the master has never seen it in either position, and it is
+  // in fact a given name. Searching only the surname field returned nobody, and
+  // the panel then said the registries had nobody by that name.
+  assert.deepStrictEqual(nameSearchKeys('Abeselom', { name: 'Abeselom', missing: 'unknown' }), [
+    { firstName: '', lastName: 'Abeselom' },
+    { firstName: 'Abeselom', lastName: '' },
+  ]);
+
+  // When the master DID place it, there is only one sensible attempt.
+  assert.deepStrictEqual(nameSearchKeys('Katie', { name: 'Katie', missing: 'last' }), [
+    { firstName: 'Katie', lastName: '' },
+  ]);
+  assert.deepStrictEqual(nameSearchKeys('Khan', { name: 'Khan', missing: 'first' }), [
+    { firstName: '', lastName: 'Khan' },
+  ]);
+
+  // A whole name is one attempt, and nameSearchKey still returns the first.
+  assert.deepStrictEqual(nameSearchKeys('John R Abernathy'), [
+    { firstName: 'John', lastName: 'Abernathy' },
+  ]);
+  assert.deepStrictEqual(nameSearchKey('Abeselom', { name: 'Abeselom', missing: 'unknown' }), {
+    firstName: '',
+    lastName: 'Abeselom',
   });
 });

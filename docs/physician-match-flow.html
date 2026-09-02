@@ -506,6 +506,22 @@
       returns hundreds of rows for one person and dozens of same-named strangers.
     </p>
     <p>
+      Either half of a name is searchable, and when the master has never seen a name in either
+      position — “Abeselom” — <strong>both are tried</strong>, surname first because that is the
+      field the registry indexes. Searching one half only is how a meeting naming a real physician
+      came back as “the registries have nobody by that name”.
+    </p>
+    <pre><code>"Meeting with Dr ABESELOM"
+description: Primary Taxonomy - Internal Medicine from CHICAGO
+
+  last_name=ABESELOM   → 0
+  first_name=ABESELOM  → 5
+  refused (not doctors) → personal care attendant · driver · student
+  ✅ 95%  ABESELOM GELETU     Internal Medicine, Hem/Onc  CHICAGO, IL
+          first name matches · the meeting mentions this city
+          · the meeting mentions this taxonomy
+     80%  ABESELOM ASHENAFI   Internal Medicine           NEW YORK, NY</code></pre>
+    <p>
       Adding a third website is a module and one line: a source declares its id, its human page,
       whether it can search by name, and returns candidates in the shape the rest of the system
       already renders. Nothing else changes.
@@ -535,6 +551,7 @@
       <tr><td>State / city matches the meeting</td><td class="num">+15 / +15</td><td>geography separates same-named providers</td></tr>
       <tr><td>Primary taxonomy matches (exact / contained)</td><td class="num">+25 / +20</td><td>only one of nine Aagaards is a dentist</td></tr>
       <tr><td>Primary taxonomy contradicts the meeting</td><td class="num">−15</td><td>a listed taxonomy can still be phrased differently</td></tr>
+      <tr><td>City / state the meeting NAMES</td><td class="num">+15 / +10</td><td>“Internal Medicine from CHICAGO” in a description is the rep saying which of two same-named physicians they mean</td></tr>
       <tr><td>Practice address / ZIP / phone matches</td><td class="num">+20 each</td><td>the fields a rep can copy from the registry page</td></tr>
       <tr><td>The only candidate any source returned</td><td class="num">+10</td><td>nothing to be confused with</td></tr>
       <tr><td>A second source confirms the identity</td><td class="num">+10</td><td>two independent registries agreeing</td></tr>

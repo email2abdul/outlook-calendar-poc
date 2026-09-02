@@ -7,6 +7,19 @@
 
 const views = ['login', 'loading', 'error', 'empty', 'events'];
 
+/**
+ * Topbar tools that are hidden for now.
+ *
+ * The Email Sheet and the Leads modal both still work — their routes, their
+ * fetches and their tables are untouched — they are simply not on the topbar
+ * while the pre-meeting brief is what the app is being shown for. Flip a flag
+ * back to true and the button returns; nothing else has to change.
+ */
+const TOPBAR_TOOLS = {
+  emailSheet: false,
+  leads: false,
+};
+
 function showView(name) {
   for (const v of views) {
     document.getElementById(`view-${v}`).hidden = v !== name;
@@ -1653,8 +1666,8 @@ async function init() {
   document.getElementById('accountName').textContent = me.user?.name || '';
   document.getElementById('accountEmail').textContent = me.user?.email || '';
   account.hidden = false;
-  document.getElementById('emailSheetBtn').hidden = false;
-  document.getElementById('leadsBtn').hidden = false;
+  document.getElementById('emailSheetBtn').hidden = !TOPBAR_TOOLS.emailSheet;
+  document.getElementById('leadsBtn').hidden = !TOPBAR_TOOLS.leads;
 
   // Reveal the date filter, defaulted to today.
   document.getElementById('dateFilter').hidden = false;

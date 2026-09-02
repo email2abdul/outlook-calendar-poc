@@ -98,3 +98,28 @@ test('a candidate is classified from whichever taxonomy field it carries', () =>
   assert.strictEqual(isSuppressed({ taxonomyCode: '207Q00000X', primaryTaxonomy: 'Family Medicine' }), false);
   assert.strictEqual(isSuppressed({}), false, 'unknown is never suppressed');
 });
+
+test('the roles a first-name search drags in are refused, on live-verified codes', () => {
+  // Every one of these came back from `first_name=ABESELOM` (2026-09-02): a
+  // personal care attendant, a driver and a student alongside two physicians.
+  const cases = [
+    ['3747P1801X', 'Technician, Personal Care Attendant', 'not_doctor'],
+    ['172A00000X', 'Driver', 'not_doctor'],
+    ['390200000X', 'Student in an Organized Health Care Education/Training Program', 'not_doctor'],
+    ['207R00000X', 'Internal Medicine', 'doctor'],
+    ['207RH0003X', 'Internal Medicine, Hematology & Oncology', 'doctor'],
+  ];
+  for (const [code, desc, kind] of cases) {
+    assert.strictEqual(classify({ code, desc }).kind, kind, `${desc} (${code})`);
+  }
+});
+
+test('"Internal Medicine" survives the negative word list', () => {
+  // A negative stem of "intern" matched "Internal Medicine" and turned every
+  // internist without a NUCC code — CMS supplies none — into a non-doctor.
+  for (const desc of ['Internal Medicine', 'Internal Medicine, Gastroenterology', 'Internal Medicine, Cardiovascular Disease']) {
+    assert.strictEqual(classify({ desc }).kind, 'doctor', desc);
+  }
+  assert.strictEqual(classify({ desc: 'Student in an Organized Health Care Education/Training Program' }).kind, 'not_doctor');
+  assert.strictEqual(classify({ desc: 'Technician, Personal Care Attendant' }).kind, 'not_doctor');
+});

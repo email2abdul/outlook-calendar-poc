@@ -84,6 +84,20 @@ function scoreCandidate(candidate, wanted = {}, opts = {}) {
     state: wanted.state || null,
   };
 
+  // The meeting's own words, searched for the CANDIDATE's values rather than the
+  // other way round. Extracting "the taxonomy" or "the city" from a free-text
+  // description is a guessing game; asking "does this meeting mention
+  // 'Internal Medicine'? does it mention 'CHICAGO'?" is not, and it is exactly
+  // how a rep disambiguates by hand.
+  const text = norm(wanted.text);
+  const mentions = (value, minWordLength = 5) => {
+    const v = norm(value);
+    if (!text || !v) return false;
+    if (text.includes(v)) return true;
+    const head = v.split(/[\s,]+/)[0];
+    return head.length >= minWordLength && new RegExp(`\\b${head}\\b`).test(text);
+  };
+
   if (want.last && got.last) {
     if (want.last === got.last) {
       score += 25;
@@ -140,18 +154,18 @@ function scoreCandidate(candidate, wanted = {}, opts = {}) {
   // fields NPPES prints next to the name, so they are the ones a rep can copy
   // into the meeting to get an exact answer.
 
-  // The meeting's own words, searched for the CANDIDATE's values rather than the
-  // other way round. Extracting "the taxonomy" from a free-text title is a
-  // guessing game; asking "does this meeting mention 'Dentist'?" is not, and it
-  // is exactly how a rep disambiguates by hand.
-  const text = norm(wanted.text);
-  const mentions = (value, minWordLength = 5) => {
-    const v = norm(value);
-    if (!text || !v) return false;
-    if (text.includes(v)) return true;
-    const head = v.split(/[\s,]+/)[0];
-    return head.length >= minWordLength && new RegExp(`\\b${head}\\b`).test(text);
-  };
+  // A place the meeting NAMES, credited the same way a taxonomy is. "Internal
+  // Medicine from CHICAGO" in a description is a rep telling us which of two
+  // same-named physicians they mean, and it was going unread: the city only
+  // scored when the entity matcher had already turned it into a hint.
+  if (!want.city && candidate.city && mentions(candidate.city, 4)) {
+    score += 15;
+    reasons.push('the meeting mentions this city');
+  }
+  if (!want.state && candidate.state && new RegExp(`\\b${norm(candidate.state)}\\b`).test(text)) {
+    score += 10;
+    reasons.push('the meeting mentions this state');
+  }
 
   const wantTax = norm(wanted.taxonomy);
   const gotTax = norm(candidate.primaryTaxonomy || candidate.specialty);

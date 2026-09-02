@@ -225,3 +225,36 @@ test('a candidate whose taxonomy cannot be placed is still offered', () => {
   assert.deepStrictEqual(r.offered.map((c) => c.npi), ['9']);
   assert.deepStrictEqual(r.refused, []);
 });
+
+test('a city the meeting mentions decides between two physicians of the same name', () => {
+  // The real "Dr ABESELOM" meeting: the description said "Primary Taxonomy -
+  // Internal Medicine from CHICAGO", and NPPES returns two Abeselom internists
+  // — one in New York, one in Chicago. Before this, the city only counted when
+  // the entity matcher had already turned it into a hint, so both scored the
+  // same and neither was shown.
+  const chicago = {
+    npi: '1033798905', name: 'ABESELOM GELETU', firstName: 'ABESELOM', lastName: 'GELETU',
+    taxonomyCode: '207RH0003X', primaryTaxonomy: 'Internal Medicine, Hematology & Oncology',
+    city: 'CHICAGO', state: 'IL',
+  };
+  const newYork = {
+    npi: '1780317891', name: 'ABESELOM ASHENAFI', firstName: 'ABESELOM', lastName: 'ASHENAFI',
+    taxonomyCode: '207R00000X', primaryTaxonomy: 'Internal Medicine', city: 'NEW YORK', state: 'NY',
+  };
+
+  const r = rankCandidates([newYork, chicago], {
+    firstName: 'Abeselom',
+    lastName: '',
+    text: 'Meeting with Dr ABESELOM · Primary Taxonomy - Internal Medicine from CHICAGO',
+  }, { max: 5 });
+
+  assert.strictEqual(r.primary?.npi, '1033798905', 'the Chicago internist is the answer');
+  assert.ok(r.primary.confidence >= CONFIDENCE_SHOW);
+  assert.ok(r.primary.matchReasons.includes('the meeting mentions this city'));
+  assert.ok(r.primary.matchReasons.includes('the meeting mentions this taxonomy'));
+  assert.strictEqual(r.ranked[1].npi, '1780317891');
+  assert.ok(
+    r.primary.confidence - r.ranked[1].confidence >= 10,
+    'and clearly enough ahead that it is not a coin toss'
+  );
+});

@@ -64,6 +64,8 @@ const OTHER_GROUPINGS = {
   24: 'Technologists, Technicians & Other Technical Providers', // 2471M1202X Radiologic Technologist
   25: 'Agencies', // 251S00000X Community/Behavioral Health
   36: 'Physician Assistants & Advanced Practice Nursing Providers', // 363A00000X Physician Assistant
+  37: 'Nursing & Custodial Care / Personal Care Providers', // 3747P1801X Technician, Personal Care Attendant
+  39: 'Students & Other', // 390200000X Student in an Organized Health Care Education/Training Program
 };
 
 /**
@@ -76,7 +78,7 @@ const OTHER_GROUPINGS = {
 // dead: "gastroenterolog" cannot be followed by a word boundary in
 // "Gastroenterology", so the whole positive list silently matched nothing.
 const NOT_DOCTOR_WORDS =
-  /\b(?:assistant|aide|technician|technologist|coordinator|manager|navigator|social worker|counsel|therapist|therapy|nurse|nursing|midwife|doula|lactation|paramedic|emt|pharmac|dietit|nutrition|chiropract|optometr|optician|audiolog|acupunctur|massage|athletic trainer|psycholog|behavior|hygienist|denturist|case management|billing|clerk|transport|driver|agency|laboratory|supplier)\w*/i;
+  /\b(?:assistant|aide|technician|technologist|coordinator|manager|navigator|social worker|counsel|therapist|therapy|nurse|nursing|midwife|doula|lactation|paramedic|emt|pharmac|dietit|nutrition|chiropract|optometr|optician|audiolog|acupunctur|massage|athletic trainer|psycholog|behavior|hygienist|denturist|case management|billing|clerk|transport|driver|agency|laboratory|supplier|student|resident|attendant|personal care)\w*/i;
 
 /** Words that name a doctor, once the negatives above are out of the way. */
 const DOCTOR_WORDS =

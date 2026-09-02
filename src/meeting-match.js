@@ -291,22 +291,39 @@ function bisBySurname(word) {
  *
  * @param {string} name
  * @param {{name: string, missing: string}|null} [nameIncomplete]
- * @returns {{firstName: string, lastName: string}}
+ * @returns {Array<{firstName: string, lastName: string}>} in the order to try
  */
-function nameSearchKey(name, nameIncomplete = null) {
+function nameSearchKeys(name, nameIncomplete = null) {
   const words = String(name || '').trim().split(/\s+/).filter(Boolean);
   if (words.length > 1) {
-    return { firstName: words[0], lastName: words[words.length - 1] };
+    return [{ firstName: words[0], lastName: words[words.length - 1] }];
   }
 
   const only = words[0] || '';
+  if (!only) return [];
+
   const isThisName =
     nameIncomplete && String(nameIncomplete.name || '').toLowerCase() === only.toLowerCase();
-  // "the last name is missing" ⇒ what we have is the FIRST name.
-  if (isThisName && nameIncomplete.missing === 'last') return { firstName: only, lastName: '' };
-  // Otherwise treat it as a surname: it is the field the registry indexes, and
-  // the master said so (missing === 'first') or could not tell.
-  return { firstName: '', lastName: only };
+
+  // The master's own name distribution settled it: "the last name is missing"
+  // means what we hold is a GIVEN name, and the reverse for the other case.
+  if (isThisName && nameIncomplete.missing === 'last') return [{ firstName: only, lastName: '' }];
+  if (isThisName && nameIncomplete.missing === 'first') return [{ firstName: '', lastName: only }];
+
+  // Nobody could place it — a name the master has never seen in either
+  // position, which is exactly the case for a name like "ABESELOM". Try BOTH,
+  // surname first because that is the field the registry indexes. Searching one
+  // half only is how a meeting that names a real physician came back "the
+  // registries have nobody by that name".
+  return [
+    { firstName: '', lastName: only },
+    { firstName: only, lastName: '' },
+  ];
+}
+
+/** The first (best) attempt — kept for callers that only want one. */
+function nameSearchKey(name, nameIncomplete = null) {
+  return nameSearchKeys(name, nameIncomplete)[0] || { firstName: '', lastName: '' };
 }
 
 /** The lean physician shape the UI and the briefs need. */
@@ -569,6 +586,7 @@ function matchMeeting(ev, opts = {}) {
 module.exports = {
   matchMeeting,
   meetingGate,
+  nameSearchKeys,
   nameSearchKey,
   partialNamesFrom,
   missingPartOf,

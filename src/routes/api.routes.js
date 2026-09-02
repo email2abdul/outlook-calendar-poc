@@ -814,20 +814,33 @@ router.get('/meetings/outside', requireAuth, async (req, res, next) => {
     }
 
     for (const name of match.unresolvedNames) {
-      // A half name is searched on the field it actually belongs to — see
-      // meetingMatch.nameSearchKey.
-      const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
+      // A half name is searched on the field it actually belongs to, and when
+      // nobody can place it, on BOTH in turn — surname first, because that is
+      // the field the registry indexes. Searching one half only is how a
+      // meeting naming a real physician ("Dr ABESELOM") came back as "the
+      // registries have nobody by that name".
+      //
       // Fetch WIDE, then score and trim. Asking the registry for only five
       // meant the one candidate the meeting actually described could be absent
       // from the set entirely: "Dr Aagaard (Dentist)" has nine Aagaards to
       // choose from, and the dentist is not among the first five.
-      const found = await outsideSources.searchByName(
-        { firstName, lastName, state: hints.state || undefined, city: hints.city || undefined },
-        { limit: 20 }
-      );
-      failures.push(...found.failures);
+      let firstName = '';
+      let lastName = '';
+      let candidatesRaw = [];
+      for (const attempt of meetingMatch.nameSearchKeys(name, match.nameIncomplete)) {
+        const found = await outsideSources.searchByName(
+          { ...attempt, state: hints.state || undefined, city: hints.city || undefined },
+          { limit: 20 }
+        );
+        failures.push(...found.failures);
+        if (found.candidates.length) {
+          ({ firstName, lastName } = attempt);
+          candidatesRaw = found.candidates;
+          break;
+        }
+      }
 
-      const candidates = found.candidates.map((c) => {
+      const candidates = candidatesRaw.map((c) => {
         // Free, and the most valuable check there is: does the master already
         // hold this NPI under a different name/address?
         const bis = c.npi ? physicians.getByNpi(c.npi) : null;

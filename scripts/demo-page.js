@@ -46,6 +46,11 @@ const MEETINGS = [
   { title: 'Meeting with Dr Katie, Counselor at 200 CASENTINI ST SALINAS CA', note: 'first name + taxonomy + address' },
   { title: 'Review NPI 1003000126', note: 'an NPI on the meeting wins outright' },
   { title: 'Meeting with Dr Taylor Aagaard', note: 'the registry answers — and says this is not a physician' },
+  {
+    title: 'Meeting with Dr ABESELOM',
+    body: 'Primary Taxonomy - Internal Medicine from CHICAGO',
+    note: 'a first name only — the taxonomy and city in the description pick the one physician',
+  },
 ];
 
 const at = (h) => {
@@ -102,9 +107,19 @@ async function outsideFor(ev, match) {
   let confidence = null;
   let notDoctor = null;
   for (const name of match.unresolvedNames) {
-    const { firstName, lastName } = meetingMatch.nameSearchKey(name, match.nameIncomplete);
-    const found = await sources.searchByName({ firstName, lastName, ...hints }, { limit: 20 });
-    failures.push(...found.failures);
+    // Both halves in turn when nobody can place the name — see api.routes.js.
+    let firstName = '';
+    let lastName = '';
+    let found = { candidates: [], failures: [] };
+    for (const attempt of meetingMatch.nameSearchKeys(name, match.nameIncomplete)) {
+      const r = await sources.searchByName({ ...attempt, ...hints }, { limit: 20 });
+      failures.push(...r.failures);
+      if (r.candidates.length) {
+        ({ firstName, lastName } = attempt);
+        found = r;
+        break;
+      }
+    }
 
     const ranked = score.rankCandidates(
       found.candidates.map((c) => {
@@ -191,7 +206,7 @@ async function main() {
       type: 'singleInstance',
       seriesMasterId: null,
       location: null,
-      description: null,
+      description: m.body || null,
       organizer: REP,
       attendees: attendee ? [{ ...attendee, type: 'required', response: 'none' }] : [],
       onlineMeetingUrl: null,
