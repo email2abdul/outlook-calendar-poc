@@ -77,6 +77,13 @@ thinking). Used in: `ai-extractor.js` (reply→MOM), `intel-extractor.js` (email
   Inbox is the deferred Mail.ReadWrite create-in-inbox approach)
 - `REMINDER_POLL_SECONDS` (60) / `REMINDER_LEAD_MINUTES` (90)
 - `EMAIL_INTEL_DAYS` (10; bump to 30 later)
+- `OUTSIDE_HTTP_PROXY` / `OUTSIDE_HTTP_CACHE_DIR` + `OUTSIDE_HTTP_RECORD` / `OUTSIDE_HTTP_OFFLINE` —
+  dev-only escape hatches for a network that blocks the registries (`src/enrichment/proxy.js`,
+  `src/enrichment/cassettes.js`). Tunnel: `ssh -f -N -D 1080 ubuntu@<host>` +
+  `OUTSIDE_HTTP_PROXY=socks5://127.0.0.1:1080`. Record once, then run offline forever:
+  `OUTSIDE_HTTP_CACHE_DIR=data/cassettes OUTSIDE_HTTP_RECORD=1 … npm run demo:page`, then swap
+  `OUTSIDE_HTTP_RECORD` for `OUTSIDE_HTTP_OFFLINE=1`. Only 2xx JSON is recorded, an offline miss is an
+  outage (never "nobody found"), and recordings are gitignored. All off unless set.
 
 ## Email Intelligence Sheet (feature/old-email-read)
 
