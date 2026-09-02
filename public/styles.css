@@ -539,6 +539,65 @@ body {
   content: '▾ ';
 }
 
+/* A brief, folded. Closed by default so a rep can see WHICH meetings hold
+   intelligence before reading any of it; one click gives the whole brief. */
+.brief-fold {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  padding: 8px 12px;
+}
+
+.brief-fold + .brief-fold {
+  margin-top: 8px;
+}
+
+.brief-fold__summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: var(--primary-dark);
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.brief-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.brief-fold__summary::before {
+  content: '▸';
+  color: var(--muted-text, #6b7684);
+  font-weight: 400;
+}
+
+.brief-fold[open] > .brief-fold__summary::before {
+  content: '▾';
+}
+
+.brief-fold[open] > .brief-fold__summary {
+  margin-bottom: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.brief-fold__hint,
+.brief-fold__cta {
+  font-weight: 400;
+  font-size: 12px;
+  color: var(--muted-text, #6b7684);
+}
+
+.brief-fold__hint + .brief-fold__cta::before {
+  content: '· ';
+}
+
+/* True only while it is closed. */
+.brief-fold[open] > .brief-fold__summary .brief-fold__cta {
+  display: none;
+}
+
 /* ── Date filter ───────────────────────────────────────────── */
 .date-filter {
   display: flex;

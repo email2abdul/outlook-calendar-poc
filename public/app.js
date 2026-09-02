@@ -170,6 +170,47 @@ function renderHeaderDate(dateStr, timeZone) {
 const physBlockTpl = document.getElementById('physician-block-template');
 const physSearchTpl = document.getElementById('physician-search-template');
 
+/**
+ * Wrap a brief in a fold, closed.
+ *
+ * A brief is long — physician details, contact intelligence, procedure
+ * intelligence, account, extras — and a rep opening their day wants to see
+ * WHICH meetings have intelligence before they read any of it. Closed by
+ * default, the panel stays scannable; one click gives the whole thing exactly
+ * as it was.
+ *
+ * The summary carries the one line worth reading closed: what kind of brief it
+ * is, and how sure we are when that is a question.
+ */
+function briefFold(html, { label = 'Pre-meeting brief', meta = null } = {}) {
+  const fold = document.createElement('details');
+  fold.className = 'brief-fold';
+
+  const summary = document.createElement('summary');
+  summary.className = 'brief-fold__summary';
+  summary.textContent = `🩺 ${label}`;
+
+  if (meta) {
+    const note = document.createElement('span');
+    note.className = 'brief-fold__hint';
+    note.textContent = meta;
+    summary.appendChild(note);
+  }
+  // "click to open" is only true while it is closed, so it lives in its own
+  // element and CSS drops it once the fold is open.
+  const cta = document.createElement('span');
+  cta.className = 'brief-fold__cta';
+  cta.textContent = 'click to open';
+  summary.appendChild(cta);
+
+  const body = document.createElement('div');
+  body.className = 'brief-fold__body';
+  body.innerHTML = html || '<p class="muted">No brief data.</p>';
+
+  fold.append(summary, body);
+  return fold;
+}
+
 /** "2026-06-05" style label for a note (meeting date, else when written). */
 function noteDateLabel(note) {
   return note.meetingDate || (note.createdAt || '').slice(0, 10);
@@ -227,7 +268,8 @@ async function loadBriefInto(box, npi) {
       return;
     }
     const data = await res.json();
-    box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
+    box.innerHTML = '';
+    box.appendChild(briefFold(data.html));
   } catch {
     box.innerHTML = '<p class="muted">Brief unavailable.</p>';
   }
@@ -568,8 +610,16 @@ function buildPhysicianBlock(physician, event, { scheduleOpen = false, briefHtml
   }
 
   const briefBox = block.querySelector('.physician-block__brief');
-  if (briefHtml) briefBox.innerHTML = `<h3>Pre-meeting brief</h3>${briefHtml}`;
-  else loadBriefInto(briefBox, physician.npi);
+  if (briefHtml) {
+    briefBox.innerHTML = '';
+    briefBox.appendChild(
+      briefFold(briefHtml, {
+        meta: Number.isFinite(physician.confidence) ? `${physician.confidence}% match` : null,
+      })
+    );
+  } else {
+    loadBriefInto(briefBox, physician.npi);
+  }
 
   if (!outside) loadIntelInto(block, physician);
   loadNotesInto(block, physician, event);
