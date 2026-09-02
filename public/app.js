@@ -1216,11 +1216,17 @@ async function buildOutside(detail, ev) {
       if (data.notDoctor) {
         // heading already set above
       } else if (groups.length) {
+        // Name the source that actually ANSWERED, not every source there is:
+        // the sources are asked in order (CMS billing data first, then NPPES)
+        // and the first real answer wins, so listing both is misleading in
+        // front of a rep looking at one of them.
+        const answered =
+          (data.sources || []).find((x) => x.id === data.answeredBy)?.name ||
+          (data.sources || []).map((x) => x.name).join(', ');
         head.textContent = data.brief
           ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
             'anything less certain is listed as an option.'
-          : `Not in the BIS directory. ${(data.sources || []).map((x) => x.name).join(', ')} ` +
-            'answered — pick who this meeting is with:';
+          : `Not in the BIS directory. ${answered} answered — pick who this meeting is with:`;
       } else if (failed.length) {
         // The claim "nobody by that name" would be about the PERSON, on evidence
         // that is only about the network. Say what actually happened.

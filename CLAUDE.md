@@ -101,6 +101,11 @@ cards) + CSV export (`GET /api/email-intel`).
   web-identity tier only on an explicit `useWeb=always`. (`email2@gmail.com` → "e"+"mail" → NPPES
   surname MAIL → a clinical social worker briefed as the physician for "Meeting with Best friend".)
   A name comes from the rep, the meeting text, or an attendee's display name — nothing else.
+- **Outside BIS, a name is asked of CMS first, NPPES second** (`src/outside-sources/index.js` SOURCES
+  order; the first source that answers wins). A hit in CMS
+  `medicare-physician-other-practitioners-by-provider-and-service` means the physician actually bills
+  Medicare. CMS name-query rules, measured: filter on `Rndrng_Prvdr_Last_Org_Name`, first name as
+  `keyword` — **two `filter[…]` params hang the API** — rows grouped by NPI (327 rows = 46 people).
 - **The "Dr"/"Doctor" gate governs everything**, panel and background tick alike: `gate_blocked`
   means nothing is looked up, nothing is emailed or injected, and the meeting's card shows nothing
   at all (`.event--plain`, no toggle, no detail). An attendee address is not a path around it.

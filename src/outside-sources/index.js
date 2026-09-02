@@ -38,7 +38,13 @@
 const nppes = require('./nppes');
 const cmsService = require('./cms-service');
 
-const SOURCES = [nppes, cmsService];
+/**
+ * ORDER MATTERS: a name is asked of these in this order, and the first one that
+ * answers is the answer. CMS's billing data leads because a hit there means the
+ * physician actually bills Medicare — the practice, not just the registration —
+ * and because NPPES going down must not be able to hide a person CMS holds.
+ */
+const SOURCES = [cmsService, nppes];
 
 /** The sources that are usable right now (a key may be missing, a host down). */
 function list() {
@@ -46,12 +52,11 @@ function list() {
 }
 
 /**
- * The sources that can turn a NAME into a person.
+ * The sources that can turn a NAME into a person, in the order they are asked.
  *
- * Not every source can: CMS's service table has one row per provider PER CODE,
- * so a name query returns hundreds of rows for one person and dozens of
- * same-named strangers. It answers by NPI, which is why NPPES runs first and
- * CMS is asked afterwards with the NPI it produced.
+ * A source opts out with `nameSearchable: false` — nothing does today: CMS's
+ * one-row-per-code table is grouped by NPI inside its own module, so it
+ * answers a name like any other source.
  */
 function nameSearchable() {
   return list().filter((s) => s.nameSearchable !== false && typeof s.searchByName === 'function');
@@ -62,36 +67,39 @@ function byId(id) {
 }
 
 /**
- * Ask every enabled source for one name, in parallel.
+ * Ask the sources for one name, in order, and stop at the first real answer.
  *
- * Sources are independent: one being unreachable must not hide another's
- * answer, so a rejection is reported per source rather than failing the lot.
+ * Deliberately sequential, and deliberately CMS first — the rep's rule. Asking
+ * both in parallel and pooling the results mixed two different registries'
+ * people into one shortlist, and made every NPPES outage a visible failure even
+ * when CMS had already answered the question.
  *
- * @returns {Promise<{candidates: object[], failures: Array<{source, error}>}>}
- *   candidates carry `externalSource`, newest source order preserved
+ * A source that could not be REACHED is not a source that said "nobody": it is
+ * recorded as a failure AND the next source is still asked, so an outage costs
+ * a rung on the ladder rather than the answer. (See enrichment/health.js.)
+ *
+ * @returns {Promise<{candidates: object[], failures: Array<{source, error}>, answeredBy: string|null}>}
  */
 async function searchByName(query, { limit = 5 } = {}) {
-  const sources = nameSearchable();
-  const settled = await Promise.allSettled(
-    sources.map((s) => s.searchByName({ ...query, limit }))
-  );
-
   const candidates = [];
   const failures = [];
-  settled.forEach((r, i) => {
-    const s = sources[i];
-    if (r.status === 'fulfilled') {
-      for (const c of r.value || []) {
+  let answeredBy = null;
+
+  for (const s of nameSearchable()) {
+    try {
+      const found = await s.searchByName({ ...query, limit });
+      if (!found || !found.length) continue;
+      for (const c of found) {
         candidates.push({ externalSource: s.id, externalSourceUrl: s.url, ...c });
       }
-    } else {
-      // A source that could not be reached is NOT a source that said "no one" —
-      // the caller has to be able to tell those apart (see enrichment/health.js).
-      failures.push({ source: s.id, name: s.name, error: r.reason?.message || String(r.reason) });
+      answeredBy = s.id;
+      break;
+    } catch (err) {
+      failures.push({ source: s.id, name: s.name, error: err?.message || String(err) });
     }
-  });
+  }
 
-  return { candidates, failures };
+  return { candidates, failures, answeredBy };
 }
 
 module.exports = { list, nameSearchable, byId, searchByName, SOURCES };
