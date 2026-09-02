@@ -15,6 +15,10 @@ const enrichment = require('../src/enrichment');
  *   npm run enrich:try -- --name "Nicholas Shaheen" --state NC
  *   npm run enrich:try -- info@unch.unc.edu --context "UNC Hospitals GI"
  *
+ * An address is not a name: `enrich:try <email>` resolves the master and the
+ * email domain, and stops there. Pass --name (or --web, which asks the paid
+ * tier to find out who the address belongs to) to identify a person.
+ *
  * Flags:
  *   --free              free tiers only (no paid web lookup)
  *   --web               force the paid web lookup

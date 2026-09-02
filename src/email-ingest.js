@@ -629,11 +629,19 @@ async function briefOutsideMatch(token, user, ev) {
 }
 
 /**
- * Look up the attendees of a meeting that matched nobody in BIS.
+ * Look up the people NAMED on a meeting that matched nobody in BIS.
  *
  * This is the gap the enrichment agent exists to close: before, a meeting whose
  * attendees were not in bis_physicians produced no activity link, no brief and
  * no meeting-body injection — the rep walked in with nothing.
+ *
+ * ── Only a meeting that calls someone a doctor gets this far ────────────────
+ * The "Dr"/"Doctor" gate governs this tick exactly as it governs the panel: on
+ * a normal meeting nothing is looked up, nothing is emailed and nothing is
+ * written onto the event. And a name is only ever one the MEETING gives —
+ * attendee addresses are no longer turned into names to search on, which is
+ * how "Meeting with Best friend" with `email2@gmail.com` on it once produced a
+ * brief for a clinical social worker surnamed MAIL.
  *
  * Two outcomes are worth acting on:
  *   - `recovered_in_bis` — the physician IS in the master, their email just
@@ -651,16 +659,20 @@ async function briefOutsideMatch(token, user, ev) {
 async function briefUnknownAttendees(token, user, ev) {
   if (!ev.id) return [];
 
-  // Who to look up: attendees when the meeting has any, otherwise the people
-  // NAMED in the title. A meeting typed straight into Outlook ("meeting with dr
-  // Geoffrey Aaron") carries no attendee at all, and used to produce nothing —
-  // no brief, no notes, nothing on the event.
-  const attendees = context.attendeesToEnrich(ev, { selfEmail: user.email });
-  const subjects = attendees.length
-    ? attendees.map((a) => ({ email: a.email, name: a.name || null, via: 'attendee' }))
-    : context
-        .namesFromEvent(ev, { selfEmail: user.email })
-        .map((p) => ({ email: null, name: p.name, via: 'meeting title' }));
+  // The gate first: if neither the title nor an attendee name says "Dr" or
+  // "Doctor", this is a normal meeting and there is nothing here to look up.
+  // meetingGate, not the whole ladder: this is the pure "does anything on this
+  // meeting call someone a doctor" question, and it costs no directory read.
+  if (!meetingMatch.meetingGate(ev, user.email).pass) return [];
+
+  // Who to look up: the people the MEETING names — the ladder's own list, so
+  // the tick and the panel look up the same people. That is the title
+  // ("meeting with dr Geoffrey Aaron", which carries no attendee at all) plus
+  // an attendee's DISPLAY NAME, which is a name someone typed. Never the
+  // address.
+  const subjects = meetingMatch
+    .namesToLookUp(ev, user.email)
+    .map((n) => ({ email: null, name: n.name, via: n.source === 'attendee' ? 'attendee name' : 'meeting title' }));
   if (!subjects.length) return [];
 
   // Keyed on the SERIES, not the occurrence: calendarView expands a recurring
@@ -687,8 +699,7 @@ async function briefUnknownAttendees(token, user, ev) {
 
   for (const subject of subjects) {
     const result = await enrichment.enrich({
-      email: subject.email || undefined,
-      name: subject.email ? undefined : subject.name,
+      name: subject.name,
       state: hints.state || undefined,
       city: hints.city || undefined,
       facilityName: hints.facilityName || hints.mentionedFacilities?.[0] || undefined,

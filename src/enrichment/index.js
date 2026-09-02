@@ -27,10 +27,11 @@ const { createProfile, fromBis, fromRegistry, fromWeb, inferred } = require('./p
  *   T4    CMS + extras    affiliation → CCN → hospital; industry     free
  *                         payments, publications, trials
  *
- * T1 runs only when it has something to buy: the caller gave no name, the
- * mailbox is not organisational, and ANTHROPIC_API_KEY is set. Otherwise the
- * name comes from the caller or from the email local-part
- * (rematch.nameHintsFromEmail), and the whole cascade stays free.
+ * T1 runs only when the REP explicitly asks for it (useWeb=always) on a
+ * personal-looking mailbox. Every automatic pass is free — and needs a name it
+ * was GIVEN, by the rep or by the meeting. A name is never derived from an
+ * address, by guessing the local-part or by searching the web for it: without
+ * one, T2 is not attempted and the answer is `unresolved`.
  *
  * The ORGANIZER is never enriched — that exclusion lives in context.js, which
  * decides who on a meeting is a candidate in the first place.
@@ -233,9 +234,8 @@ async function runEnrich(query = {}) {
   const wantsWebForCache =
     webIdentity.enabled &&
     Boolean(email) &&
-    (query.useWeb || 'auto') !== 'never' &&
-    !rematch.nameHintsFromEmail(email).generic &&
-    (query.useWeb === 'always' || !(query.lastName || query.name));
+    query.useWeb === 'always' &&
+    !rematch.isGenericMailbox(email);
 
   // Keyed by email when we have one, else by NPI — the backfill enriches
   // physicians who are already in BIS and have no address at all.
@@ -268,7 +268,9 @@ async function runEnrich(query = {}) {
     }
   }
 
-  // ── Name hints: explicit first, guessed from the address second ──────────
+  // ── The name, and only from someone who knows it ─────────────────────────
+  // Nothing here derives a name from the address. See
+  // rematch.isGenericMailbox() for the case that settled that rule.
   const explicit = query.lastName
     ? { firstName: query.firstName || '', lastName: query.lastName }
     : query.name
@@ -280,21 +282,17 @@ async function runEnrich(query = {}) {
     nameCandidates.push({ ...explicit, confidence: 100, rule: 'caller-supplied' });
   }
 
-  const emailHints = email ? rematch.nameHintsFromEmail(email) : { generic: false, candidates: [] };
-  if (emailHints.generic) {
+  const genericMailbox = email ? rematch.isGenericMailbox(email) : false;
+  if (genericMailbox) {
     p.note('Address looks like a shared/organisational mailbox, not a person.');
   }
 
   // ── T1: web identity — the only paid tier, and the only thing that can turn
-  //        an opaque address into a name. Skipped when the caller already gave
-  //        one (nothing to buy) or the mailbox is clearly organisational.
-  const webMode = query.useWeb || 'auto';
-  const runWeb =
-    webIdentity.enabled &&
-    Boolean(email) &&
-    webMode !== 'never' &&
-    !emailHints.generic &&
-    (webMode === 'always' || !explicit?.lastName);
+  //        an opaque address into a name. It now runs ONLY when the rep asks
+  //        for it (useWeb=always): turning an address into a person is exactly
+  //        the step that must not happen on its own, whether the name is
+  //        guessed from the local-part or searched for on the web.
+  const runWeb = webIdentity.enabled && Boolean(email) && query.useWeb === 'always' && !genericMailbox;
 
   let web = null;
   if (runWeb) {
@@ -366,8 +364,6 @@ async function runEnrich(query = {}) {
     }
   }
 
-  nameCandidates.push(...emailHints.candidates);
-
   const stateHint = query.state || identity?.state || domainHit?.facility?.state || null;
   const cityHint = query.city || identity?.city || domainHit?.facility?.city || null;
 
@@ -382,9 +378,8 @@ async function runEnrich(query = {}) {
       pick = { provider, confidence: 100, reasons: ['NPI supplied'], ambiguous: false, alternatives: [] };
     }
   } else {
-    // Each interpretation of the address ("nshaheen" → N. Shaheen / Shaheen N. /
-    // surname Nshaheen) is an independent free lookup, so they run together —
-    // sequentially this cost ~17s on an address that resolves to nothing.
+    // Every name the caller and the web tier supplied is an independent free
+    // lookup, so they run together rather than one after another.
     const tried = nameCandidates.slice(0, MAX_NAME_CANDIDATES);
     const searches = await Promise.all(
       tried.map(async (candidate) => ({
