@@ -72,6 +72,9 @@ const LEAD_WORDS = new Set([
   'touch', 'base', 'quick', 'weekly', 'monthly', 'daily', 'onsite', 'on', 'site',
   'brief', 'briefing', 'training', 'case', 'observation', 'evaluation',
   'chat', 'huddle', 'session', 'standup', 'debrief',
+  // "Dr Abernathy consult" is a consult with Dr Abernathy, not a Mr Consult —
+  // the same rule the other meeting words already follow.
+  'consult', 'consultation', 'rounds', 'prep', 'walkthrough', 'shadow',
 ]);
 
 const HONORIFIC = /^(dr|doctor|prof|professor|mr|mrs|ms|miss|sir)[.,]?$/i;
@@ -147,8 +150,16 @@ function titleCase(tokens) {
     .join(' ');
 }
 
-/** One title segment → a person's name, or null when it isn't one. */
-function nameFromSegment(segment, skipTokens) {
+/**
+ * One title segment → a person's name, or null when it isn't one.
+ *
+ * `minWords` is 2 by default: a lone surname cannot identify anybody, and
+ * guessing from one is how a brief ends up about the wrong physician. A caller
+ * that wants the half-name ON PURPOSE — to ask the rep for the missing part —
+ * passes 1, and every other rule here still applies (meeting words, place
+ * words, the organizer, capitalisation).
+ */
+function nameFromSegment(segment, skipTokens, minWords = 2) {
   // Everything after "at"/"@"/"–"/"(" is where, not who.
   const who = String(segment)
     .split(/\s+(?:at|@|re|regarding|about|for|from)\s+/i)[0]
@@ -189,9 +200,10 @@ function nameFromSegment(segment, skipTokens) {
     if (tokens.length === 6) break;
   }
 
-  // Two tokens minimum: a bare surname is not enough to look anybody up, and a
-  // single first name ("call with Steve") would produce confident nonsense.
-  if (tokens.length < 2) return null;
+  // Two tokens minimum by default: a bare surname is not enough to look anybody
+  // up, and a single first name ("call with Steve") would produce confident
+  // nonsense. A caller asking for half a name knows it is half.
+  if (tokens.length < minWords) return null;
   if (!looksLikeAName(tokens, hadHonorific)) return null;
   if (tokens.every((t) => skipTokens.has(t.toLowerCase()))) return null; // the organizer
   return titleCase(tokens);
@@ -215,6 +227,7 @@ function nameFromSegment(segment, skipTokens) {
  * @param {object} [opts]
  * @param {string} [opts.selfEmail]
  * @param {number} [opts.limit=3]
+ * @param {number} [opts.minWords=2]  1 to accept a half name ("Dr Khan")
  * @returns {Array<{name:string, source:'title'}>}
  */
 function namesFromEvent(event, opts = {}) {
@@ -238,7 +251,7 @@ function namesFromEvent(event, opts = {}) {
   const out = [];
   const seen = new Set();
   for (const segment of body.split(/\s*(?:,|&|\+|;|\/|<>| and )\s*/i)) {
-    const name = nameFromSegment(segment, skip);
+    const name = nameFromSegment(segment, skip, opts.minWords || 2);
     if (!name) continue;
     const key = name.toLowerCase();
     if (seen.has(key)) continue;
@@ -303,6 +316,27 @@ function seriesKey(event, subjects = []) {
   return who ? `series:${master}:${who}` : `series:${master}`;
 }
 
+/**
+ * A short fingerprint of what the meeting SAYS.
+ *
+ * The outside lookup is expensive (two registries), so it runs once per
+ * meeting — but "once" cannot mean "once ever": a rep who adds
+ * "Primary Taxonomy - Internal Medicine from CHICAGO" to the description has
+ * just handed us the answer, and the tick has to notice. Folding the text into
+ * the dedupe key re-runs it exactly once per edit, and never on a tick where
+ * nothing changed.
+ */
+function textFingerprint(event) {
+  const text = [event?.title, event?.description, event?.location]
+    .filter(Boolean)
+    .join(' · ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (!text) return 'empty';
+  return crypto.createHash('sha1').update(text).digest('hex').slice(0, 10);
+}
+
 /** True when this address is the meeting's organizer (or the signed-in user). */
 function isOrganizer(event, email, selfEmail) {
   const e = normEmail(email);
@@ -327,6 +361,37 @@ function organizerTokens(event, selfEmail) {
 }
 
 /**
+ * A taxonomy the rep labelled on the meeting.
+ *
+ * "Primary Taxonomy - Internal Medicine from CHICAGO" is a rep telling us, in
+ * as many words, what kind of physician this is. Two things then have to happen:
+ * the phrase becomes a TAXONOMY hint, and it is taken out of the text before the
+ * facility analysis runs — because "Internal Medicine" on its own matched a BIS
+ * facility called "Barkstone Internal Medicine Laguna Hills California", whose
+ * city and state were then sent to the registry as filters and eliminated every
+ * real candidate (a Chicago physician, found 2026-09-02).
+ *
+ * @param {string} text
+ * @returns {{taxonomy: string|null, rest: string}} the label's value, and the
+ *          text with that clause removed
+ */
+function taxonomyFromText(text) {
+  const raw = String(text || '');
+  // "Primary Taxonomy - X", "Taxonomy: X", "Specialty — X"; the value runs to a
+  // separator a rep would actually type, not to the end of the description.
+  const re = /\b(?:primary\s+)?(?:taxonomy|speciality|specialty)\s*[-–—:]\s*([^.,;\n·|]+)/i;
+  const m = re.exec(raw);
+  if (!m) return { taxonomy: null, rest: raw };
+
+  // "Internal Medicine from CHICAGO" → the taxonomy is what precedes the place.
+  const value = m[1].split(/\s+(?:from|at|in)\s+/i)[0].trim();
+  return {
+    taxonomy: value || null,
+    rest: (raw.slice(0, m.index) + ' ' + raw.slice(m.index + m[0].length)).replace(/\s+/g, ' ').trim(),
+  };
+}
+
+/**
  * Facility / location hints from the meeting title and description.
  *
  * Reuses the existing entity-matcher rather than re-implementing extraction —
@@ -337,7 +402,7 @@ function organizerTokens(event, selfEmail) {
  * email, and a name in the title is as likely to be the organizer's as the
  * physician's.
  *
- * @returns {Promise<{facilityId, facilityName, city, state, mentionedFacilities, text}>}
+ * @returns {Promise<{facilityId, facilityName, city, state, taxonomy, mentionedFacilities, text}>}
  */
 async function hintsFromEvent(event, opts = {}) {
   const text = [event?.title, event?.description, event?.location]
@@ -345,21 +410,26 @@ async function hintsFromEvent(event, opts = {}) {
     .join('. ')
     .trim();
 
+  // A labelled taxonomy is the rep's own answer to "what kind of physician" —
+  // read it, and keep it out of the facility analysis below.
+  const { taxonomy, rest } = taxonomyFromText(text);
+
   const hints = {
     facilityId: null,
     facilityName: null,
     city: null,
     state: null,
+    taxonomy,
     mentionedFacilities: [],
     text: text || null,
   };
-  if (!text) return hints;
+  if (!rest) return hints;
 
   const skip = organizerTokens(event, opts.selfEmail);
 
   let analysis;
   try {
-    analysis = await entityMatcher.analyze(text);
+    analysis = await entityMatcher.analyze(rest);
   } catch (err) {
     console.warn('[enrichment:context] entity analysis failed:', err.message);
     return hints;
@@ -439,6 +509,8 @@ function stripOrganizerPeople(analysis, event, selfEmail) {
 
 module.exports = {
   attendeesToEnrich,
+  taxonomyFromText,
+  textFingerprint,
   namesFromEvent,
   seriesKey,
   isOrganizer,

@@ -88,6 +88,59 @@ function dayRange(timeZone, dateYmd) {
 /**
  * Map a raw Graph event onto the lean shape our frontend (and agent) consumes.
  */
+// Hidden marker that makes brief injection idempotent (never inject twice).
+const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
+/** The visible heading of an injected block — its signature in plain text. */
+const BRIEF_HEADING = '🩺 BIS pre-meeting brief';
+
+/**
+ * The rep's OWN words, with our injected brief taken back out.
+ *
+ * The brief is written into the meeting body, and the meeting body is then read
+ * back for hints — the taxonomy and the city that identify the physician. Left
+ * alone, that is a feedback loop with teeth: once a brief had been injected, the
+ * 255-character bodyPreview was entirely our own text, "Primary Taxonomy -
+ * Internal Medicine from CHICAGO" was gone, and the panel dropped from one
+ * candidate at 100% to "2 possible matches, none over 70%" (2026-09-02).
+ *
+ * The HTML body is authoritative when we have it: our block runs from the
+ * marker to the `<hr>` that closes it, so removing that range leaves exactly
+ * what the rep wrote. The preview is a fallback and can only be cut at the
+ * heading, which is why the callers that decide anything read the body.
+ */
+function stripInjectedBrief({ html, preview }) {
+  const body = String(html || '');
+  if (body.includes(BRIEF_MARKER)) {
+    const from = body.indexOf(BRIEF_MARKER);
+    const closing = body.indexOf('</div><hr>', from);
+    const rest = closing === -1 ? '' : body.slice(closing + '</div><hr>'.length);
+    return htmlToText(body.slice(0, from) + rest);
+  }
+  if (body) return htmlToText(body);
+
+  const text = String(preview || '');
+  const at = text.indexOf(BRIEF_HEADING);
+  return (at === -1 ? text : text.slice(0, at)).trim() || null;
+}
+
+/** Crude HTML → text, enough for reading hints out of a meeting body. */
+function htmlToText(html) {
+  return (
+    String(html || '')
+      .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(p|div|tr|h\d)>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/\n\s*\n+/g, '\n')
+      .trim() || null
+  );
+}
+
 function normalizeEvent(event) {
   return {
     id: event.id,
@@ -105,8 +158,11 @@ function normalizeEvent(event) {
     type: event.type || 'singleInstance', // singleInstance|occurrence|exception|seriesMaster
     seriesMasterId: event.seriesMasterId || null,
     location: event.location?.displayName || null,
-    // bodyPreview is plain text — safe and concise for a list view.
-    description: event.bodyPreview?.trim() || null,
+    // The rep's own words only. bodyPreview is plain text and concise for a list
+    // view, but once a brief has been injected the preview IS that brief — so
+    // the full body is used when it was fetched, and our own block is removed
+    // either way (see stripInjectedBrief).
+    description: stripInjectedBrief({ html: event.body?.content, preview: event.bodyPreview }),
     organizer: {
       name: event.organizer?.emailAddress?.name || null,
       email: event.organizer?.emailAddress?.address || null,
@@ -146,7 +202,7 @@ async function getEventsForDay(accessToken, timeZone, dateYmd) {
     .query({ startDateTime, endDateTime })
     // Return start/end times already converted to the user's time zone.
     .header('Prefer', `outlook.timezone="${tz}"`)
-    .select('subject,start,end,location,bodyPreview,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
+    .select('subject,start,end,location,bodyPreview,body,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
     .orderby('start/dateTime')
     .top(100)
     .get();
@@ -736,6 +792,308 @@ function physicianBriefHtml({ physician, analytics, contact, verification }) {
   ].join('');
 }
 
+/**
+ * Pre-meeting notes for a physician who is NOT in the BIS master.
+ *
+ * Same sections, same order, same labels as physicianBriefHtml — that is the
+ * whole point. A rep should not have to learn a second layout for the half of
+ * their calendar that Supabase has never heard of, and a section that silently
+ * disappears reads as "nothing to know here" rather than "we could not find
+ * out". So every row is printed, and a field no source could fill says
+ * "Data not available" in its own place.
+ *
+ * The EXTRA block is intelligence the master has no column for at all — licence,
+ * taxonomies, NPI status today, and (later) CMS volumes and industry payments.
+ * It is labelled as extra and carries the page it came from, because it is NOT
+ * BIS-verified data and must never read as though it were.
+ *
+ * @param {object} opts
+ * @param {object} opts.record        a store record (mirror fields, nulls intact)
+ * @param {object} [opts.extra]       { label: value } the source could add
+ * @param {object} [opts.cms]         CMS by-provider-and-service result, if any
+ * @param {object} [opts.agreement]   { confirmed, on[], by[] } — do the sources agree?
+ * @param {number} [opts.confidence]  0-100, how sure we are this is the person
+ * @param {string[]} [opts.matchReasons]  why that number
+ * @param {object} [opts.nameIncomplete] { name, missing, total } when the
+ *        meeting gave only half a name — the notes ask for the rest
+ * @param {string} [opts.sourceName]  e.g. "NPPES NPI Registry"
+ * @param {string} [opts.sourceUrl]   the page that proves it
+ */
+function outsideBriefHtml({
+  record,
+  extra = {},
+  cms = null,
+  agreement = null,
+  confidence = null,
+  matchReasons = [],
+  nameIncomplete = null,
+  sourceName,
+  sourceUrl,
+} = {}) {
+  if (!record) return '';
+  const r = record;
+  const td = 'style="padding:2px 12px 2px 0;vertical-align:top"';
+  const NA = '<span style="color:#8a8f98">Data not available</span>';
+
+  const cell = (v) => (v === null || v === undefined || v === '' ? NA : escapeHtml(String(v)));
+  const table = (rows) =>
+    `<table>${rows
+      .map(([k, v]) => `<tr><td ${td}><b>${escapeHtml(k)}</b></td><td>${v && v.html ? v.html : cell(v)}</td></tr>`)
+      .join('')}</table>`;
+
+  const link = sourceUrl
+    ? `<a href="${escapeHtml(sourceUrl)}">${escapeHtml(sourceName || 'source')}</a>`
+    : escapeHtml(sourceName || 'a public registry');
+
+  const out = [];
+
+  // The first thing the rep must know: this is not your data.
+  out.push(
+    '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #8a5700;background:#fff8e6;' +
+      `color:#8a5700"><b>⚠️ Not in the BIS database.</b> The notes below were assembled from ` +
+      `${link}. Anything BIS would normally supply and this source could not is marked ` +
+      '"Data not available".</p>'
+  );
+
+  // ── How sure are we that this is the right person? ────────────────────────
+  // A brief with no number invites the rep to treat a 55% guess exactly like a
+  // 95% certainty. The number and its reasons travel together, so it can be
+  // argued with rather than believed.
+  if (Number.isFinite(confidence)) {
+    const strong = confidence >= 70;
+    const [c, bg] = strong ? ['#0b6b3a', '#eefaf3'] : ['#8a5700', '#fff8e6'];
+    const why = (matchReasons || []).length ? ` — ${escapeHtml(matchReasons.join(', '))}` : '';
+    const confirmedBy =
+      agreement?.confirmed && (agreement.by || []).length > 1
+        ? ` Confirmed by ${escapeHtml(agreement.by.join(' and '))} (${escapeHtml(
+            (agreement.on || []).join(', ')
+          )} agree).`
+        : '';
+    out.push(
+      `<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid ${c};background:${bg};` +
+        `color:${c}"><b>${strong ? '✅' : '⚠️'} Identity confidence: ${confidence}%</b>${why}.` +
+        confirmedBy +
+        (strong ? '' : ' Treat as a suggestion and confirm before acting on it.') +
+        '</p>'
+    );
+  }
+
+  // ── The meeting only gave half a name ────────────────────────────────────
+  // Nothing downstream can fix this, and the rep can — in five seconds, in the
+  // invite. So the ask is specific about which half is missing.
+  if (nameIncomplete?.name) {
+    const which =
+      nameIncomplete.missing === 'first'
+        ? 'the <b>first name</b> is missing'
+        : nameIncomplete.missing === 'last'
+          ? 'the <b>last name</b> is missing'
+          : 'the full name is not written out';
+    const howMany = Number.isFinite(nameIncomplete.total) && nameIncomplete.total > 1
+      ? ` “${escapeHtml(nameIncomplete.name)}” alone matches ${nameIncomplete.total} physicians.`
+      : '';
+    out.push(
+      '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #7a2048;background:#fdf0f4;' +
+        `color:#7a2048"><b>✍️ Please write the physician's full name on the meeting</b> — ` +
+        `${which}.${howMany} With the full name this brief can be matched exactly.</p>`
+    );
+  }
+
+  // NPPES already returns a full "street, city, ST zip" string, so appending the
+  // parts again produced "1 Main St, Houston, TX 77002, Houston, TX, 77002".
+  // Add only what the address does not already say.
+  const said = String(r.facilityAddress || '').toLowerCase();
+  const address =
+    [r.facilityAddress, ...[r.city, r.state, r.zip].filter((v) => v && !said.includes(String(v).toLowerCase()))]
+      .filter(Boolean)
+      .join(', ') || null;
+
+  out.push(
+    '<p class="brief-h"><b>Physician details</b></p>',
+    table([
+      ['Name', r.name],
+      ['NPI', r.npi],
+      ['Specialty', r.specialty],
+      ['Email', r.email],
+      ['Phone', r.phone],
+      // null means "we do not know", which is not the same as "No".
+      ['ESD Procedure', r.esdProcedure == null ? null : r.esdProcedure ? 'Yes' : 'No'],
+      ['Facility', r.facilityName],
+      ['Facility Address', address],
+      ['Health System', r.healthSystem],
+      ['Territory', r.territory],
+      ['LinkedIn', r.linkedinUrl],
+    ])
+  );
+
+  out.push(
+    '<p class="brief-h"><b>Contact intelligence</b></p>',
+    table([
+      ['Verified email', r.contactEmail],
+      ['Mobile', r.contactMobile],
+      ['LinkedIn (verified)', r.contactLinkedinUrl],
+      // `== null` on purpose: a record assembled from a source has these keys
+      // UNDEFINED, not null, and a strict check printed "undefined/100".
+      ['Contactability', r.contactConfidenceScore == null ? null : `${r.contactConfidenceScore}/100`],
+      ['Last verified', r.contactLastVerified],
+    ])
+  );
+
+  // ── Procedure intelligence ────────────────────────────────────────────────
+  // bis_procedure_volumes has no row for this physician, but Medicare claims do
+  // — by year, per code. This is the section that turns a name into a practice,
+  // so when CMS answered it is rendered in full; when it did not, the section
+  // still exists and says why.
+  out.push('<p class="brief-h"><b>Procedure intelligence</b></p>');
+
+  const cmsYears = (cms?.years || []).filter((y) => (y.lines || []).length);
+  if (cmsYears.length) {
+    const money = (n) =>
+      n === null || n === undefined ? NA : `$${Math.round(n).toLocaleString('en-US')}`;
+    const count = (n) => (n === null || n === undefined ? NA : n.toLocaleString('en-US'));
+
+    for (const y of cmsYears) {
+      out.push(
+        `<p style="margin:8px 0 4px"><b>${escapeHtml(y.year)}</b> — ` +
+          `${count(y.services)} services · ${count(y.beneficiaries)} beneficiaries · ` +
+          `${money(y.allowed)} Medicare allowed · ${count(y.codes)} distinct codes</p>`,
+        '<table><tr>' +
+          ['CPT/HCPCS', 'Procedure', 'Services', 'Patients', 'Avg allowed']
+            .map(
+              (h, i) =>
+                // The number columns are narrow; without this "Avg allowed"
+                // wraps to "Avg allowe / d" on a phone-width panel.
+                `<td style="padding:2px 12px 2px 0;vertical-align:top` +
+                `${i === 1 ? '' : ';white-space:nowrap'}"><b>${h}</b></td>`
+            )
+            .join('') +
+          '</tr>' +
+          y.lines
+            .map(
+              (l) =>
+                `<tr><td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${cell(l.hcpcs)}</td>` +
+                // CMS reports the same code twice when it was billed in both a
+                // facility and an office, and the two are commercially
+                // different (a hospital endoscopy suite is not a clinic room).
+                // Labelling the row is why the repetition makes sense.
+                `<td ${td}>${cell(l.description)}` +
+                (l.placeOfService ? ` <span style="color:#5a6672">(${escapeHtml(l.placeOfService)})</span>` : '') +
+                '</td>' +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.services)}</td>` +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${count(l.beneficiaries)}</td>` +
+                `<td style="padding:2px 12px 2px 0;vertical-align:top;white-space:nowrap">${money(l.avgAllowed)}</td></tr>`
+            )
+            .join('') +
+          '</table>' +
+          (y.truncated
+            ? `<p style="margin:2px 0 8px;color:#5a6672;font-size:12px">Top ${y.lines.length} of ` +
+              `${count(y.codes)} codes by volume.</p>`
+            : '')
+      );
+    }
+
+    const cmsLink = cms.externalSourceUrl
+      ? `<a href="${escapeHtml(cms.externalSourceUrl)}">CMS Medicare Physician & Other Practitioners</a>`
+      : 'CMS Medicare Physician &amp; Other Practitioners';
+    out.push(
+      `<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">Source: ${cmsLink}, ` +
+        'by provider and service. Medicare fee-for-service claims only — not all payers, ' +
+        `so these are a floor, not this physician's total volume.</p>`
+    );
+  } else {
+    // Distinguish "CMS has no claims for this NPI" from "CMS could not be
+    // reached": the first is a fact about the physician, the second is not.
+    const blind = (cms?.unreachableYears || []).length ? cms.unreachableYears.join(', ') : null;
+    out.push(
+      table([
+        ['CPT volumes', null],
+        ['Procedure families', null],
+        ['Commercial signals', null],
+        ['Best-fit product', null],
+      ]),
+      '<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">' +
+        (blind
+          ? `📡 CMS claims data could not be read for ${escapeHtml(blind)} — this is a source ` +
+            'outage, not a finding about this physician. Retry from the meeting.'
+          : cms
+            ? 'CMS Medicare claims list no services for this NPI in the years read. ' +
+              'Medicare fee-for-service only, so a private-payer practice can be absent.'
+            : 'Volume-based sections need this physician in <code>bis_procedure_volumes</code>, ' +
+              'or Medicare claims under their NPI.') +
+        '</p>'
+    );
+  }
+
+  out.push(
+    '<p class="brief-h"><b>Account</b></p>',
+    table([
+      ['Lumendi product', r.accountProduct],
+      ['Account status', r.accountStatus],
+      ['Since', r.accountSinceDate],
+    ])
+  );
+
+  // ── EXTRA — no BIS column exists for any of this ──────────────────────────
+  const extraRows = Object.entries(extra || {})
+    .filter(([, v]) => v !== null && v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))
+    .map(([k, v]) => [fieldLabel(k), Array.isArray(v) ? v.join('; ') : v]);
+
+  if (extraRows.length) {
+    out.push(
+      '<p class="brief-h"><b>Extra intelligence</b> ' +
+        '<span style="font-size:11px;color:#5b21b6;border:1px solid #c4b5fd;background:#f6f2ff;' +
+        'border-radius:9px;padding:1px 6px">EXTRA · not in BIS</span></p>',
+      table(extraRows),
+      `<p style="margin:2px 0 10px;color:#5a6672;font-size:12px">Source: ${link}. ` +
+        'Extra fields are shown for context and are not stored in your database.</p>'
+    );
+  }
+
+  return out.join('');
+}
+
+/**
+ * What is shown INSTEAD of a brief, when the person the registry found is not a
+ * doctor.
+ *
+ * A national registry lists whoever holds an NPI — social workers, case
+ * managers, behaviour technicians, dental hygienists. A pre-meeting brief for
+ * one of them is worse than none: it spends the rep's two minutes on the wrong
+ * person and implies the app checked who they were.
+ *
+ * So this says exactly what the registry says, names the taxonomy and its code,
+ * links the page that proves it, and leaves the rep a way out — because the one
+ * thing worse than briefing the wrong person is refusing to brief the right one
+ * with no explanation.
+ *
+ * @param {object} opts
+ * @param {string} opts.name
+ * @param {string} [opts.npi]
+ * @param {object} opts.kind        the taxonomy verdict (outside-sources/taxonomy.js)
+ * @param {string} [opts.sourceName]
+ * @param {string} [opts.sourceUrl]
+ */
+function notDoctorHtml({ name, npi, kind, sourceName, sourceUrl } = {}) {
+  const who = escapeHtml(name || (npi ? `NPI ${npi}` : 'this contact'));
+  const role = kind?.label ? `<b>${escapeHtml(kind.label)}</b>` : 'not a physician';
+  const code = kind?.grouping && kind.via === 'code' ? ` (NUCC grouping ${escapeHtml(kind.grouping)})` : '';
+  const link = sourceUrl
+    ? ` <a href="${escapeHtml(sourceUrl)}">Verify on ${escapeHtml(sourceName || 'the registry')}</a>.`
+    : '';
+
+  return [
+    '<p style="margin:0 0 10px;padding:8px 10px;border-left:3px solid #7a2048;background:#fdf0f4;' +
+      `color:#7a2048"><b>🚫 Not a physician — no pre-meeting brief.</b></p>`,
+    `<p>${sourceName ? escapeHtml(sourceName) : 'The registry'} lists ${who}` +
+      `${npi ? ` (NPI ${escapeHtml(npi)})` : ''} as ${role}${code}. Pre-meeting briefs are ` +
+      'produced for physicians, dentists and podiatrists, so none was assembled.' +
+      link +
+      '</p>',
+    kind?.reason ? `<p style="color:#5a6672;font-size:12px">${escapeHtml(kind.reason)}</p>` : '',
+    '<p style="color:#5a6672;font-size:12px">Wrong person? Pick another match, or write the ' +
+      'physician\'s full name on the meeting.</p>',
+  ].join('');
+}
+
 // ── External (enriched) brief ────────────────────────────────────────────────
 
 /**
@@ -841,6 +1199,13 @@ const FIELD_LABELS = {
   identityReasoning: 'How we identified them',
   jobTitle: 'Title',
   licenseNumber: 'License #',
+  // The auto-capitaliser turns these into "Npi Status" / "Ruc Aurban".
+  npiStatus: 'NPI status',
+  licenseState: 'License state',
+  ruralUrban: 'Practice area',
+  medicareParticipating: 'Medicare participating',
+  paymentProducts: 'Products paid for',
+  recentPublications: 'Recent publications',
 };
 
 /** Turn a camelCase profile key into a readable label. */
@@ -1183,6 +1548,63 @@ async function sendPhysiciansBriefing(accessToken, { toEmail, physicians, event,
 
 /** Single-physician briefing — thin wrapper over the combined sender so the
  *  manual "Email me this briefing" and schedule-invite paths are unchanged. */
+/**
+ * Email a brief for a physician the master does not have.
+ *
+ * A sibling of sendPhysiciansBriefing rather than a branch inside it: the body
+ * is already rendered (outsideBriefHtml, assembled from whichever public
+ * sources answered), and the subject has to say plainly that this is NOT your
+ * data — a rep skimming their inbox must not mistake a registry profile for the
+ * master's own.
+ *
+ * The rep's own note history rides along, exactly as it does in a BIS brief:
+ * notes are keyed by NPI, and an outside physician has one.
+ *
+ * @param {string} accessToken
+ * @param {object} opts
+ * @param {string} opts.toEmail
+ * @param {string} opts.name       who the brief is about
+ * @param {string} opts.html       the rendered brief
+ * @param {object[]} [opts.notes]  this rep's meeting notes for them
+ * @param {object} [opts.event]    { title, start, timeZone }
+ * @param {string} [opts.subject]  overrides the default (the reminder sets it)
+ * @param {string} [opts.intro]    overrides the first line
+ * @returns {Promise<string|null>} the address it actually went to
+ */
+async function sendOutsideBriefing(accessToken, { toEmail, name, html, notes, event, subject, intro }) {
+  if (!toEmail || !html) return null;
+  const client = getGraphClient(accessToken);
+
+  const meetingWhen = event?.start ? formatMeetingTime(event.start, event.timeZone) : '';
+  const who = name || 'this contact';
+
+  const content = [
+    `<p>${escapeHtml(
+      intro ||
+        `${who} is not in the BIS directory. Everything below was assembled from public ` +
+          'sources, and anything those sources could not supply is marked "Data not available".'
+    )}</p>`,
+    event?.title
+      ? `<p><b>Meeting:</b> ${escapeHtml(event.title)}${meetingWhen ? ` — ${escapeHtml(meetingWhen)}` : ''}</p>`
+      : '',
+    html,
+    '<p class="brief-h"><b>Meeting notes</b></p>',
+    meetingNotesHtml(notes || []),
+  ].join('');
+
+  // Same delivery rule as every other brief — see sendPhysiciansBriefing.
+  const sendTo = config.briefingToEmail || toEmail;
+  await client.api('/me/sendMail').post({
+    message: {
+      subject: subject || `🔎 Outside BIS: ${who}${event?.title ? ` — ${event.title}` : ''}`,
+      body: { contentType: 'HTML', content },
+      toRecipients: [{ emailAddress: { address: sendTo } }],
+    },
+    saveToSentItems: true,
+  });
+  return sendTo;
+}
+
 async function sendPhysicianBriefing(
   accessToken,
   { toEmail, physician, notes, analytics, event, subject, intro, contact }
@@ -1218,8 +1640,27 @@ async function getUpcomingEvents(accessToken, withinMinutes = 180) {
   return (response.value || []).map(normalizeEvent);
 }
 
-// Hidden marker that makes brief injection idempotent (never inject twice).
-const BRIEF_MARKER = '<!-- bis-pre-meeting-brief -->';
+/**
+ * One event by id, normalized like every other event this module returns.
+ *
+ * The calendar list the browser already holds is a snapshot; a meeting the rep
+ * has just edited (added the real attendee, fixed the title) is only current in
+ * Graph. Anything that decides WHO a meeting is with reads it from here, so the
+ * decision is never made on a stale title.
+ */
+async function getEventById(accessToken, eventId) {
+  const client = getGraphClient(accessToken);
+  const event = await client
+    .api(`/me/events/${eventId}`)
+    .header('Prefer', 'outlook.timezone="UTC"')
+    // `body` as well as the preview: anything that DECIDES who a meeting is with
+    // has to read the rep's own words, and a meeting we have already written a
+    // brief into has nothing else left in its 255-character preview.
+    .select('subject,start,end,location,bodyPreview,body,isAllDay,type,seriesMasterId,organizer,attendees,onlineMeeting,webLink')
+    .get();
+  return normalizeEvent(event);
+}
+
 
 /**
  * Embed the BIS pre-meeting brief INTO a calendar event's own body, so opening
@@ -1408,6 +1849,12 @@ async function getMe(accessToken) {
 }
 
 module.exports = {
+  getEventById,
+  stripInjectedBrief,
+  BRIEF_HEADING,
+  notDoctorHtml,
+  sendOutsideBriefing,
+  outsideBriefHtml,
   getEventsForDay,
   getUpcomingEvents,
   getInboxDelta,

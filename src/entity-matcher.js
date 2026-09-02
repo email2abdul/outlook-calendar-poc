@@ -57,6 +57,12 @@ const FACILITY_GENERIC = new Set([
   'hospital', 'medical', 'center', 'centre', 'clinic', 'health', 'healthcare',
   'regional', 'community', 'memorial', 'general', 'university', 'institute',
   'college', 'saint',
+  // Specialty words. A facility is often NAMED after one ("Barkstone Internal
+  // Medicine"), so they must not be the distinctive part of a match: on their
+  // own, "Internal Medicine" in a description is a taxonomy, and treating it as
+  // that facility handed its city and state to a registry query as filters,
+  // which eliminated every real candidate (found 2026-09-02).
+  'internal', 'medicine', 'practice', 'primary', 'care', 'specialty', 'family',
 ]);
 
 // ── Small text utilities ─────────────────────────────────────────────────────

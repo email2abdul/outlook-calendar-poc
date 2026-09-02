@@ -1,0 +1,485 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Outlook Calendar Intelligence — System Workflow &amp; Agent Logic</title>
+<style>
+  @page { size: A4; margin: 16mm 14mm 16mm 14mm; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 10.5pt/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: #14181d;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  h1 { font-size: 23pt; line-height: 1.15; margin: 0 0 6px; letter-spacing: -.4px; }
+  h2 {
+    font-size: 14pt; margin: 26px 0 10px; padding-bottom: 5px;
+    border-bottom: 2px solid #0f6cbd; color: #0a4f8a;
+    page-break-after: avoid; break-after: avoid;
+  }
+  h3 { font-size: 11.5pt; margin: 18px 0 6px; color: #0a4f8a; page-break-after: avoid; break-after: avoid; }
+  h4 { font-size: 10.5pt; margin: 14px 0 4px; }
+  p, li { margin: 0 0 7px; }
+  ul, ol { margin: 0 0 9px; padding-left: 19px; }
+  li > ul, li > ol { margin-top: 4px; }
+  code, .mono {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 8.8pt; background: #f1f4f8; padding: 1px 3px; border-radius: 3px;
+    color: #143b5e;
+  }
+  a { color: #0f6cbd; }
+
+  .cover { border-bottom: 3px solid #0f6cbd; padding-bottom: 14px; margin-bottom: 6px; }
+  .sub { font-size: 11pt; color: #4a5561; margin: 4px 0 12px; }
+  .meta { font-size: 9pt; color: #5a6672; }
+  .meta b { color: #14181d; }
+
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 12px; font-size: 9.2pt; }
+  th, td { border: 1px solid #d3dae2; padding: 5px 7px; text-align: left; vertical-align: top; }
+  th { background: #eef4fa; color: #0a4f8a; font-weight: 700; }
+  tr { page-break-inside: avoid; break-inside: avoid; }
+  td.mono, th.mono { font-family: "SF Mono", Menlo, Consolas, monospace; font-size: 8.5pt; }
+
+  .callout {
+    border-left: 4px solid #0f6cbd; background: #f5f9fd; padding: 9px 12px;
+    margin: 10px 0; font-size: 9.6pt; page-break-inside: avoid; break-inside: avoid;
+  }
+  .callout.warn { border-left-color: #c2410c; background: #fff6f1; }
+  .callout.rule { border-left-color: #15803d; background: #f2fbf5; }
+  .callout b { color: #0a4f8a; }
+  .callout.warn b { color: #9a3412; }
+  .callout.rule b { color: #14663a; }
+
+  /* ── flow diagram primitives ─────────────────────────────────────────── */
+  .flow { margin: 12px 0 16px; page-break-inside: avoid; break-inside: avoid; }
+  .box {
+    border: 1.5px solid #9db4c9; border-radius: 8px; background: #fbfdff;
+    padding: 8px 11px; font-size: 9.3pt;
+  }
+  .box .t { font-weight: 700; color: #0a4f8a; display: block; font-size: 9.6pt; }
+  .box .d { color: #4a5561; display: block; margin-top: 2px; }
+  .box.src { border-color: #0f6cbd; background: #eaf3fb; }
+  .box.ai  { border-color: #7c3aed; background: #f6f2ff; }
+  .box.ai .t { color: #5b21b6; }
+  .box.out { border-color: #15803d; background: #f1fbf5; }
+  .box.out .t { color: #14663a; }
+  .box.stop { border-color: #c2410c; background: #fff6f1; }
+  .box.stop .t { color: #9a3412; }
+  .arrow { text-align: center; color: #0f6cbd; font-size: 12pt; line-height: 1; margin: 4px 0; }
+  .row { display: flex; gap: 9px; }
+  .row > * { flex: 1; }
+  .lane { border: 1px dashed #b9c6d4; border-radius: 9px; padding: 9px 10px 4px; margin: 9px 0; }
+  .lane > .lbl {
+    font-size: 8.3pt; text-transform: uppercase; letter-spacing: .8px;
+    color: #5a6672; font-weight: 700; margin-bottom: 6px;
+  }
+  .tier {
+    display: flex; gap: 9px; align-items: stretch; margin: 5px 0;
+    page-break-inside: avoid; break-inside: avoid;
+  }
+  .tier .tag {
+    flex: 0 0 62px; border-radius: 6px; background: #0f6cbd; color: #fff;
+    font-weight: 700; font-size: 9pt; text-align: center; padding: 7px 2px;
+  }
+  .tier.paid .tag { background: #7c3aed; }
+  .tier.free .tag { background: #15803d; }
+  .tier .body { flex: 1; border: 1px solid #d3dae2; border-radius: 6px; padding: 6px 9px; background: #fbfdff; }
+  .tier .body b { color: #0a4f8a; }
+  .cost { float: right; font-size: 8.4pt; color: #5a6672; font-weight: 700; }
+
+  .keys td:first-child { white-space: nowrap; }
+  .pill {
+    display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 8.2pt;
+    font-weight: 700; border: 1px solid;
+  }
+  .pill.ok  { color: #14663a; border-color: #86c9a3; background: #f1fbf5; }
+  .pill.mid { color: #92400e; border-color: #e3bd8a; background: #fff8ee; }
+  .pill.no  { color: #9a3412; border-color: #e8b39a; background: #fff6f1; }
+
+  .pb { page-break-before: always; break-before: page; }
+  footer { margin-top: 22px; padding-top: 8px; border-top: 1px solid #d3dae2; font-size: 8.6pt; color: #5a6672; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Outlook Calendar Intelligence</h1>
+  <div class="sub">End-to-end workflow, the enrichment agent’s logic, and how pre-meeting notes are produced</div>
+  <div class="meta">
+    <b>Repo:</b> <span class="mono">outlook-calendar-poc</span> ·
+    <b>Branch:</b> <span class="mono">feat-outside-bis-physician-pre-notes</span> (level with <span class="mono">main</span>) ·
+    <b>Generated:</b> 2026-09-01 ·
+    <b>Source:</b> <span class="mono">docs/system-workflow.html</span>
+  </div>
+</div>
+
+<h2>1. What this system actually is</h2>
+
+<p>The repo is named “Outlook Calendar POC”, but it is a <b>pre-meeting sales-intelligence
+platform for a medical-device rep</b> (Lumendi context). The rep never leaves Outlook. When a
+meeting with a physician appears on the calendar, the system identifies who the meeting is with,
+assembles everything it knows about them, and puts that brief in front of the rep in three
+places — as an email, inside the meeting itself, and in the web app.</p>
+
+<table>
+  <tr><th style="width:24%">Surface</th><th>What it does</th><th style="width:32%">Code</th></tr>
+  <tr><td>Web app</td><td>Day’s calendar, expandable meeting cards, in-app brief, notes, Email Intelligence Sheet, Dynamics leads</td><td class="mono">public/{index.html,app.js} · src/routes/api.routes.js</td></tr>
+  <tr><td>Email</td><td>Instant brief when a meeting appears; reminder brief before it starts; external (non-BIS) brief</td><td class="mono">src/graph.js · src/reminders.js</td></tr>
+  <tr><td>The meeting itself</td><td>Brief injected into the event body — visible when the rep opens the meeting on any device, no add-in needed</td><td class="mono">graph.injectBriefIntoEvent</td></tr>
+  <tr><td>Outlook add-in</td><td>Ribbon task pane reading attendees via Office.js (blocked on personal outlook.com accounts)</td><td class="mono">src/routes/addin.routes.js · public/addin</td></tr>
+  <tr><td>Dynamics 365</td><td>Lead → BIS physician brief in a side pane (token-gated iframe)</td><td class="mono">src/routes/embed.routes.js · src/dynamics.js</td></tr>
+</table>
+
+<h2>2. The runtime — one web process, two background engines</h2>
+
+<p><span class="mono">server.js</span> boots Express (session in SQLite, or Redis when
+<span class="mono">REDIS_URL</span> is set), waits for the physician directory to load from
+Supabase, mounts the routes, and then — only when run as a long-lived process — starts two
+timers. Everything the rep receives without clicking anything comes from these two loops.</p>
+
+<table>
+  <tr><th style="width:22%">Engine</th><th style="width:16%">Interval</th><th>Job</th></tr>
+  <tr>
+    <td><span class="mono">src/email-ingest.js</span><br>“ingest tick”</td>
+    <td><span class="mono">INGEST_POLL_SECONDS</span><br>default <b>300 s</b></td>
+    <td>Sync calendar → <span class="mono">app_activities</span>; instant-brief new physician meetings; inject briefs into meeting bodies; run the enrichment agent on meetings that match nobody; ingest inbox + sent replies; AI meeting notes; heal the Email Intelligence Sheet</td>
+  </tr>
+  <tr>
+    <td><span class="mono">src/reminders.js</span><br>“reminder tick”</td>
+    <td><span class="mono">REMINDER_POLL_SECONDS</span><br>set to <b>60 s</b></td>
+    <td>For every signed-in rep, find meetings starting within <span class="mono">REMINDER_LEAD_MINUTES</span> (set to <b>30</b>) and email one reminder + full brief per meeting</td>
+  </tr>
+</table>
+
+<p>Both loops iterate <b>every signed-in salesperson</b> from the persisted token store
+(<span class="mono">src/token-store.js</span>) and silently refresh each one’s Microsoft access
+token (<span class="mono">auth.getAccessTokenForUser</span>), so they keep working with nobody
+logged into the browser. Both are individually killable
+(<span class="mono">INGEST_ENABLED=false</span>, <span class="mono">REMINDERS_ENABLED=false</span>),
+and the ingest engine no-ops entirely without Supabase.</p>
+
+<div class="callout">
+  <b>Why polling, not webhooks.</b> Graph change notifications need a public HTTPS endpoint;
+  the handler exists (<span class="mono">/auth/webhooks/outlook</span>) but on localhost the same
+  logic runs on a poll so the whole pipeline is testable in dev. Every side effect is guarded by
+  an idempotency key (§6.4), so poll frequency changes latency, never duplicates.
+</div>
+
+<h2 class="pb">3. The master workflow</h2>
+
+<div class="flow">
+  <div class="box src"><span class="t">Microsoft Graph — the rep’s calendar</span><span class="d">graph.getUpcomingEvents(token, 30 days) · calendarView, UTC-normalised, one event per recurring occurrence</span></div>
+  <div class="arrow">▼</div>
+  <div class="box"><span class="t">Who is this meeting with?</span><span class="d">context.attendeesToEnrich(event) — attendees only, never the organizer, never resource/room mailboxes → physicians.getByEmail(exact match in the 21k BIS directory)</span></div>
+  <div class="arrow">▼</div>
+
+  <div class="row">
+    <div>
+      <div class="box out"><span class="t">MATCHED in BIS</span><span class="d">one or more attendee emails are in <span class="mono">bis_physicians</span></span></div>
+      <div class="arrow">▼</div>
+      <div class="box"><span class="t">Link + brief</span><span class="d">upsert <span class="mono">app_activities</span> (first NPI) → assemble bundle per physician → <b>instant brief email</b> (first sight only) → <b>inject brief into the meeting body</b></span></div>
+    </div>
+    <div>
+      <div class="box stop"><span class="t">NO match in BIS</span><span class="d">the old dead end: no activity, no brief, rep walked in blind</span></div>
+      <div class="arrow">▼</div>
+      <div class="box ai"><span class="t">Enrichment agent (§5)</span><span class="d">briefUnknownAttendees → subjects = attendees, or the people <i>named in the title</i> when there are none → <span class="mono">enrichment.enrich()</span> cascade</span></div>
+    </div>
+  </div>
+
+  <div class="arrow">▼</div>
+  <div class="box"><span class="t">Agent outcome decides what the rep gets</span><span class="d"><span class="mono">recovered_in_bis</span> → link the activity and brief them exactly like a matched physician (email + meeting body) &nbsp;·&nbsp; <span class="mono">external</span> → provenance-tagged brief by email <i>and</i> injected into the meeting &nbsp;·&nbsp; <span class="mono">ambiguous</span> / <span class="mono">unresolved</span> / <span class="mono">not_physician</span> / <span class="mono">lookup_failed</span> → nothing mailed, logged only</span></div>
+  <div class="arrow">▼</div>
+  <div class="box out"><span class="t">Reminder tick, independently</span><span class="d">REMINDER_LEAD_MINUTES before the meeting: one email, all physicians on that meeting, same brief body, one-per-meeting sent-log</span></div>
+</div>
+
+<div class="lane">
+  <div class="lbl">Same ingest tick — the mail side of the loop</div>
+  <div class="row">
+    <div class="box src"><span class="t">Inbox delta</span><span class="d">graph.getInboxDelta(deltaLink) — only what’s new since last tick</span></div>
+    <div class="box src"><span class="t">Sent Items</span><span class="d">getRecentSent(25), kept only if the subject is a reply (<span class="mono">RE:</span>)</span></div>
+  </div>
+  <div class="arrow">▼</div>
+  <div class="box"><span class="t">cleanBody()</span><span class="d">cut at the first quote marker (“On … wrote:”, “From:”, “_____”), drop “&gt;” lines, trim the signature block → just what the sender wrote</span></div>
+  <div class="arrow">▼</div>
+  <div class="row">
+    <div class="box"><span class="t">app_emails</span><span class="d">immutable row, deduped on (provider, provider_msg_id), linked to an activity by thread → sender physician → subject</span></div>
+    <div class="box ai"><span class="t">AI MOM → Meeting Notes</span><span class="d">ai-extractor reads the reply → note saved with <span class="mono">source:'ai'</span> against (NPI, rep)</span></div>
+    <div class="box ai"><span class="t">Email Intelligence Sheet</span><span class="d">intel-extractor → physician/facility/CPT row + “new vs <span class="mono">bis_*</span>” flags; reconcile pass heals missing rows</span></div>
+  </div>
+</div>
+
+<h2>4. Stage-by-stage: what one ingest tick does</h2>
+
+<p><span class="mono">syncActivities(token, user)</span>, per event in the 30-day window
+(<span class="mono">ACTIVITY_WINDOW_MAX</span>), all-day events skipped:</p>
+
+<ol>
+  <li><b>Resolve physicians</b> — <span class="mono">physiciansForEvent()</span>: every attendee
+      whose email is an <i>exact</i> hit in the directory. Two physician attendees → two matches,
+      both briefed in one email.</li>
+  <li><b>Was it already known?</b> <span class="mono">crm.findActivityByEventId()</span> is checked
+      <i>before</i> the upsert — this is what distinguishes “a meeting just appeared in Outlook”
+      from “the same meeting on the 40th poll”.</li>
+  <li><b>Upsert the activity</b> — <span class="mono">app_activities</span> holds one NPI per row,
+      so the first match is the link; all matches are still briefed.</li>
+  <li><b>Instant brief</b> (new meetings only) — <span class="mono">sendInstantBrief()</span>,
+      keyed on the <i>series</i>, so one weekly recurring meeting sends one brief and not 29.</li>
+  <li><b>No match → the agent</b> — <span class="mono">briefUnknownAttendees()</span>. Deliberately
+      <i>not</i> gated on “new”, so meetings that predate the feature are covered; its own
+      <span class="mono">enrich:</span> key keeps it to once per meeting/series.</li>
+  <li><b>Inject the brief into the event body</b> — <span class="mono">enrichEventBody()</span> for
+      every physician meeting, new or old; the key plus the in-body marker keep it to exactly once.</li>
+</ol>
+
+<p>Then <span class="mono">ingestEmails()</span> (inbox delta), <span class="mono">ingestSentReplies()</span>
+(the rep’s own “RE:” mail, which the inbox delta never sees), and
+<span class="mono">reconcileIntel()</span> — a self-heal pass that re-scans the last
+<span class="mono">INTEL_RECONCILE_DAYS</span> (3) days of inbox and re-processes any message that
+still has no sheet row, because the delta cursor will never resurface it.</p>
+
+<div class="callout rule">
+  <b>The identity rule the whole pipeline rests on.</b> A brief is only <i>mailed or injected</i>
+  off an <b>exact attendee email match</b>. The organizer is never matched. The title and
+  description are used for <i>context</i> (facility, city, state) and, when a meeting has no
+  attendees at all, as a <i>candidate name</i> that must survive the full agent cascade — never as
+  an identity on their own. A wrong guess here emails one physician’s commercial data under
+  another physician’s name.
+</div>
+
+<h2 class="pb">5. The agent — how it works and why</h2>
+
+<p><span class="mono">src/enrichment/index.js</span> is the agent. One entry point,
+<span class="mono">enrich(query)</span>, wrapped in a per-call health ledger. It exists to answer
+one question the master data cannot: <i>who is this person, and what should the rep know about
+them, when they are not in <span class="mono">bis_physicians</span>?</i></p>
+
+<h3>5.1 Design principles it enforces in code</h3>
+<ul>
+  <li><b>BIS wins, always.</b> Nothing here writes to <span class="mono">bis_*</span>; the master stays read-only. External data decorates, never overwrites.</li>
+  <li><b>Free registries first, AI last.</b> The paid tier runs only for the one job registries cannot do — turning an opaque email address into a name.</li>
+  <li><b>Every claim is attributable.</b> Fields are <span class="mono">{value, source, sourceUrl, tier, confidence, retrievedAt}</span> end to end (<span class="mono">provenance.js</span>); a web field with no proof URL is not rendered.</li>
+  <li><b>A weak guess is worse than nothing.</b> Below the accept threshold the answer is downgraded to a candidate list, and the fields that rested on that identity are <i>dropped</i>.</li>
+  <li><b>Degrade, never crash.</b> Every source is optional; the agent distinguishes “the registry said no” from “the registry never answered”.</li>
+</ul>
+
+<h3>5.2 The cascade</h3>
+
+<div class="flow">
+  <div class="tier free"><div class="tag">T0</div><div class="body"><span class="cost">free · 0 ms</span><b>BIS directory by email.</b> A hit means <span class="mono">status:in_bis</span>, confidence 100 — return immediately, the standard brief applies. This is the fast exit for the 21k physicians already in the master.</div></div>
+  <div class="tier"><div class="tag">CACHE</div><div class="body"><span class="cost">free</span><b>Recent-lookup cache</b> (<span class="mono">enrichment/cache.js</span>), checked <i>after</i> BIS so the master is always read live. Never serves an answer shallower than the request wants (a free-tier result can’t satisfy a paid-tier request). <span class="mono">unresolved</span> and <span class="mono">degraded</span> results are never cached.</div></div>
+  <div class="tier free"><div class="tag">T0.5</div><div class="body"><span class="cost">free · 0 ms</span><b>Email-domain index.</b> <span class="mono">@med.unc.edu</span> → the facility that BIS’s own physicians at that domain share, with the count as evidence. Gives a facility, city and state before anything external is touched.</div></div>
+  <div class="tier paid"><div class="tag">T1</div><div class="body"><span class="cost">paid · ~$0.15 · ~14 s</span><b>Web identity (Claude + web search).</b> The only paid tier, and the only thing that can turn <span class="mono">nshaheen@med.unc.edu</span> into “Nicholas Shaheen, MD, MPH, Gastroenterology, UNC”. Runs only when there is something to buy: no caller-supplied name, the mailbox isn’t organisational/shared, <span class="mono">ANTHROPIC_API_KEY</span> is set, and <span class="mono">useWeb ≠ never</span>.</div></div>
+  <div class="tier free"><div class="tag">T2</div><div class="body"><span class="cost">free</span><b>NPPES.</b> Name + state → NPI, specialty, credential, phone, practice address, taxonomies, licence. Up to 3 interpretations of the address (“nshaheen” → N. Shaheen / Shaheen N. / surname Nshaheen) are searched <i>in parallel</i> — sequentially this cost ~17 s on an address that resolved to nothing.</div></div>
+  <div class="tier free"><div class="tag">T3</div><div class="body"><span class="cost">free</span><b>Re-match into BIS by NPI.</b> The highest-value step: the physician <i>is</i> in the master, their email simply wasn’t. <span class="mono">status:recovered_in_bis</span>, confidence ≥ 90 — and the meeting is then linked and briefed through the completely normal path.</div></div>
+  <div class="tier free"><div class="tag">T3b</div><div class="body"><span class="cost">free</span><b>Facility re-match.</b> When the person can’t be recovered, match their CMS hospital (or the title’s facility hint) into <span class="mono">bis_facilities</span> — city/state gated — which yields territory, health system, and <b>colleagues already in BIS at that facility</b>: the most useful thing to hand a rep when the person themselves is unknown.</div></div>
+  <div class="tier free"><div class="tag">T4</div><div class="body"><span class="cost">free · parallel</span><b>Decoration, four sources at once:</b> CMS hospital affiliation (type, ownership, star rating, CCN), <b>CMS Open Payments</b> (who else is already paying this physician — BIS has no column for this), PubMed publications, ClinicalTrials.gov studies.</div></div>
+</div>
+
+<h3>5.3 How confidence is computed</h3>
+
+<p><span class="mono">pickBestProvider()</span> scores every NPPES hit against everything else the
+agent knows, then <span class="mono">runEnrich()</span> discounts by how trustworthy the <i>name</i>
+that produced the hit was.</p>
+
+<table>
+  <tr><th style="width:56%">Signal</th><th style="width:14%">Δ score</th><th>Note</th></tr>
+  <tr><td>A registry hit at all</td><td><b>base 30</b></td><td>starting point</td></tr>
+  <tr><td>First name exact / prefix / differs</td><td>+40 / +20 / −25</td><td></td></tr>
+  <tr><td>Only surname hit whose first initial matches (initial-only hint)</td><td>+25</td><td>uniqueness is real evidence</td></tr>
+  <tr><td>First initial matches, but so do others / doesn’t match</td><td>+12 / −10</td><td></td></tr>
+  <tr><td>State match / city match</td><td>+25 / +20</td><td>geography is what separates same-name providers</td></tr>
+  <tr><td>NPI status active · only registry hit</td><td>+5 · +15</td><td></td></tr>
+  <tr><td>Runner-up within 15 points → <b>ambiguous</b></td><td>capped at 55</td><td>“we cannot tell these two apart” is said, not hidden</td></tr>
+  <tr><td>Name-source discount</td><td>× (0.6 + 0.4·c/100)</td><td>a guessed name is worth less than a rep-supplied one — blended, not multiplied, so a strong unique hit still corroborates the guess</td></tr>
+</table>
+
+<p>Two thresholds then decide what the rep is told:
+<span class="mono">CONFIDENCE_ACCEPT = 70</span> (present as resolved) and
+<span class="mono">CONFIDENCE_SUGGEST = 40</span> (present as “possible match — confirm”).
+Below 40 the identity claim is <b>withdrawn</b>: the NPI is dropped, every field that came from
+that identity is stripped from the profile, and only candidates remain. A facility that stands on
+its own evidence (the email domain) survives; one that came from the discarded NPI does not.</p>
+
+<h3>5.4 The statuses — the agent’s whole vocabulary</h3>
+
+<table>
+  <tr><th style="width:20%">Status</th><th style="width:46%">Meaning</th><th>What the rep gets</th></tr>
+  <tr><td class="mono">in_bis</td><td>Already in the master (T0)</td><td><span class="pill ok">standard brief</span></td></tr>
+  <tr><td class="mono">recovered_in_bis</td><td>In the master under a different email; found by NPI (T3)</td><td><span class="pill ok">standard brief + injected</span></td></tr>
+  <tr><td class="mono">external</td><td>Genuinely outside BIS, resolved ≥ 70</td><td><span class="pill ok">provenance-tagged brief + injected</span></td></tr>
+  <tr><td class="mono">ambiguous</td><td>Best match 40–69</td><td><span class="pill mid">in-app suggestion only — never mailed</span></td></tr>
+  <tr><td class="mono">facility_only</td><td>Person unresolved, facility identified</td><td><span class="pill mid">facility + BIS colleagues</span></td></tr>
+  <tr><td class="mono">not_physician</td><td>Web tier is ≥ 50 % sure they’re an admin/rep/researcher</td><td><span class="pill no">nothing — cached so the same colleague isn’t re-bought</span></td></tr>
+  <tr><td class="mono">unresolved</td><td>Sources answered; none identified anyone</td><td><span class="pill no">nothing</span></td></tr>
+  <tr><td class="mono">lookup_failed</td><td>An <i>identity</i> source never answered (DNS/outage)</td><td><span class="pill no">“could not reach the registry”, explicitly not “not found”</span></td></tr>
+</table>
+
+<div class="callout warn">
+  <b>The distinction that took real work.</b> A resolver that cannot reach
+  <span class="mono">npiregistry.cms.hhs.gov</span> used to produce a confident “could not resolve
+  this address from the free registries” — a claim about the physician made on evidence about the
+  network. The health ledger (<span class="mono">enrichment/health.js</span>) is read <i>before</i>
+  the status is decided: blind identity sources ⇒ <span class="mono">lookup_failed</span>, degraded
+  runs are never cached, and every profile carries a note naming the source that was missing.
+  <span class="mono">npm run enrich:doctor</span> diagnoses it.
+</div>
+
+<h3>5.5 The other AI in the system</h3>
+
+<p>All of it is Claude <span class="mono">claude-opus-4-8</span> via
+<span class="mono">@anthropic-ai/sdk</span>, and all of it no-ops gracefully when
+<span class="mono">ANTHROPIC_API_KEY</span> is unset.</p>
+
+<table>
+  <tr><th style="width:26%">Module</th><th style="width:24%">Pattern</th><th>Job</th></tr>
+  <tr><td class="mono">enrichment/sources/web-identity.js</td><td>2 calls: <span class="mono">web_search</span> with <span class="mono">tool_choice:auto</span>, then forced tool-use over the findings</td><td>email → identity + <b>proof URLs</b>. Uses the basic <span class="mono">web_search_20250305</span> on purpose: the newer variant returned zero citations, and the citations <i>are</i> the feature.</td></tr>
+  <tr><td class="mono">ai-extractor.js</td><td>forced tool-use, strict JSON</td><td>one email reply → MOM points saved as an AI meeting note</td></tr>
+  <tr><td class="mono">intel-extractor.js</td><td>forced tool-use, strict JSON</td><td>email → CPTs, facility, key info for the Email Intelligence Sheet</td></tr>
+  <tr><td class="mono">entity-matcher.js</td><td><b>no AI</b> — rule/strategy chain</td><td>free text → people, facilities, locations, matched to master data (exact → alias → initials → token → fuzzy), threshold 75, else top-5 suggestions</td></tr>
+  <tr><td class="mono">scripts/ingest-products.js</td><td>forced tool-use</td><td>Lumendi brochure PDFs → <span class="mono">config/product-context.json</span></td></tr>
+</table>
+
+<div class="callout">
+  <b>Known model gotcha, handled.</b> The model can leak tool-call delimiter fragments into string
+  values (especially around empty fields). Both <span class="mono">intel-extractor.js</span> and
+  <span class="mono">web-identity.js</span> run a <span class="mono">sanitize()</span>/<span class="mono">cleanField()</span>
+  pass that truncates at the first delimiter fragment. Keep it.
+</div>
+
+<h2 class="pb">6. Pre-meeting notes — the actual deliverable</h2>
+
+<h3>6.1 What a brief contains</h3>
+
+<p>One function builds it — <span class="mono">graph.physicianBriefHtml()</span> — and the email,
+the in-app brief, the injected meeting body and the embeds all call it, so they can never drift
+apart.</p>
+
+<table>
+  <tr><th style="width:30%">Section</th><th>Content</th><th style="width:26%">Source</th></tr>
+  <tr><td>Physician details</td><td>Name, NPI, specialty, facility, phone, email <b>with a trust badge</b></td><td class="mono">bis_physicians + app_contacts</td></tr>
+  <tr><td>Data check</td><td>BIS vs NPPES by NPI — flags a physician who has moved, so a stale facility/email is never presented as fact</td><td class="mono">enrichment/verify.js</td></tr>
+  <tr><td>Contact intelligence</td><td>Confirmed contact details, role, relationship notes</td><td class="mono">app_contacts</td></tr>
+  <tr><td>Procedure intelligence</td><td>CPT volumes grouped into procedure families</td><td class="mono">bis_procedure_volumes</td></tr>
+  <tr><td>Commercial signals</td><td>Reimbursement-weighted signals + this physician’s Lumendi account status</td><td class="mono">bis_cpt_reimbursement · app_accounts</td></tr>
+  <tr><td>Account opportunity</td><td>Facility-level opportunity vs peer physicians</td><td class="mono">analytics.getAccountOpportunity</td></tr>
+  <tr><td>Product fit</td><td>Best-fit DiLumen product, acuity-tiered (ESD → C1, EUS → EUS accessory, EMR → EZ1, colon → EZ Glide)</td><td class="mono">product-fit.js</td></tr>
+  <tr><td>Talking points</td><td>Product context matched to the physician’s procedure families</td><td class="mono">config/product-context.json</td></tr>
+  <tr><td>Meeting notes</td><td>This rep’s note history with this physician — human notes and AI-extracted MOM</td><td class="mono">notes.js (SQLite/Redis)</td></tr>
+</table>
+
+<p>For someone <b>outside</b> BIS, <span class="mono">graph.externalBriefHtml()</span> renders the
+agent’s profile instead: the same reading order, but every row carries its source label and a
+clickable proof URL, plus the extras BIS does not model at all — industry payments and who is
+paying, publications, trials, facility star rating, licence, and the agent’s own reasoning.</p>
+
+<h3>6.2 The three ways notes reach the rep</h3>
+
+<table>
+  <tr><th style="width:22%">Channel</th><th style="width:20%">When</th><th>Detail</th></tr>
+  <tr><td><b>Instant brief email</b><br><span class="mono">sendInstantBrief</span></td><td>First time a physician meeting is seen</td><td>Covers meetings created <i>directly in Outlook</i>, which never touch the app’s schedule route. All physicians on the meeting in one email, a section each.</td></tr>
+  <tr><td><b>Injected into the meeting</b><br><span class="mono">injectBriefIntoEvent</span></td><td>Same tick, once per event</td><td><span class="mono">PATCH /me/events/{id}</span> <b>prepends</b> the brief to the body inside a marker block. Updates only the organiser’s copy — attendees are never notified — and preserves the existing body (Teams join info, etc.). Works on any account, including personal outlook.com where add-ins are blocked.</td></tr>
+  <tr><td><b>Reminder email</b><br><span class="mono">reminders.tick</span></td><td><span class="mono">REMINDER_LEAD_MINUTES</span> before the start</td><td>Independent engine and independent dedupe, so the reminder fires whether or not the instant brief did. Adds the physician the meeting was <i>scheduled</i> with (from <span class="mono">app_activities</span>) to the attendee matches. Meeting time is UTC-stamped by <span class="mono">formatMeetingTime()</span> so it reads identically to the other briefs.</td></tr>
+</table>
+
+<h3>6.3 Meeting notes, human and AI</h3>
+
+<p><span class="mono">src/notes.js</span> keeps one note per row against
+<b>(physician NPI, rep email)</b> — every rep keeps their own history with each physician — in
+SQLite by default, Redis when <span class="mono">REDIS_URL</span> is set. Notes carry
+<span class="mono">source: 'human' | 'ai'</span>. The AI ones come from the ingest loop: a reply is
+cleaned, the physician is resolved (linked activity → sender → entity match on the subject), the
+extractor turns it into MOM points, and the note is written with the meeting’s
+<span class="mono">eventId</span> so the UI can scope it to that meeting. Only replies (and mail a
+physician sent directly) are summarised, so the app never summarises its own outgoing brief.</p>
+
+<h3>6.4 Idempotency — why nothing arrives twice</h3>
+
+<table class="keys">
+  <tr><th style="width:34%">Key / guard</th><th>Protects</th></tr>
+  <tr><td class="mono">instant:&lt;seriesKey(ev, physicians)&gt;</td><td>The instant brief. Keyed on Graph’s <span class="mono">seriesMasterId</span> + a fingerprint of the people, so one weekly meeting sends <b>one</b> brief instead of ~29 — while an occurrence edited to be with a different doctor still gets its own.</td></tr>
+  <tr><td class="mono">enrich:&lt;seriesKey(ev, subjects)&gt;</td><td>The agent run — including the paid tier. Same series logic; this is the key that stops a recurring meeting buying ~29 identical lookups.</td></tr>
+  <tr><td class="mono">enriched:&lt;eventId&gt;</td><td>The meeting-body injection (skips the Graph round-trip on later ticks).</td></tr>
+  <tr><td>In-body <span class="mono">BRIEF_MARKER</span></td><td>Second line of defence for the injection — the body itself is checked before writing.</td></tr>
+  <tr><td>Reminder sent-log per <span class="mono">(user, eventId)</span></td><td>Exactly one reminder per meeting per rep, persisted so a restart doesn’t re-send.</td></tr>
+  <tr><td class="mono">(provider, provider_msg_id)</td><td>Email ingestion and the AI note — extraction runs only on a genuinely fresh insert.</td></tr>
+  <tr><td>Mail <span class="mono">deltaLink</span> per user</td><td>The inbox is never re-read; <span class="mono">reconcileIntel()</span> exists precisely because that cursor cannot go backwards.</td></tr>
+</table>
+
+<h2 class="pb">7. Data, config and current state</h2>
+
+<h3>7.1 Data model (Supabase, <span class="mono">src/supabase.js</span>)</h3>
+<table>
+  <tr><th style="width:34%">Table / store</th><th>Role</th></tr>
+  <tr><td class="mono">bis_physicians (~21k), bis_facilities (~12.8k), bis_procedure_volumes (~321k), bis_cpt_reimbursement</td><td><b>Master data, read-only.</b> Plus RPCs <span class="mono">bis_directory</span>, <span class="mono">bis_physician_analytics</span>, <span class="mono">bis_search_physicians</span>.</td></tr>
+  <tr><td class="mono">app_activities</td><td>Meetings, one physician NPI each, keyed to <span class="mono">calendar_event_id</span></td></tr>
+  <tr><td class="mono">app_emails</td><td>Ingested mail, immutable, linked to an activity when resolvable</td></tr>
+  <tr><td class="mono">app_contacts / app_accounts</td><td>Confirmed contact details and Lumendi account status (POC-curated, ~12 rows each)</td></tr>
+  <tr><td class="mono">app_email_intel</td><td>The Email Intelligence Sheet — <b>exists in DEV only</b></td></tr>
+  <tr><td class="mono">app_audit_log</td><td>Every system/AI action (<span class="mono">email.ingested</span>, <span class="mono">insight.extracted</span>, …)</td></tr>
+  <tr><td class="mono">data/notes.db · sessions.db</td><td>Meeting notes and sessions (SQLite, or Redis when configured)</td></tr>
+</table>
+
+<p><span class="mono">SUPABASE_ENV=development|production</span> flips the entire app between the dev
+and prod Supabase projects; the app uses the anon key, and DDL is run by hand from
+<span class="mono">supabase/*.sql</span>.</p>
+
+<h3>7.2 The knobs that change behaviour</h3>
+<table>
+  <tr><th style="width:34%">Variable</th><th style="width:14%">Now</th><th>Effect</th></tr>
+  <tr><td class="mono">REMINDER_LEAD_MINUTES</td><td>30</td><td>How early the reminder brief lands — the single timing knob</td></tr>
+  <tr><td class="mono">REMINDER_POLL_SECONDS</td><td>60</td><td>Scan frequency; a meeting inside the lead window is briefed on the next poll</td></tr>
+  <tr><td class="mono">INGEST_POLL_SECONDS</td><td>300 (default)</td><td>How fast a new Outlook meeting gets its instant brief and injection</td></tr>
+  <tr><td class="mono">INTEL_RECONCILE_DAYS</td><td>3</td><td>Self-heal window for the Email Intelligence Sheet</td></tr>
+  <tr><td class="mono">EMAIL_INTEL_DAYS</td><td>10</td><td>History the backfill reads</td></tr>
+  <tr><td class="mono">BRIEFING_TO_EMAIL</td><td>unset</td><td>Unset on purpose, so each rep gets their own brief in their own mailbox</td></tr>
+  <tr><td class="mono">ANTHROPIC_API_KEY</td><td>set</td><td>Unset ⇒ every AI feature (incl. the paid T1 tier) no-ops; free tiers still work</td></tr>
+  <tr><td class="mono">INGEST_ENABLED / REMINDERS_ENABLED</td><td>on</td><td><span class="mono">=false</span> kills either engine independently</td></tr>
+</table>
+
+<h3>7.3 Where the work currently stands</h3>
+<p>The branch <span class="mono">feat-outside-bis-physician-pre-notes</span> is level with
+<span class="mono">main</span> and the tree is clean; the last stretch of commits were correctness
+fixes on top of the agent rather than new surface area:</p>
+<ul>
+  <li>recurring series deduped once instead of once per occurrence (agent <i>and</i> instant brief);</li>
+  <li>an unreachable source told apart from an empty one (<span class="mono">lookup_failed</span>);</li>
+  <li>“a run of capitalised words is a project, not a person” — title-name false positives;</li>
+  <li>brief now says how far the contact details can be trusted, and a meeting that only <i>names</i> someone gets briefed;</li>
+  <li>UI: physician search falls back to enrichment, directory load retries, collapsed meeting cards name who they can look up.</li>
+</ul>
+
+<h4>Open items</h4>
+<ul>
+  <li><span class="mono">app_email_intel</span> is DEV-only — run <span class="mono">supabase/email-intel-setup.sql</span> (plus the contacts/accounts setup SQL) in PROD before going live.</li>
+  <li>NPPES DNS (<span class="mono">npiregistry.cms.hhs.gov</span>) has been dropped by the local router before; that is what <span class="mono">lookup_failed</span> and <span class="mono">npm run enrich:doctor</span> are for.</li>
+  <li>Product-fit mapping is hardcoded in <span class="mono">product-fit.js</span> (scorer reads a catalog constant, not the DB); <span class="mono">app_contacts</span>/<span class="mono">app_accounts</span> are curated POC rows, not a CRM integration.</li>
+  <li>POC RLS is anon-all; the Dynamics client secret lives only in <span class="mono">.env</span> and should be rotated before prod.</li>
+  <li>Add-in cannot be sideloaded on a personal outlook.com account — the meeting-body injection is the answer that works everywhere.</li>
+  <li>Verification is <span class="mono">node --test test/*.test.js</span> (5 targeted suites), <span class="mono">node --check</span>, and live runs — there is no broad test suite.</li>
+</ul>
+
+<h3>7.4 File map</h3>
+<table>
+  <tr><th style="width:36%">Path</th><th>Responsibility</th></tr>
+  <tr><td class="mono">server.js</td><td>Express boot, session, route mount, starts both engines</td></tr>
+  <tr><td class="mono">src/auth.js · token-store.js</td><td>MSAL OAuth; persisted tokens + dedupe/sent logs so engines run headless</td></tr>
+  <tr><td class="mono">src/graph.js</td><td>All Graph I/O <b>and</b> every brief renderer (email = in-app = injected)</td></tr>
+  <tr><td class="mono">src/email-ingest.js</td><td>The ingest tick: activities, instant briefs, injection, mail, AI notes, intel heal</td></tr>
+  <tr><td class="mono">src/reminders.js</td><td>The reminder tick</td></tr>
+  <tr><td class="mono">src/enrichment/*</td><td>The agent: <span class="mono">index.js</span> (cascade), <span class="mono">context.js</span> (who/what a meeting says), <span class="mono">rematch.js</span>, <span class="mono">verify.js</span>, <span class="mono">provenance.js</span>, <span class="mono">cache.js</span>, <span class="mono">health.js</span>, <span class="mono">sources/*</span></td></tr>
+  <tr><td class="mono">src/analytics.js · product-fit.js · product-context.js · territory.js</td><td>The commercial half of the brief</td></tr>
+  <tr><td class="mono">src/entity-matcher.js · physicians.js</td><td>Text → entities → master-data matches; the 21k directory</td></tr>
+  <tr><td class="mono">src/email-intel*.js · intel-extractor.js</td><td>Email Intelligence Sheet</td></tr>
+  <tr><td class="mono">src/routes/*</td><td><span class="mono">api</span> (app), <span class="mono">auth</span> (+ webhook), <span class="mono">embed</span> (Dynamics, token-gated), <span class="mono">addin</span> (Outlook task pane)</td></tr>
+</table>
+
+<footer>
+  Outlook Calendar Intelligence — workflow &amp; agent logic · generated from
+  <span class="mono">docs/system-workflow.html</span> on 2026-09-01 · regenerate the PDF with
+  headless Chrome (<span class="mono">--headless --print-to-pdf</span>).
+</footer>
+
+</body>
+</html>

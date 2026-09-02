@@ -38,16 +38,71 @@ async function audit(entry) {
 // ── Activities ─────────────────────────────────────────────────────────────
 
 /**
+ * Which physician a meeting's row should end up carrying — the one decision the
+ * upsert must not get wrong, extracted so it can be tested without a database.
+ *
+ * Two ways it used to lose data, both on a routine sync:
+ *  - the rep picks "Abdul H Khan" from the shortlist, then the next ingest tick
+ *    (which matches on attendee EMAIL only, and this meeting has none) upserts
+ *    physician_npi = null straight over it;
+ *  - a meeting whose physician was resolved once — by the external agent, or at
+ *    schedule time — is blanked the moment a later tick cannot re-derive them.
+ *
+ * So: a REP's confirmed choice outranks anything automatic, and an automatic
+ * match never overwrites a known link with nothing.
+ *
+ * The confirmed NPI is passed in rather than read off the row: the decision
+ * lives in app_meeting_physician (src/meeting-store.js), not in this table —
+ * app_activities stays the meeting, and only its existing physician_npi column
+ * is kept in step so every current reader follows the choice unchanged.
+ *
+ * @param {object|null} existing   the app_activities row already stored, if any
+ * @param {object} incoming        { physician_npi, facility_id } this sync derived
+ * @param {string|null} chosenNpi  the physician the rep confirmed, if any
+ * @returns {{physician_npi: string|null, facility_id: string|null}}
+ */
+function mergeActivityRow(existing, incoming, chosenNpi) {
+  const chosen = chosenNpi ? String(chosenNpi) : null;
+  return {
+    physician_npi: chosen || incoming.physician_npi || existing?.physician_npi || null,
+    facility_id: incoming.facility_id || existing?.facility_id || null,
+  };
+}
+
+/**
  * Upsert a CRM activity from a calendar event (idempotent on
  * calendar_event_id). Returns the activity row.
+ *
+ * Reads the stored row first so mergeActivityRow() can protect a physician
+ * already linked from an automatic sync that no longer sees them — pass
+ * `{ existing }` when the caller has already read it, and `{ chosenNpi }` when
+ * the rep has confirmed someone (that record lives in app_meeting_physician).
  */
-async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId) {
+async function upsertActivityFromEvent(ownerUserId, ev, physicianNpi, facilityId, opts = {}) {
   const db = ensure();
+  // The ingest tick has already read this row (to tell a new meeting from one
+  // it has seen before) and passes it in, so the merge costs no second query.
+  let existing = opts.existing !== undefined ? opts.existing : null;
+  if (opts.existing === undefined) {
+    try {
+      existing = ev.id ? await findActivityByEventId(ownerUserId, ev.id) : null;
+    } catch (err) {
+      // A read failure must not turn into a WRITE that blanks the link.
+      console.warn('[crm] activity pre-read failed:', err.message);
+      existing = null;
+    }
+  }
+  const merged = mergeActivityRow(
+    existing,
+    { physician_npi: physicianNpi || null, facility_id: facilityId || null },
+    opts.chosenNpi || null
+  );
+
   const row = {
     owner_user_id: ownerUserId,
     title: ev.title || null,
-    physician_npi: physicianNpi || null,
-    facility_id: facilityId || null,
+    physician_npi: merged.physician_npi,
+    facility_id: merged.facility_id,
     calendar_event_id: ev.id,
     // Graph Event objects don't expose conversationId, so meetings carry no
     // email thread id; incoming replies link by physician instead (Phase 1)
@@ -80,6 +135,34 @@ async function findActivityByEventId(ownerUserId, calendarEventId) {
     .eq('calendar_event_id', String(calendarEventId))
     .limit(1);
   return data?.[0] || null;
+}
+
+/**
+ * Point a meeting at a physician, using only the column app_activities already
+ * has. Called when the rep confirms someone: the decision itself is recorded in
+ * app_meeting_physician, and this keeps the existing readers — the reminder
+ * brief, reply→note linking, the activity list — pointing at the same person
+ * without any of them learning a new table.
+ */
+async function setActivityPhysician(ownerUserId, ev, npi) {
+  const now = new Date().toISOString();
+  const { data, error } = await ensure()
+    .from('app_activities')
+    .upsert(
+      {
+        owner_user_id: ownerUserId,
+        calendar_event_id: ev.id,
+        title: ev.title || null,
+        meeting_date: ev.start ? String(ev.start).slice(0, 10) : null,
+        physician_npi: npi ? String(npi) : null,
+        updated_at: now,
+      },
+      { onConflict: 'calendar_event_id' }
+    )
+    .select()
+    .single();
+  if (error) throw new Error(`setActivityPhysician failed: ${error.message}`);
+  return data;
 }
 
 /** Find an activity by email thread id (for linking replies). */
@@ -196,6 +279,8 @@ async function listEmailsForThread(ownerUserId, threadId, limit = 50) {
 module.exports = {
   audit,
   upsertActivityFromEvent,
+  mergeActivityRow,
+  setActivityPhysician,
   findActivityByThread,
   findActivityByPhysician,
   findActivityBySubject,
