@@ -42,7 +42,7 @@ const cmsCandidate = (over = {}) => ({
   ...over,
 });
 
-let answer = { candidates: [], failures: [], answeredBy: null };
+let answer = { candidates: [], failures: [], answeredBy: null, answeredByAll: [] };
 
 stub('src/supabase', null);
 stub('src/physicians', {
@@ -94,14 +94,14 @@ const meeting = (title) => ({
 });
 
 test('an exact CMS match on a full name IS the answer', async () => {
-  answer = { candidates: [cmsCandidate()], failures: [], answeredBy: 'cms-service' };
+  answer = { candidates: [cmsCandidate()], failures: [], answeredByAll: ['cms-service'], exact: true };
 
   const out = await resolveOutside(meeting('Meeting with Dr JOHN ABERNATHY'), {
     selfEmail: 'rep@example.com',
   });
 
   assert.strictEqual(out.status, 'needs_external');
-  assert.strictEqual(out.answeredBy, 'cms-service', 'the panel names the source that answered');
+  assert.deepStrictEqual(out.answeredBy, ['cms-service'], 'the panel names the source that answered');
   assert.deepStrictEqual(out.failures, [], 'no outage to report — CMS answered');
 
   const g = out.groups[0];
@@ -120,7 +120,8 @@ test('several CMS matches become the shortlist, none of them the answer', async 
       cmsCandidate({ npi: '1063433449', name: 'Robert Abernathy', firstName: 'Robert', primaryTaxonomy: 'Internal Medicine', city: 'Bend', state: 'OR' }),
     ],
     failures: [],
-    answeredBy: 'cms-service',
+    answeredByAll: ['cms-service', 'nppes'],
+    exact: false,
   };
 
   const out = await resolveOutside(meeting('Meeting with Dr Abernathy'), { selfEmail: 'rep@example.com' });
@@ -140,7 +141,8 @@ test('an NPPES outage cannot deny a physician CMS has named', async () => {
   answer = {
     candidates: [cmsCandidate()],
     failures: [],
-    answeredBy: 'cms-service',
+    answeredByAll: ['cms-service'],
+    exact: true,
   };
 
   const out = await resolveOutside(meeting('Meeting with Dr JOHN ABERNATHY'), {
@@ -159,14 +161,15 @@ test('both sources down is reported as an outage, and names nobody', async () =>
       { source: 'cms-service', name: 'CMS Medicare Physician & Other Practitioners', error: 'could not be read for 2024 (timeout)' },
       { source: 'nppes', name: 'NPPES NPI Registry', error: 'was unreachable — DNS lookup failed' },
     ],
-    answeredBy: null,
+    answeredByAll: [],
+    exact: false,
   };
 
   const out = await resolveOutside(meeting('Meeting with Dr JOHN ABERNATHY'), {
     selfEmail: 'rep@example.com',
   });
 
-  assert.strictEqual(out.answeredBy, null);
+  assert.deepStrictEqual(out.answeredBy, []);
   assert.deepStrictEqual(out.groups[0].candidates, []);
   assert.deepStrictEqual(out.failures.map((f) => f.source), ['cms-service', 'nppes']);
   assert.strictEqual(out.notDoctor, null, 'an outage is not a verdict about the person');

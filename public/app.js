@@ -1216,13 +1216,18 @@ async function buildOutside(detail, ev) {
       if (data.notDoctor) {
         // heading already set above
       } else if (groups.length) {
-        // Name the source that actually ANSWERED, not every source there is:
-        // the sources are asked in order (CMS billing data first, then NPPES)
-        // and the first real answer wins, so listing both is misleading in
-        // front of a rep looking at one of them.
+        // Name the source(s) that actually ANSWERED, not every source there is.
+        // They are asked in order — CMS billing data, then NPPES — and CMS
+        // ends the search only on an exact match, so a shortlist may come from
+        // one or from both. Listing a source that was never asked is
+        // misleading in front of a rep reading its rows.
+        const ids = Array.isArray(data.answeredBy)
+          ? data.answeredBy
+          : [data.answeredBy].filter(Boolean);
         const answered =
-          (data.sources || []).find((x) => x.id === data.answeredBy)?.name ||
-          (data.sources || []).map((x) => x.name).join(', ');
+          listNames(
+            ids.map((id) => (data.sources || []).find((x) => x.id === id)?.name).filter(Boolean)
+          ) || (data.sources || []).map((x) => x.name).join(', ');
         head.textContent = data.brief
           ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
             'anything less certain is listed as an option.'

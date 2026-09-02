@@ -48,9 +48,10 @@ async function resolveMeetingOutside(event, { selfEmail = null, hintOverrides = 
     brief: null,
     confidence: null,
     threshold: score.CONFIDENCE_SHOW,
-    // Which source answered the name — the sources are asked in order (CMS
-    // billing data first, NPPES second) and the first real answer wins.
-    answeredBy: null,
+    // Which source(s) answered the name. The sources are asked in order — CMS
+    // billing data first, NPPES second — and CMS ends the search only when it
+    // matched the name exactly, so this can hold one id or both.
+    answeredBy: [],
     notDoctor: null,
     failures: [],
     sources: sourceList,
@@ -161,7 +162,7 @@ async function resolveMeetingOutside(event, { selfEmail = null, hintOverrides = 
     let firstName = '';
     let lastName = '';
     let raw = [];
-    let answeredBy = null;
+    let answeredBy = [];
     for (const attempt of meetingMatch.nameSearchKeys(name, match.nameIncomplete)) {
       const found = await sources.searchByName(
         { ...attempt, state: state || undefined, city: city || undefined },
@@ -171,10 +172,10 @@ async function resolveMeetingOutside(event, { selfEmail = null, hintOverrides = 
       if (found.candidates.length) {
         ({ firstName, lastName } = attempt);
         raw = found.candidates;
-        // Which source actually answered — the sources are asked in order and
-        // the first real answer wins, so naming "NPPES, CMS" both would be
-        // wrong in front of a rep who is looking at one of them.
-        answeredBy = found.answeredBy || null;
+        // Which source(s) actually answered. CMS ends the search only on an
+        // exact match, so a shortlist can legitimately come from both — and
+        // naming a source that was never asked would be wrong either way.
+        answeredBy = found.answeredByAll?.length ? found.answeredByAll : found.answeredBy ? [found.answeredBy] : [];
         break;
       }
     }
@@ -301,7 +302,7 @@ async function resolveMeetingOutside(event, { selfEmail = null, hintOverrides = 
     ...base,
     searched: true,
     hints: { city, state, taxonomy, facility: hints.facilityName || null },
-    answeredBy: groups.find((g) => g.answeredBy)?.answeredBy || null,
+    answeredBy: groups.find((g) => (g.answeredBy || []).length)?.answeredBy || [],
     groups,
     brief,
     confidence,
