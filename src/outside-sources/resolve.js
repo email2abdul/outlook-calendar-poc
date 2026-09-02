@@ -207,24 +207,35 @@ async function resolveMeetingOutside(event, { selfEmail = null, hintOverrides = 
 
   // Everything the registry returned is somebody a rep does not brief: that IS
   // the answer, stated rather than left as an empty panel.
-  const allRefused = groups.length && groups.every((g) => !g.candidates.length && g.refused.length);
+  //
+  // `notDoctor` is the test, not "no candidates were offered": those are
+  // different things, and reading one for the other is what told a rep that
+  // "Dr Ajjarapu" is a student. The registry had returned three physicians —
+  // an OB/GYN, a family doctor and a hospitalist — but a surname alone scores
+  // them all at 55%, so none was offered, and the panel then reported the
+  // student it had refused as the answer. Only a group whose every match is a
+  // non-doctor says "not a physician".
+  const allRefused = groups.length && groups.every((g) => g.notDoctor && !g.candidates.length);
   if (allRefused) {
-    const worst = groups[0].refused[0];
+    // The scored candidate itself, so the taxonomy and the reason are the ones
+    // the classifier actually gave (the group's `refused` list is a summary).
+    const worst = groups[0].notDoctor;
+    const kind = worst.providerKind;
     return {
       ...base,
       status: 'not_doctor',
       searched: true,
-      reason: worst.reason,
+      reason: kind.reason,
       groups,
       failures,
       notDoctor: {
         npi: worst.npi,
         name: worst.name,
-        taxonomy: worst.taxonomy,
+        taxonomy: kind.label,
         html: graph.notDoctorHtml({
           name: worst.name,
           npi: worst.npi,
-          kind: { label: worst.taxonomy, reason: worst.reason, via: 'code' },
+          kind,
           sourceName: 'NPPES NPI Registry',
           sourceUrl: worst.npi ? `https://npiregistry.cms.hhs.gov/provider-view/${worst.npi}` : null,
         }),
