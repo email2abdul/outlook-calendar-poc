@@ -59,8 +59,10 @@ function todayYmd() {
  *
  * Name whoever the detail region is about, so the rep can see there is
  * something here before clicking. Ordered by how sure we are: a BIS match, a
- * physician the title matched, a person the title NAMES, an attendee we can
- * look up outside BIS, then nothing.
+ * physician the title matched, a person the title NAMES, then nothing.
+ *
+ * An empty string is an answer: this meeting holds nothing, and its card
+ * neither invites a click nor opens.
  *
  * @param {object} ev event from /api/calendar/day
  * @returns {string}
@@ -105,19 +107,19 @@ function lookupHint(ev) {
     return '🚫 Not a physician — click to see why';
   }
 
+  // The gate said no. Nothing was looked up, so there is nothing to offer, and
+  // offering it anyway is what produced a physician brief on "Meeting with
+  // Best friend": no hint, no card to open. Adding "Dr" to the title — or the
+  // physician as an attendee — is what opens this meeting up.
+  if (m && m.status === 'gate_blocked') return '';
+
   if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
 
   const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
   if (titleNames.length) return `🔎 ${listNames(titleNames)} — click for external lookup`;
 
-  const lookupAttendees = (ev.attendees || []).filter(
-    (a) => a.email && !a.isOrganizer && a.type !== 'resource'
-  );
-  if (lookupAttendees.length > 1) {
-    return `🔎 External lookup on ${lookupAttendees.length} attendees — click to open`;
-  }
-  if (lookupAttendees.length) return '🔎 External lookup — click to open';
-
+  // An attendee address used to be reason enough to open a lookup. It is not:
+  // an address is not a name, and every identity built from one was a guess.
   return '＋ Physician lookup — click to open';
 }
 
@@ -130,12 +132,15 @@ function lookupHint(ev) {
  */
 function hasIntel(ev) {
   const m = ev.match;
-  return (
+  return Boolean(
     matchedPhysiciansOf(ev).length > 0 ||
-    (m && (m.status === 'matched' || m.status === 'choose' || m.status === 'partial_name')) ||
-    (ev.titleMatches || []).length > 0 ||
-    (ev.titlePeople || []).length > 0 ||
-    (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
+      (m &&
+        (m.status === 'matched' ||
+          m.status === 'choose' ||
+          m.status === 'partial_name' ||
+          m.status === 'needs_external')) ||
+      (ev.titleMatches || []).length > 0 ||
+      (ev.titlePeople || []).length > 0
   );
 }
 
@@ -687,7 +692,7 @@ function renderPhysicianResults(list, results, onPick) {
  * The enrichment agent answers a full name from the public registries in a few
  * seconds. It sits behind a button rather than running on the search itself
  * because this fires on every keystroke — NPPES should not be queried for "j",
- * "jo", "jon". The attendee cards auto-run the same lookup, which is fine
+ * "jo", "jon". The title-name cards auto-run the same lookup, which is fine
  * there: they run once, over a bounded set of people.
  */
 function renderNoBisMatch(list, query, onPick) {
@@ -784,30 +789,25 @@ function meetingContextOf(ev) {
 }
 
 /**
- * Run the enrichment agent for one meeting SUBJECT and render the result.
+ * Run the enrichment agent for one person the MEETING named, and render it.
  *
- * A subject is whoever we can name: an attendee (identified by email — the
- * reliable case) or a person named in the title with no attendee at all, which
- * is how reps actually book "meeting with dr Geoffrey Aaron". The agent takes
- * either: `name` skips the paid identity tier entirely, because the one thing
- * that tier buys is a name.
+ * The subject is always a name — "meeting with dr Geoffrey Aaron" is how reps
+ * actually book, and the name is what the registries can be asked about. An
+ * attendee's email address is deliberately NOT a subject: an address is not a
+ * name, and everything derived from one was a guess dressed as an identity.
  *
- * Two passes on purpose. The free tiers (BIS + NPPES + CMS) answer in 1-5s, so
- * they run automatically and the rep sees something immediately. The paid web
- * tier takes ~40s, so it stays behind a button rather than stalling the card.
+ * Free tiers only (BIS + NPPES + CMS, 1-5s). The paid web tier exists to turn
+ * an address into a name, which is the one thing that must not happen on its
+ * own — so it is not offered here.
  */
-async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) {
-  const deep = useWeb === 'always';
-  box.innerHTML = `<p class="muted">${
-    deep ? 'Searching the web for this person…' : 'Checking public registries…'
-  }</p>`;
+async function enrichAttendeeInto(box, person, ev) {
+  box.innerHTML = '<p class="muted">Checking public registries…</p>';
 
   const params = new URLSearchParams({
+    name: person.name,
     context: meetingContextOf(ev),
-    useWeb,
+    useWeb: 'never',
   });
-  if (attendee.email) params.set('email', attendee.email);
-  else if (attendee.name) params.set('name', attendee.name);
 
   let data;
   try {
@@ -832,41 +832,23 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
     retry.textContent = '↻ Retry lookup';
     retry.addEventListener('click', () => {
       retry.disabled = true;
-      enrichAttendeeInto(box, attendee, ev, { useWeb });
+      enrichAttendeeInto(box, person, ev);
     });
     box.appendChild(retry);
-    return;
-  }
-
-  // Offer the paid lookup only when the free tiers actually fell short.
-  const needsWeb =
-    !deep && Boolean(attendee.email) && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);
-  if (needsWeb) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn--ghost enrich__deep';
-    btn.textContent = '🔎 Identify with web search';
-    btn.addEventListener('click', () => {
-      btn.disabled = true;
-      enrichAttendeeInto(box, attendee, ev, { useWeb: 'always' });
-    });
-    box.appendChild(btn);
   }
 }
 
 /**
- * Enrichment cards for every attendee who is not the organizer.
+ * Enrichment cards for the people the MEETING names.
  *
- * The organizer — the person who scheduled the meeting — is never enriched, so
- * they are filtered out here as well as on the server.
+ * Only names — the ones the server read out of the title/description, with the
+ * organizer already filtered out. Attendee addresses are not enriched: the
+ * lookup they used to drive had to invent a name first, and inventing one from
+ * `email2@gmail.com` is how a clinical social worker came to be briefed as the
+ * physician for "Meeting with Best friend".
  */
 function buildEnrichment(detail, ev) {
-  const attendees = (ev.attendees || []).filter((a) => a.email && !a.isOrganizer && a.type !== 'resource');
-  // No attendee to go on (the common case for a meeting typed straight into
-  // Outlook) — fall back to the people NAMED in the title, resolved server-side.
-  const targets = attendees.length
-    ? attendees
-    : (ev.titlePeople || []).map((p) => ({ name: p.name, email: null, fromTitle: true }));
+  const targets = (ev.titlePeople || []).map((p) => ({ name: p.name }));
   if (!targets.length) return;
 
   const wrap = document.createElement('div');
@@ -874,24 +856,16 @@ function buildEnrichment(detail, ev) {
 
   const head = document.createElement('h3');
   head.className = 'enrich__title';
-  head.textContent = attendees.length
-    ? targets.length > 1
-      ? 'Attendees — external lookup'
-      : 'External lookup'
-    : 'From the meeting title — external lookup';
+  head.textContent = 'From the meeting title — external lookup';
   wrap.appendChild(head);
 
-  for (const attendee of targets) {
+  for (const person of targets) {
     const card = document.createElement('section');
     card.className = 'enrich__card';
 
     const who = document.createElement('p');
     who.className = 'enrich__who';
-    who.textContent = attendee.email
-      ? attendee.name
-        ? `${attendee.name} · ${attendee.email}`
-        : attendee.email
-      : `${attendee.name} · named in the meeting title`;
+    who.textContent = `${person.name} · named in the meeting title`;
     card.appendChild(who);
 
     const body = document.createElement('div');
@@ -899,7 +873,7 @@ function buildEnrichment(detail, ev) {
     card.appendChild(body);
 
     wrap.appendChild(card);
-    enrichAttendeeInto(body, attendee, ev);
+    enrichAttendeeInto(body, person, ev);
   }
 
   detail.appendChild(wrap);
@@ -1491,15 +1465,13 @@ function buildDetail(detail, ev) {
     return;
   }
 
-  if (m && m.status === 'gate_blocked') {
-    buildNoMatch(detail, ev, {
-      intro:
-        'Normal meeting: no attendee email is in the BIS directory, and the title does not ' +
-        'say “Dr” or “Doctor” — so no physician lookup was run. Add “Dr” to the title (or the ' +
-        'physician as an attendee), or search below.',
-    });
-    return;
-  }
+  // A normal meeting: nothing is shown, because nothing was looked up. The
+  // card does not even open (see lookupHint) — this is the belt to that
+  // braces, so a stale render cannot put intelligence on a meeting the gate
+  // refused. "Dr" in the title, or the physician as an attendee, is what asks
+  // the question. (`no_name` is NOT here: that gate passed, and a title match
+  // the master found is still the answer to show.)
+  if (m && m.status === 'gate_blocked') return;
 
   buildNoMatch(detail, ev);
 }
@@ -1592,7 +1564,16 @@ function renderEvents(events) {
       join.hidden = false;
     }
 
-    node.querySelector('.event__toggle').textContent = lookupHint(ev);
+    // Nothing behind this card — a normal meeting the gate refused, or one the
+    // meeting names nobody on. It stays a plain calendar row: no hint, no
+    // pointer, and clicking it opens nothing.
+    const hint = lookupHint(ev);
+    const toggle = node.querySelector('.event__toggle');
+    if (hint) toggle.textContent = hint;
+    else {
+      toggle.hidden = true;
+      li.classList.add('event--plain');
+    }
 
     // Wire the whole card as an accordion. Built lazily on first open so the
     // day view stays fast even with many meetings.
@@ -1619,15 +1600,17 @@ function renderEvents(events) {
       }
     }
 
-    li.addEventListener('click', (e) => {
-      // Ignore clicks on real controls and anything inside the open detail
-      // region — only "empty" header clicks toggle the card.
-      if (e.target.closest('a, button, input, textarea, select, .event__detail')) return;
-      if (li.classList.contains('event--open')) card.collapse();
-      else expand();
-    });
+    if (hint) {
+      li.addEventListener('click', (e) => {
+        // Ignore clicks on real controls and anything inside the open detail
+        // region — only "empty" header clicks toggle the card.
+        if (e.target.closest('a, button, input, textarea, select, .event__detail')) return;
+        if (li.classList.contains('event--open')) card.collapse();
+        else expand();
+      });
+      cards.push(card);
+    }
 
-    cards.push(card);
     list.appendChild(node);
   }
 

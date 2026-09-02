@@ -250,6 +250,18 @@ body {
   border-color: var(--primary);
 }
 
+/* A normal meeting: nothing was looked up, so there is nothing to open. It
+   reads as a calendar row rather than promising a detail region it has not
+   got. */
+.event--plain {
+  cursor: default;
+  border-left-color: var(--border);
+}
+
+.event--plain:hover {
+  border-color: var(--border);
+}
+
 /* Open card: stronger left accent + a touch more presence. */
 .event--open {
   border-left-width: 6px;

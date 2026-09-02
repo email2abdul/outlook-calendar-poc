@@ -38,6 +38,11 @@ const REP = { name: 'Sales Rep', email: 'rep@lumendi-example.com' };
 /** The cases, in the order a rep would meet them. */
 const MEETINGS = [
   { title: 'Pipeline review', note: 'no attendee in BIS, no "Dr" — a normal meeting' },
+  {
+    title: 'Meeting with Best friend',
+    attendee: { name: '', email: 'email2@gmail.com' },
+    note: 'a normal meeting with an attendee address — nothing is looked up, nothing is shown',
+  },
   { title: 'Quarterly review', email: null, useBisEmail: true, note: 'attendee email matches BIS exactly' },
   { title: 'Case obs with Dr Aaron Baas', note: 'full name, no email, in BIS' },
   { title: 'Meeting with Dr Khan', note: 'half a name — 62 in BIS' },

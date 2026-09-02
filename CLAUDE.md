@@ -97,4 +97,11 @@ cards) + CSV export (`GET /api/email-intel`).
   `enrichment/verify.js` (BIS vs NPPES by NPI) and flag a physician who has moved.
 - A meeting with no attendee still gets a brief: `enrichment/context.namesFromEvent()` reads the
   name out of the title and the agent resolves it. Never mail/inject an `ambiguous` result.
+- **A name is NEVER derived from an email address.** No local-part guessing, and the paid
+  web-identity tier only on an explicit `useWeb=always`. (`email2@gmail.com` → "e"+"mail" → NPPES
+  surname MAIL → a clinical social worker briefed as the physician for "Meeting with Best friend".)
+  A name comes from the rep, the meeting text, or an attendee's display name — nothing else.
+- **The "Dr"/"Doctor" gate governs everything**, panel and background tick alike: `gate_blocked`
+  means nothing is looked up, nothing is emailed or injected, and the meeting's card shows nothing
+  at all (`.event--plain`, no toggle, no detail). An attendee address is not a path around it.
 - Current working branch: `feature/old-email-read`.
