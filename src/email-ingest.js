@@ -17,6 +17,7 @@ const emailIntel = require('./email-intel');
 const meetingMatch = require('./meeting-match');
 const outsideStore = require('./outside-physician-store');
 const assembleProfile = require('./outside-sources/profile');
+const resolveOutside = require('./outside-sources/resolve');
 const intelStore = require('./email-intel-store');
 
 /**
@@ -197,6 +198,14 @@ async function syncActivities(token, user) {
         }
         continue;
       }
+
+      // Nobody in the master, and the rep has not answered either — so ASK, the
+      // same way the panel does, and put the answer on the meeting. Until this,
+      // the app would show a 95%-confident physician in the browser while the
+      // meeting body stayed empty: the panel knew how to look and the tick did
+      // not.
+      const handled = await briefOutsideMatch(token, user, ev);
+      if (handled) continue;
 
       try {
         const recovered = await briefUnknownAttendees(token, user, ev);
@@ -399,12 +408,15 @@ async function injectExternalBrief(token, user, ev, enrichments) {
  *
  * @returns {Promise<boolean>} true when something was injected
  */
-async function injectOutsideBrief(token, user, ev, decision) {
+async function injectOutsideBrief(token, user, ev, decision, ready = null) {
   if (!ev.id || !decision?.npi) return false;
   const key = `enriched:${ev.id}`;
   if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
 
-  const profile = await assembleProfile(decision.npi, decision.externalSource);
+  // The resolver may have assembled it already — asking the registries twice
+  // for the same answer is waste, and a second answer could differ from the one
+  // the decision was recorded against.
+  const profile = ready || (await assembleProfile(decision.npi, decision.externalSource));
   if (!profile) {
     // A source outage must not burn the one-shot key — try again next tick.
     console.warn(`[ingest] no source could describe NPI ${decision.npi} — not injecting yet`);
@@ -478,6 +490,119 @@ async function sendInstantBrief(token, user, ev, physicians) {
   });
   await tokenStore.markReminderSent(user.homeAccountId, key);
   console.log(`[ingest] instant brief sent to ${user.email} — "${ev.title}" (${names})`);
+}
+
+/**
+ * Resolve a meeting outside the master, and act on the answer.
+ *
+ * The panel and this tick now ask the same module the same question
+ * (outside-sources/resolve.js), so they cannot reach different conclusions
+ * about the same meeting — which is exactly what happened: the browser showed
+ * "ABESELOM GELETU · 95%" and the meeting body stayed empty.
+ *
+ * Three answers are worth acting on, and only one produces a brief:
+ *   · a doctor at or above the confidence bar, clear of the runner-up → the
+ *     brief goes into the meeting body and the decision is recorded, so the
+ *     reminder engine sends it too;
+ *   · somebody the registry says is NOT a doctor → recorded as such, and
+ *     nothing is written onto the meeting (there is no brief to write);
+ *   · anything less certain → left for the rep to decide in the panel.
+ *
+ * Bounded by a dedupe key that folds in the meeting's TEXT: the lookup runs once
+ * per meeting, and once more if the rep edits the title or description — which
+ * is the whole point, since that edit is usually them supplying the answer.
+ *
+ * @returns {Promise<boolean>} true when this meeting has been dealt with
+ */
+async function briefOutsideMatch(token, user, ev) {
+  if (!ev.id || !outsideStore.enabled) return false;
+
+  const key = `outside:${context.seriesKey(ev, [])}:${context.textFingerprint(ev)}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
+
+  let answer;
+  try {
+    answer = await resolveOutside(ev, { selfEmail: user.email });
+  } catch (err) {
+    console.warn('[ingest] outside resolve failed:', err.message);
+    return false;
+  }
+
+  // A source that could not be reached must not burn the one attempt: the next
+  // tick has to be able to try again.
+  if ((answer.failures || []).length && !answer.primary && !answer.notDoctor) {
+    console.warn(
+      `[ingest] outside lookup degraded for "${ev.title}" — ${answer.failures
+        .map((f) => f.name)
+        .join(', ')} unreachable; will retry`
+    );
+    return false;
+  }
+
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+
+  const record = async (fields) => {
+    try {
+      await outsideStore.record({
+        ownerUserId: user.homeAccountId,
+        ownerEmail: user.email || null,
+        event: ev,
+        source: 'outside',
+        decidedBy: 'system',
+        ...fields,
+      });
+    } catch (err) {
+      console.warn('[ingest] outside decision record failed:', err.message);
+    }
+  };
+
+  if (answer.status === 'not_doctor' && answer.notDoctor) {
+    await record({
+      npi: answer.notDoctor.npi || null,
+      name: answer.notDoctor.name || null,
+      specialty: answer.notDoctor.taxonomy || null,
+      status: 'not_doctor',
+      reason: answer.reason,
+    });
+    console.log(
+      `[ingest] "${ev.title}" → ${answer.notDoctor.name || 'that NPI'} is not a physician ` +
+        `(${answer.notDoctor.taxonomy || 'per the registry'}) — no brief`
+    );
+    return true;
+  }
+
+  if (!answer.primary || !answer.profile) return true; // asked, nothing confident
+
+  const rec = { ...answer.profile.record };
+  delete rec.extra;
+  await record({
+    ...rec,
+    npi: answer.primary.npi,
+    confidence: answer.confidence,
+    status: 'briefed',
+    externalSource: answer.primary.externalSource || null,
+    reason:
+      `${answer.primary.name || answer.primary.npi} matched outside BIS at ` +
+      `${answer.confidence}% — ${(answer.primary.matchReasons || []).join(', ')}.`,
+  });
+
+  try {
+    await injectOutsideBrief(
+      token,
+      user,
+      ev,
+      {
+        npi: answer.primary.npi,
+        name: answer.primary.name,
+        confidence: answer.confidence,
+        externalSource: answer.primary.externalSource,
+      },
+      answer.profile
+    );
+  } catch (err) {
+    console.warn('[ingest] outside brief injection failed:', err.message);
+  }
+  return true;
 }
 
 /**
@@ -901,7 +1026,7 @@ function start() {
 }
 
 module.exports = {
-  start, tick, cleanBody, syncActivities, recordDecision, injectOutsideBrief, ingestEmails, ingestSentReplies,
+  start, tick, cleanBody, syncActivities, recordDecision, injectOutsideBrief, briefOutsideMatch, ingestEmails, ingestSentReplies,
   reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
   briefUnknownAttendees,
 };

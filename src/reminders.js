@@ -115,7 +115,14 @@ async function remindOutside(token, user, ev, minutes) {
     console.warn('[reminders] decision lookup failed:', err.message);
     return false;
   }
-  if (!decision?.npi || decision.decidedBy !== 'user') return false;
+  // A decision the rep made, or one the tick reached confidently enough to write
+  // onto the meeting — the same answer the panel showed them. An automatic
+  // decision that did NOT clear the bar never gets recorded as 'briefed', so it
+  // cannot reach this point.
+  const trusted =
+    decision &&
+    (decision.decidedBy === 'user' || (decision.source === 'outside' && decision.status === 'briefed'));
+  if (!decision?.npi || !trusted) return false;
   // In the master after all → the standard path above owns them.
   if (physiciansDir.getByNpi(decision.npi)) return false;
   // The rep picked somebody the registry says is not a physician, dentist or

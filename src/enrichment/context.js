@@ -316,6 +316,27 @@ function seriesKey(event, subjects = []) {
   return who ? `series:${master}:${who}` : `series:${master}`;
 }
 
+/**
+ * A short fingerprint of what the meeting SAYS.
+ *
+ * The outside lookup is expensive (two registries), so it runs once per
+ * meeting — but "once" cannot mean "once ever": a rep who adds
+ * "Primary Taxonomy - Internal Medicine from CHICAGO" to the description has
+ * just handed us the answer, and the tick has to notice. Folding the text into
+ * the dedupe key re-runs it exactly once per edit, and never on a tick where
+ * nothing changed.
+ */
+function textFingerprint(event) {
+  const text = [event?.title, event?.description, event?.location]
+    .filter(Boolean)
+    .join(' · ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (!text) return 'empty';
+  return crypto.createHash('sha1').update(text).digest('hex').slice(0, 10);
+}
+
 /** True when this address is the meeting's organizer (or the signed-in user). */
 function isOrganizer(event, email, selfEmail) {
   const e = normEmail(email);
@@ -489,6 +510,7 @@ function stripOrganizerPeople(analysis, event, selfEmail) {
 module.exports = {
   attendeesToEnrich,
   taxonomyFromText,
+  textFingerprint,
   namesFromEvent,
   seriesKey,
   isOrganizer,

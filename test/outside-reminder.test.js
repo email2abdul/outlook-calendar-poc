@@ -126,3 +126,41 @@ test('a non-physician the rep recorded is never mailed a brief', async () => {
   assert.strictEqual(sent.length, 0);
   assert.deepStrictEqual(marked, []);
 });
+
+test("the tick's own confident answer is mailed too — it is what the panel showed", async () => {
+  sent.length = 0;
+  marked.length = 0;
+  // Recorded by the ingest tick, not by a click: it cleared the confidence bar,
+  // its brief was written into the meeting body, and the reminder is the same
+  // answer arriving half an hour before.
+  decision = {
+    npi: '1033798905',
+    name: 'ABESELOM GELETU',
+    decidedBy: 'system',
+    source: 'outside',
+    status: 'briefed',
+    confidence: 95,
+    externalSource: 'nppes',
+  };
+  profile = PROFILE;
+
+  await reminders.tick();
+
+  assert.strictEqual(sent.length, 1);
+  assert.match(sent[0].subject, /outside BIS/);
+  assert.ok(marked.includes('EV-1'));
+});
+
+test('an automatic answer that did NOT clear the bar is never mailed', async () => {
+  sent.length = 0;
+  marked.length = 0;
+  // The tick only records 'briefed' for an answer it was confident about; this
+  // shape (recorded, but not briefed) must stay out of the inbox.
+  decision = { ...CONFIRMED, decidedBy: 'system', source: 'outside', status: 'needs_confirm' };
+  profile = PROFILE;
+
+  await reminders.tick();
+
+  assert.strictEqual(sent.length, 0);
+  assert.deepStrictEqual(marked, []);
+});

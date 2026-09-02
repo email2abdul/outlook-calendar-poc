@@ -10,6 +10,7 @@ const meetingMatch = require('../src/meeting-match');
 const sources = require('../src/outside-sources');
 const score = require('../src/outside-sources/score');
 const assembleProfile = require('../src/outside-sources/profile');
+const resolveOutside = require('../src/outside-sources/resolve');
 const graph = require('../src/graph');
 const analytics = require('../src/analytics');
 const contactsStore = require('../src/contacts-store');
@@ -77,115 +78,47 @@ async function bisBrief(npi) {
   notes[npi] = [];
 }
 
-/** The same assembly the endpoint does, plus the rendered notes. */
-async function outsideFor(ev, match) {
-  const derived = await meetingContext.hintsFromEvent(ev, { selfEmail: REP.email }).catch(() => ({}));
-  const hints = {
-    city: ev.demoCity || derived.city || null,
-    state: ev.demoState || derived.state || null,
-    taxonomy: derived.taxonomy || null,
-  };
-  const text = [ev.title, ev.description].filter(Boolean).join(' · ');
-  const groups = [];
-  const failures = [];
+/**
+ * The same answer the API gives, from the same module — so the demo cannot
+ * drift from the app (four copies of this question are what let the panel and
+ * the ingest tick disagree). The only extra work here is pre-rendering the
+ * brief for each candidate a rep could click, since a file:// page cannot ask
+ * the registries when the click happens.
+ */
+async function outsideFor(ev) {
+  const answer = await resolveOutside(ev, { selfEmail: REP.email });
 
-  if (match.npi) {
-    const profile = await assembleProfile(match.npi);
-    failures.push(...(profile?.failures || []));
-    if (profile) {
-      const candidate = { ...profile.record, extra: profile.extra, confidence: 100, matchReasons: ['the NPI was written on the meeting itself'] };
-      chosen[match.npi] = {
-        html: graph.outsideBriefHtml({ record: profile.record, extra: profile.extra, cms: profile.cms, agreement: profile.agreement, confidence: 100, matchReasons: candidate.matchReasons, sourceName: profile.sourceName, sourceUrl: profile.sourceUrl }),
-        physician: { npi: match.npi, name: profile.record.name, specialty: profile.record.specialty },
-      };
-      return {
-        eventId: ev.id, status: match.status, searched: true, via: 'meeting-npi', npi: match.npi,
-        reason: match.reason, names: [], nameIncomplete: null, confidence: 100, threshold: score.CONFIDENCE_SHOW,
-        groups: [{ name: `NPI ${match.npi}`, source: 'meeting', total: 1, dropped: 0, candidates: [candidate], primaryNpi: match.npi }],
-        brief: chosen[match.npi].html, failures,
-        sources: sources.list().map((s) => ({ id: s.id, name: s.name, url: s.url })),
-      };
-    }
-  }
-
-  let brief = null;
-  let confidence = null;
-  let notDoctor = null;
-  for (const name of match.unresolvedNames) {
-    // Both halves in turn when nobody can place the name — see api.routes.js.
-    let firstName = '';
-    let lastName = '';
-    let found = { candidates: [], failures: [] };
-    for (const attempt of meetingMatch.nameSearchKeys(name, match.nameIncomplete)) {
-      const r = await sources.searchByName({ ...attempt, ...hints }, { limit: 20 });
-      failures.push(...r.failures);
-      if (r.candidates.length) {
-        ({ firstName, lastName } = attempt);
-        found = r;
-        break;
-      }
-    }
-
-    const ranked = score.rankCandidates(
-      found.candidates.map((c) => {
-        const bis = c.npi ? physicians.getByNpi(c.npi) : null;
-        return bis ? { ...c, inBis: true } : c;
-      }),
-      { firstName, lastName, ...hints, text },
-      { max: meetingMatch.MAX_CANDIDATES }
-    );
-
-    groups.push({
-      name, source: match.nameIncomplete ? match.nameIncomplete.source : 'title',
-      total: ranked.offered.length, dropped: ranked.dropped, cleared: ranked.cleared,
-      ambiguous: ranked.ambiguous, primaryNpi: ranked.primary?.npi || null,
-      partial: Boolean(match.nameIncomplete), candidates: ranked.offered,
-      refused: (ranked.refused || []).map((c) => ({
-        npi: c.npi, name: c.name, taxonomy: c.providerKind.label, reason: c.providerKind.reason,
-      })),
-    });
-
-    // Nobody but non-doctors: that is the answer the panel shows.
-    if (ranked.notDoctor && !ranked.offered.length) {
-      const nd = ranked.notDoctor;
-      notDoctor = {
-        npi: nd.npi, name: nd.name, taxonomy: nd.providerKind.label,
-        html: graph.notDoctorHtml({
-          name: nd.name, npi: nd.npi, kind: nd.providerKind,
-          sourceName: 'NPPES NPI Registry',
-          sourceUrl: `https://npiregistry.cms.hhs.gov/provider-view/${nd.npi}`,
-        }),
-      };
-    }
-
-    // Pre-render the notes for everything a rep can click, so the demo page
-    // behaves like the app rather than like a screenshot.
-    for (const c of ranked.offered.slice(0, 3)) {
+  for (const g of answer.groups || []) {
+    for (const c of (g.candidates || []).slice(0, 3)) {
       if (chosen[c.npi] || c.inBis) continue;
       const profile = await assembleProfile(c.npi, c.externalSource);
       if (!profile) continue;
-      chosen[c.npi] = {
-        html: graph.outsideBriefHtml({
-          record: profile.record, extra: profile.extra, cms: profile.cms, agreement: profile.agreement,
-          confidence: c.confidence, matchReasons: c.matchReasons,
-          nameIncomplete: match.nameIncomplete ? { ...match.nameIncomplete, total: ranked.ranked.length } : null,
-          sourceName: profile.sourceName, sourceUrl: profile.sourceUrl,
-        }),
-        physician: { npi: c.npi, name: profile.record.name, specialty: profile.record.specialty },
-      };
-      if (ranked.primary?.npi === c.npi) {
-        brief = chosen[c.npi].html;
-        confidence = c.confidence;
-      }
+      chosen[c.npi] =
+        profile.providerKind.kind === 'not_doctor'
+          ? {
+              html: graph.notDoctorHtml({
+                name: profile.record.name, npi: c.npi, kind: profile.providerKind,
+                sourceName: profile.sourceName, sourceUrl: profile.sourceUrl,
+              }),
+              physician: { npi: c.npi, name: profile.record.name, specialty: profile.providerKind.label },
+              notDoctor: true,
+            }
+          : {
+              html: graph.outsideBriefHtml({
+                record: profile.record, extra: profile.extra, cms: profile.cms,
+                agreement: profile.agreement, confidence: c.confidence, matchReasons: c.matchReasons,
+                nameIncomplete: answer.nameIncomplete
+                  ? { ...answer.nameIncomplete, total: g.total }
+                  : null,
+                sourceName: profile.sourceName, sourceUrl: profile.sourceUrl,
+              }),
+              physician: { npi: c.npi, name: profile.record.name, specialty: profile.record.specialty },
+            };
     }
   }
 
-  return {
-    eventId: ev.id, status: notDoctor ? 'not_doctor' : match.status, searched: true, reason: match.reason,
-    names: match.unresolvedNames, nameIncomplete: match.nameIncomplete || null,
-    hints, groups, brief, confidence, notDoctor, threshold: score.CONFIDENCE_SHOW, failures,
-    sources: sources.list().map((s) => ({ id: s.id, name: s.name, url: s.url })),
-  };
+  const { primary, profile, match, ...payload } = answer;
+  return { ...payload, eventId: ev.id };
 }
 
 async function main() {
@@ -239,7 +172,7 @@ async function main() {
 
     if (match && (match.status === 'needs_external' || match.status === 'partial_name')) {
       process.stdout.write(`  … asking the registries for "${ev.title}"\n`);
-      outside[ev.id] = await outsideFor(ev, match);
+      outside[ev.id] = await outsideFor(ev);
     }
 
     events.push({
