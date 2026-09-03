@@ -20,16 +20,23 @@
  * transport-level failure is also reported to ./health, which `enrich()` reads
  * back to label such a result a lookup failure rather than an absence.
  *
- * Two optional layers sit in front of the network, both off unless configured,
- * and both there for the same reason — these registries are unreachable from
+ * Three optional layers sit in front of the network, all off unless configured,
+ * and all there for the same reason — these registries are unreachable from
  * some networks (./proxy.js has the measurements):
  *
  *   ./cassettes.js  a recorded answer is replayed from disk instead of asking
+ *   ./relay.js      our own server is asked to fetch it (same on every machine)
  *   ./proxy.js      the request is tunnelled (ssh -D) instead of sent direct
+ *
+ * Order matters: a recording answers before anything is sent, and a configured
+ * relay wins over a proxy — a laptop that has been given a relay should not
+ * also have to keep an ssh tunnel alive, and a stale OUTSIDE_HTTP_PROXY line
+ * left in a copied .env must not send its requests into a dead local port.
  */
 
 const health = require('./health');
 const proxy = require('./proxy');
+const relay = require('./relay');
 const cassettes = require('./cassettes');
 
 const DEFAULT_TIMEOUT_MS = 20000;
@@ -48,7 +55,13 @@ let announced = false;
 function announceMode() {
   if (announced) return;
   announced = true;
-  const notes = [cassettes.describe(), proxy.describe()].filter(Boolean);
+  // Name the layer that will actually be used, not every one that is set: a
+  // relayed machine does not use its proxy, and printing both would send the
+  // next person debugging a dead tunnel that is no longer in the path.
+  const network = relay.enabled()
+    ? [relay.describe(), proxy.enabled() ? 'proxy set but bypassed by the relay' : null]
+    : [proxy.describe()];
+  const notes = [cassettes.describe(), ...network].filter(Boolean);
   if (notes.length) console.log(`[enrichment] sources: ${notes.join(' · ')}`);
 }
 
@@ -68,10 +81,17 @@ function buildUrl(base, params = {}) {
 }
 
 /**
- * One GET, however it has to travel: through the proxy when one is configured,
- * otherwise on the global fetch. Returns only what getJson needs from either.
+ * One GET, however it has to travel: through our own relay or a proxy when one
+ * is configured, otherwise on the global fetch. Returns only what getJson needs
+ * from any of them.
+ *
+ * `allowRelay: false` is how the relay ROUTE fetches — the server answering
+ * /relay must go to the registry itself (through its own proxy, if it has one),
+ * never back into a relay, which would be an infinite loop on a machine that is
+ * both relay and client.
  */
-async function send(url, { headers, timeoutMs, signal }) {
+async function send(url, { headers, timeoutMs, signal, allowRelay = true } = {}) {
+  if (allowRelay && relay.enabled()) return relay.request(url, { headers, timeoutMs, signal });
   if (proxy.enabled()) return proxy.request(url, { headers, timeoutMs, signal });
   const res = await fetch(url, { signal, headers });
   return { ok: res.ok, status: res.status, text: await res.text() };
