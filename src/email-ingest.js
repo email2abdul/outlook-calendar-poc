@@ -14,6 +14,10 @@ const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
 const aiExtractor = require('./ai-extractor');
 const emailIntel = require('./email-intel');
+const meetingMatch = require('./meeting-match');
+const outsideStore = require('./outside-physician-store');
+const assembleProfile = require('./outside-sources/profile');
+const resolveOutside = require('./outside-sources/resolve');
 const intelStore = require('./email-intel-store');
 
 /**
@@ -108,10 +112,27 @@ async function syncActivities(token, user) {
   // added later if replies arrive long after a meeting.
   const events = await graph.getUpcomingEvents(token, ACTIVITY_WINDOW_MAX);
 
+  // Every decision already on record for this window, in ONE query rather than
+  // one per meeting per tick. A choice the rep made is the reason this tick
+  // must not re-derive (and overwrite) who the meeting is with.
+  let decisions = new Map();
+  if (outsideStore.enabled) {
+    try {
+      decisions = await outsideStore.latestForEvents(
+        user.homeAccountId,
+        events.map((e) => e.id)
+      );
+    } catch (err) {
+      console.warn('[ingest] meeting decisions unavailable:', err.message);
+    }
+  }
+
   let synced = 0;
   for (const ev of events) {
     if (ev.isAllDay) continue;
     const physicians = await physiciansForEvent(ev, user.email);
+    const decision = decisions.get(String(ev.id)) || null;
+    const chosenNpi = decision?.decidedBy === 'user' ? decision.npi : null;
     // The activity row links to a single physician (schema is one NPI per
     // activity); use the first. All matched physicians are still briefed below.
     const primary = physicians[0] || null;
@@ -127,9 +148,16 @@ async function syncActivities(token, user) {
       user.homeAccountId,
       ev,
       primary?.npi,
-      primary?.facility?.id
+      primary?.facility?.id,
+      // `existing` was already read above, so the merge costs no second query;
+      // `chosenNpi` is what stops this sync writing null over the rep's choice.
+      { existing: existed, chosenNpi }
     );
     if (activity) synced++;
+
+    // Keep the record of WHO this meeting is with (and when that was decided,
+    // for which rep) up to date on its own, without anybody opening the app.
+    await recordDecision(user, ev, physicians, decision);
 
     // Instant-brief the matched physician(s) in ONE email (a two-physician
     // meeting → a single brief with both), only the first time it's seen.
@@ -148,6 +176,37 @@ async function syncActivities(token, user) {
     // `enrich:<series-or-event>` key, so it still runs exactly once per
     // meeting — and exactly once per recurring SERIES, not once per occurrence.
     if (!physicians.length) {
+      // The rep has already answered "who is this meeting with" for this event,
+      // with someone the master does not hold. Their answer outranks anything
+      // the agent would go and guess, so it is what goes on the meeting — and
+      // the agent is not run at all (nothing to look up, nothing to spend).
+      const outsideChoice =
+        decision?.decidedBy === 'user' &&
+        decision.npi &&
+        // A non-doctor was recorded as the meeting's contact on purpose; what
+        // must not happen is a brief for them appearing inside the meeting.
+        decision.status !== 'not_doctor' &&
+        !physiciansDir.getByNpi(decision.npi)
+          ? decision
+          : null;
+
+      if (outsideChoice) {
+        try {
+          await injectOutsideBrief(token, user, ev, outsideChoice);
+        } catch (err) {
+          console.warn('[ingest] outside brief injection failed:', err.message);
+        }
+        continue;
+      }
+
+      // Nobody in the master, and the rep has not answered either — so ASK, the
+      // same way the panel does, and put the answer on the meeting. Until this,
+      // the app would show a 95%-confident physician in the browser while the
+      // meeting body stayed empty: the panel knew how to look and the tick did
+      // not.
+      const handled = await briefOutsideMatch(token, user, ev);
+      if (handled) continue;
+
       try {
         const recovered = await briefUnknownAttendees(token, user, ev);
         // An attendee the agent found IS in BIS after all (their email was
@@ -178,6 +237,94 @@ async function syncActivities(token, user) {
     }
   }
   return synced;
+}
+
+/**
+ * Write down who this meeting is with — automatically, every tick.
+ *
+ * The app used to know this only for as long as a request lasted: the day view
+ * worked it out, showed it, and forgot it. Nothing could answer "which data do
+ * we hold for this meeting, when was it made, and for which rep" — and a
+ * shortlist the rep had already answered was re-asked on the next page load.
+ *
+ * A row is written only when the answer CHANGES (see meetingStore
+ * .isWorthRecording), so a calendar that has not moved does not grow a row per
+ * tick, and a decision the REP made is never overwritten by an automatic one.
+ *
+ * Best-effort by design: this is bookkeeping, and it must never break the sync
+ * that briefs the rep.
+ */
+async function recordDecision(user, ev, emailMatched, latest) {
+  if (!outsideStore.enabled) return;
+
+  let next;
+  if (emailMatched.length) {
+    const p = emailMatched[0];
+    next = {
+      // The master's own fields, snapshotted in the shared shape.
+      ...outsideStore.mirrorFromPhysician(p),
+      source: 'email',
+      status: 'briefed',
+      confidence: 100,
+      reason:
+        emailMatched.length > 1
+          ? `${emailMatched.length} attendee emails matched the BIS master exactly.`
+          : 'Attendee email matched the BIS master exactly.',
+    };
+  } else {
+    const chosenNpi = latest?.decidedBy === 'user' ? latest.npi : null;
+    const m = meetingMatch.matchMeeting(ev, { selfEmail: user.email, chosenNpi });
+
+    // The rep's own answer is already on record; re-recording it says nothing.
+    if (m.via === 'rep-choice') return;
+
+    const first = m.physicians[0] || null;
+    const candidates = (m.groups || []).flatMap((g) =>
+      (g.candidates || []).map((c) => ({ ...c, forName: g.name, total: g.total }))
+    );
+
+    const STATUS = {
+      matched: 'briefed',
+      choose: 'needs_confirm',
+      needs_external: 'no_physician',
+      gate_blocked: 'skipped',
+      no_name: 'no_physician',
+    };
+    // `source` says where the answer came from, so "gate" is the honest value
+    // for a meeting the gate stopped: nothing was looked up at all.
+    const SOURCE = {
+      matched: 'name',
+      choose: 'name',
+      needs_external: 'name',
+      gate_blocked: 'gate',
+      no_name: 'gate',
+    };
+
+    next = {
+      // A name match resolves a BIS physician, so the master's fields apply;
+      // for every other status these are simply null — which is what makes the
+      // brief print "Data not available" in that field's own place.
+      ...(first ? outsideStore.mirrorFromPhysician(physiciansDir.getByNpi(first.npi) || first) : {}),
+      source: SOURCE[m.status] || 'name',
+      status: STATUS[m.status] || null,
+      reason: m.reason,
+      candidates,
+    };
+  }
+
+  if (!outsideStore.isWorthRecording(latest, { ...next, decidedBy: 'system' })) return;
+
+  try {
+    await outsideStore.record({
+      ownerUserId: user.homeAccountId,
+      ownerEmail: user.email || null,
+      event: ev,
+      decidedBy: 'system',
+      ...next,
+    });
+  } catch (err) {
+    console.warn('[ingest] decision record failed:', err.message);
+  }
 }
 
 /**
@@ -247,6 +394,67 @@ async function injectExternalBrief(token, user, ev, enrichments) {
 }
 
 /**
+ * Put the brief for a physician OUTSIDE the master onto the meeting itself.
+ *
+ * The rep did the work of identifying someone the master has never heard of;
+ * that answer belongs on the event, where they will actually be when the meeting
+ * starts — not only in the app they were in when they found it. Same idempotency
+ * key as the BIS injection (`enriched:<eventId>`) and the same in-body marker, so
+ * a meeting carries exactly one brief and attendees are never notified.
+ *
+ * Only a decision the REP made is injected. Writing an automatic guess into the
+ * meeting body would put a name in front of them, in Outlook, with no way to
+ * tell it was a guess.
+ *
+ * @returns {Promise<boolean>} true when something was injected
+ */
+async function injectOutsideBrief(token, user, ev, decision, ready = null) {
+  if (!ev.id || !decision?.npi) return false;
+  const key = `enriched:${ev.id}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
+
+  // The resolver may have assembled it already — asking the registries twice
+  // for the same answer is waste, and a second answer could differ from the one
+  // the decision was recorded against.
+  const profile = ready || (await assembleProfile(decision.npi, decision.externalSource));
+  if (!profile) {
+    // A source outage must not burn the one-shot key — try again next tick.
+    console.warn(`[ingest] no source could describe NPI ${decision.npi} — not injecting yet`);
+    return false;
+  }
+
+  const name = profile.record.name || decision.name || `NPI ${decision.npi}`;
+  // Say which it was. "You confirmed them" on an automatic match is a small lie
+  // that changes how much a rep trusts the numbers underneath it.
+  const how =
+    decision.decidedBy === 'system'
+      ? `Matched outside BIS at ${decision.confidence || '?'}% confidence` +
+        ((decision.matchReasons || []).length ? ` — ${decision.matchReasons.join(', ')}` : '') +
+        '. Open the meeting in the app to pick someone else.'
+      : 'You confirmed them for this meeting.';
+  const content = [
+    `<p>${name} is <b>not in the BIS directory</b>. ${how} ` +
+      'The notes below were assembled from public sources, and anything those sources could ' +
+      'not supply is marked "Data not available".</p>',
+    graph.outsideBriefHtml({
+      record: profile.record,
+      extra: profile.extra,
+      cms: profile.cms,
+      agreement: profile.agreement,
+      confidence: decision.confidence,
+      matchReasons: ['confirmed by you for this meeting'],
+      sourceName: profile.sourceName,
+      sourceUrl: profile.sourceUrl,
+    }),
+  ].join('');
+
+  const injected = await graph.injectBriefIntoEvent(token, ev.id, content);
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+  if (injected) console.log(`[ingest] outside brief embedded in meeting "${ev.title}" (${name})`);
+  return injected;
+}
+
+/**
  * Instant pre-meeting brief — sent the first time a physician meeting is seen
  * (e.g. created directly in Outlook, which never hits the app's schedule route).
  * The same brief body the schedule/reminder emails use, so all three match.
@@ -293,11 +501,147 @@ async function sendInstantBrief(token, user, ev, physicians) {
 }
 
 /**
- * Look up the attendees of a meeting that matched nobody in BIS.
+ * Resolve a meeting outside the master, and act on the answer.
+ *
+ * The panel and this tick now ask the same module the same question
+ * (outside-sources/resolve.js), so they cannot reach different conclusions
+ * about the same meeting — which is exactly what happened: the browser showed
+ * "ABESELOM GELETU · 95%" and the meeting body stayed empty.
+ *
+ * Three answers are worth acting on, and only one produces a brief:
+ *   · a doctor at or above the confidence bar, clear of the runner-up → the
+ *     brief goes into the meeting body and the decision is recorded, so the
+ *     reminder engine sends it too;
+ *   · somebody the registry says is NOT a doctor → recorded as such, and
+ *     nothing is written onto the meeting (there is no brief to write);
+ *   · anything less certain → left for the rep to decide in the panel.
+ *
+ * Bounded by a dedupe key that folds in the meeting's TEXT: the lookup runs once
+ * per meeting, and once more if the rep edits the title or description — which
+ * is the whole point, since that edit is usually them supplying the answer.
+ *
+ * @returns {Promise<boolean>} true when this meeting has been dealt with
+ */
+async function briefOutsideMatch(token, user, ev) {
+  if (!ev.id || !outsideStore.enabled) return false;
+
+  // Read the meeting back with its BODY. The 30-day sync fetches previews only,
+  // and once a brief has been injected the preview IS that brief — the rep's own
+  // "Primary Taxonomy - Internal Medicine from CHICAGO" is past the 255
+  // characters Outlook returns. Deciding on that text meant deciding on our own
+  // output.
+  let full = ev;
+  try {
+    full = await graph.getEventById(token, ev.id);
+  } catch (err) {
+    console.warn('[ingest] event re-read failed, using the preview:', err.message);
+  }
+
+  const key = `outside:${context.seriesKey(full, [])}:${context.textFingerprint(full)}`;
+  if (await tokenStore.wasReminderSent(user.homeAccountId, key)) return false;
+
+  let answer;
+  try {
+    answer = await resolveOutside(full, { selfEmail: user.email });
+  } catch (err) {
+    console.warn('[ingest] outside resolve failed:', err.message);
+    return false;
+  }
+
+  // A source that could not be reached must not burn the one attempt: the next
+  // tick has to be able to try again.
+  if ((answer.failures || []).length && !answer.primary && !answer.notDoctor) {
+    console.warn(
+      `[ingest] outside lookup degraded for "${ev.title}" — ${answer.failures
+        .map((f) => f.name)
+        .join(', ')} unreachable; will retry`
+    );
+    return false;
+  }
+
+  await tokenStore.markReminderSent(user.homeAccountId, key);
+
+  const record = async (fields) => {
+    try {
+      await outsideStore.record({
+        ownerUserId: user.homeAccountId,
+        ownerEmail: user.email || null,
+        event: full,
+        source: 'outside',
+        decidedBy: 'system',
+        ...fields,
+      });
+    } catch (err) {
+      console.warn('[ingest] outside decision record failed:', err.message);
+    }
+  };
+
+  if (answer.status === 'not_doctor' && answer.notDoctor) {
+    await record({
+      npi: answer.notDoctor.npi || null,
+      name: answer.notDoctor.name || null,
+      specialty: answer.notDoctor.taxonomy || null,
+      status: 'not_doctor',
+      reason: answer.reason,
+    });
+    console.log(
+      `[ingest] "${ev.title}" → ${answer.notDoctor.name || 'that NPI'} is not a physician ` +
+        `(${answer.notDoctor.taxonomy || 'per the registry'}) — no brief`
+    );
+    return true;
+  }
+
+  if (!answer.primary || !answer.profile) return true; // asked, nothing confident
+
+  const rec = { ...answer.profile.record };
+  delete rec.extra;
+  await record({
+    ...rec,
+    npi: answer.primary.npi,
+    confidence: answer.confidence,
+    status: 'briefed',
+    externalSource: answer.primary.externalSource || null,
+    reason:
+      `${answer.primary.name || answer.primary.npi} matched outside BIS at ` +
+      `${answer.confidence}% — ${(answer.primary.matchReasons || []).join(', ')}.`,
+  });
+
+  try {
+    await injectOutsideBrief(
+      token,
+      user,
+      full,
+      {
+        npi: answer.primary.npi,
+        name: answer.primary.name,
+        confidence: answer.confidence,
+        externalSource: answer.primary.externalSource,
+        // How it was decided, so the injected brief can say so honestly.
+        decidedBy: 'system',
+        matchReasons: answer.primary.matchReasons,
+      },
+      answer.profile
+    );
+  } catch (err) {
+    console.warn('[ingest] outside brief injection failed:', err.message);
+  }
+  return true;
+}
+
+/**
+ * Look up the people NAMED on a meeting that matched nobody in BIS.
  *
  * This is the gap the enrichment agent exists to close: before, a meeting whose
  * attendees were not in bis_physicians produced no activity link, no brief and
  * no meeting-body injection — the rep walked in with nothing.
+ *
+ * ── Only a meeting that calls someone a doctor gets this far ────────────────
+ * The "Dr"/"Doctor" gate governs this tick exactly as it governs the panel: on
+ * a normal meeting nothing is looked up, nothing is emailed and nothing is
+ * written onto the event. And a name is only ever one the MEETING gives —
+ * attendee addresses are no longer turned into names to search on, which is
+ * how "Meeting with Best friend" with `email2@gmail.com` on it once produced a
+ * brief for a clinical social worker surnamed MAIL.
  *
  * Two outcomes are worth acting on:
  *   - `recovered_in_bis` — the physician IS in the master, their email just
@@ -315,16 +659,20 @@ async function sendInstantBrief(token, user, ev, physicians) {
 async function briefUnknownAttendees(token, user, ev) {
   if (!ev.id) return [];
 
-  // Who to look up: attendees when the meeting has any, otherwise the people
-  // NAMED in the title. A meeting typed straight into Outlook ("meeting with dr
-  // Geoffrey Aaron") carries no attendee at all, and used to produce nothing —
-  // no brief, no notes, nothing on the event.
-  const attendees = context.attendeesToEnrich(ev, { selfEmail: user.email });
-  const subjects = attendees.length
-    ? attendees.map((a) => ({ email: a.email, name: a.name || null, via: 'attendee' }))
-    : context
-        .namesFromEvent(ev, { selfEmail: user.email })
-        .map((p) => ({ email: null, name: p.name, via: 'meeting title' }));
+  // The gate first: if neither the title nor an attendee name says "Dr" or
+  // "Doctor", this is a normal meeting and there is nothing here to look up.
+  // meetingGate, not the whole ladder: this is the pure "does anything on this
+  // meeting call someone a doctor" question, and it costs no directory read.
+  if (!meetingMatch.meetingGate(ev, user.email).pass) return [];
+
+  // Who to look up: the people the MEETING names — the ladder's own list, so
+  // the tick and the panel look up the same people. That is the title
+  // ("meeting with dr Geoffrey Aaron", which carries no attendee at all) plus
+  // an attendee's DISPLAY NAME, which is a name someone typed. Never the
+  // address.
+  const subjects = meetingMatch
+    .namesToLookUp(ev, user.email)
+    .map((n) => ({ email: null, name: n.name, via: n.source === 'attendee' ? 'attendee name' : 'meeting title' }));
   if (!subjects.length) return [];
 
   // Keyed on the SERIES, not the occurrence: calendarView expands a recurring
@@ -351,8 +699,7 @@ async function briefUnknownAttendees(token, user, ev) {
 
   for (const subject of subjects) {
     const result = await enrichment.enrich({
-      email: subject.email || undefined,
-      name: subject.email ? undefined : subject.name,
+      name: subject.name,
       state: hints.state || undefined,
       city: hints.city || undefined,
       facilityName: hints.facilityName || hints.mentionedFacilities?.[0] || undefined,
@@ -713,7 +1060,7 @@ function start() {
 }
 
 module.exports = {
-  start, tick, cleanBody, syncActivities, ingestEmails, ingestSentReplies,
+  start, tick, cleanBody, syncActivities, recordDecision, injectOutsideBrief, briefOutsideMatch, ingestEmails, ingestSentReplies,
   reconcileIntel, extractToNote, physicianNpiForEmail, isReplySubject, // exported for tests
   briefUnknownAttendees,
 };

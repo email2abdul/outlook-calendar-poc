@@ -10,6 +10,8 @@ const analytics = require('./analytics');
 const contactsStore = require('./contacts-store');
 const crm = require('./crm-store');
 const tokenStore = require('./token-store');
+const outsideStore = require('./outside-physician-store');
+const assembleProfile = require('./outside-sources/profile');
 
 /**
  * Pre-meeting reminder engine.
@@ -21,6 +23,14 @@ const tokenStore = require('./token-store');
  * them a reminder + full briefing (details, analytics, their meeting-note
  * history) REMINDER_LEAD_MINUTES before the meeting starts. A persisted
  * sent-log guarantees exactly one reminder per meeting per user.
+ *
+ * A physician the master does NOT hold gets the same reminder, from the same
+ * engine: if the rep has confirmed one for the meeting (their pick is recorded
+ * in outside_physician_app_meeting), the public sources are asked again at
+ * reminder time and the provenance-tagged brief is mailed instead. Without
+ * this, doing the work of identifying someone outside BIS bought a brief you
+ * had to remember to open — the half of the calendar the master has never heard
+ * of got no reminder at all.
  */
 
 const LEAD_MINUTES = Number(process.env.REMINDER_LEAD_MINUTES) || 90;
@@ -80,6 +90,79 @@ async function physicianForEvent(ev, ownerUserId, selfEmail) {
   return (await physiciansForEvent(ev, ownerUserId, selfEmail))[0] || null;
 }
 
+/**
+ * Remind the rep about a physician they confirmed from outside the master.
+ *
+ * Only a decision the REP made counts (`decided_by = 'user'`): an automatic
+ * guess is not something to mail a brief about, and this runs unattended.
+ *
+ * The profile is re-assembled from the sources at reminder time rather than
+ * stored, for the same reason the panel does it — the registries are the source
+ * of truth for someone BIS has never heard of, and a brief cached days ago is
+ * exactly the sort of stale data the "data check" section exists to catch. If no
+ * source answers, nothing is sent and nothing is marked: the next tick tries
+ * again, which is the right behaviour for a network failure.
+ *
+ * @returns {Promise<boolean>} true when a reminder was actually sent
+ */
+async function remindOutside(token, user, ev, minutes) {
+  if (!user.email || !ev.id) return false;
+
+  let decision;
+  try {
+    decision = await outsideStore.latestForEvent(user.homeAccountId, ev.id);
+  } catch (err) {
+    console.warn('[reminders] decision lookup failed:', err.message);
+    return false;
+  }
+  // A decision the rep made, or one the tick reached confidently enough to write
+  // onto the meeting — the same answer the panel showed them. An automatic
+  // decision that did NOT clear the bar never gets recorded as 'briefed', so it
+  // cannot reach this point.
+  const trusted =
+    decision &&
+    (decision.decidedBy === 'user' || (decision.source === 'outside' && decision.status === 'briefed'));
+  if (!decision?.npi || !trusted) return false;
+  // In the master after all → the standard path above owns them.
+  if (physiciansDir.getByNpi(decision.npi)) return false;
+  // The rep picked somebody the registry says is not a physician, dentist or
+  // podiatrist. Their pick stands, but a brief was never produced for them and
+  // one must not appear in their inbox half an hour before the meeting.
+  if (decision.status === 'not_doctor') return false;
+
+  const profile = await assembleProfile(decision.npi, decision.externalSource);
+  if (!profile) {
+    console.warn(`[reminders] no source could describe NPI ${decision.npi} — not reminding yet`);
+    return false;
+  }
+
+  const name = profile.record.name || decision.name || `NPI ${decision.npi}`;
+  const sentTo = await graph.sendOutsideBriefing(token, {
+    toEmail: user.email,
+    name,
+    html: graph.outsideBriefHtml({
+      record: profile.record,
+      extra: profile.extra,
+      cms: profile.cms,
+      agreement: profile.agreement,
+      confidence: decision.confidence,
+      matchReasons: ['confirmed by you for this meeting'],
+      sourceName: profile.sourceName,
+      sourceUrl: profile.sourceUrl,
+    }),
+    notes: await callNotes.getNotes(decision.npi, user.email),
+    event: { title: ev.title, start: ev.start, timeZone: ev.timeZone },
+    subject: `⏰ In ${minutes} min: ${ev.title} — ${name} (outside BIS)`,
+    intro:
+      `Reminder: your meeting "${ev.title}" starts in about ${minutes} minutes. ` +
+      `${name} is not in the BIS directory — the notes below were assembled from public ` +
+      'sources, and anything they could not supply is marked "Data not available".',
+  });
+
+  console.log(`[reminders] outside brief sent to ${sentTo} — "${ev.title}" (${name}) in ${minutes} min`);
+  return true;
+}
+
 /** One scan over all users — exported for tests and manual runs. */
 async function tick() {
   let users;
@@ -108,7 +191,15 @@ async function tick() {
         // Every physician on the meeting (exact-email attendees + scheduled
         // physician) goes into ONE reminder email with a section each.
         const physicians = await physiciansForEvent(ev, user.homeAccountId, user.email);
-        if (!physicians.length) continue; // not a physician meeting — no reminder
+
+        if (!physicians.length) {
+          // Nobody from the master — but the rep may have confirmed someone
+          // from the public registries for exactly this meeting.
+          if (await remindOutside(token, user, ev, minutes)) {
+            await tokenStore.markReminderSent(user.homeAccountId, ev.id);
+          }
+          continue;
+        }
 
         const bundles = [];
         for (const physician of physicians) {
@@ -161,4 +252,4 @@ function start() {
   );
 }
 
-module.exports = { start, tick, physiciansForEvent, physicianForEvent };
+module.exports = { start, tick, physiciansForEvent, physicianForEvent, remindOutside };

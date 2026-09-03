@@ -7,6 +7,19 @@
 
 const views = ['login', 'loading', 'error', 'empty', 'events'];
 
+/**
+ * Topbar tools that are hidden for now.
+ *
+ * The Email Sheet and the Leads modal both still work — their routes, their
+ * fetches and their tables are untouched — they are simply not on the topbar
+ * while the pre-meeting brief is what the app is being shown for. Flip a flag
+ * back to true and the button returns; nothing else has to change.
+ */
+const TOPBAR_TOOLS = {
+  emailSheet: false,
+  leads: false,
+};
+
 function showView(name) {
   for (const v of views) {
     document.getElementById(`view-${v}`).hidden = v !== name;
@@ -46,27 +59,67 @@ function todayYmd() {
  *
  * Name whoever the detail region is about, so the rep can see there is
  * something here before clicking. Ordered by how sure we are: a BIS match, a
- * physician the title matched, a person the title NAMES, an attendee we can
- * look up outside BIS, then nothing.
+ * physician the title matched, a person the title NAMES, then nothing.
+ *
+ * An empty string is an answer: this meeting holds nothing, and its card
+ * neither invites a click nor opens.
  *
  * @param {object} ev event from /api/calendar/day
  * @returns {string}
  */
 function lookupHint(ev) {
   if (matchedPhysiciansOf(ev).length) return '🩺 BIS intelligence — click to open';
+
+  // The server's ladder (src/meeting-match.js) has usually already answered
+  // this, and its answer is more specific than anything guessed here: it either
+  // NAMES the physician it resolved, or says how many people share the name.
+  const m = ev.match;
+  if (m && m.status === 'matched' && (m.physicians || []).length) {
+    const who = listNames(m.physicians.map((p) => p.name).filter(Boolean));
+    return m.via === 'rep-choice'
+      ? `🩺 ${who} — your pick for this meeting, click to open`
+      : `🩺 ${who} — BIS intelligence, click to open`;
+  }
+  if (m && m.status === 'choose') {
+    const g = (m.groups || []).find((x) => x.total > 1);
+    return g
+      ? `🔢 ${g.total} possible matches for “${g.name}” — click to pick`
+      : '🔢 Possible physician matches — click to pick';
+  }
+
+  if (m && m.status === 'partial_name') {
+    const half = m.nameIncomplete?.name;
+    return half
+      ? `✍️ Only “${half}” on this meeting — click to complete the name`
+      : '✍️ Half a name on this meeting — click to complete it';
+  }
+
+  if (m && m.status === 'needs_external') {
+    const who = (m.names || []).map((n) => n.name).filter(Boolean);
+    return who.length
+      ? `🔎 ${listNames(who)} — not in BIS, click for a registry lookup`
+      : '🔎 Not in BIS — click for a registry lookup';
+  }
+
+  // Only set once a lookup has run and come back with a non-physician; the
+  // ladder itself never decides this.
+  if (m && m.status === 'not_doctor') {
+    return '🚫 Not a physician — click to see why';
+  }
+
+  // The gate said no. Nothing was looked up, so there is nothing to offer, and
+  // offering it anyway is what produced a physician brief on "Meeting with
+  // Best friend": no hint, no card to open. Adding "Dr" to the title — or the
+  // physician as an attendee — is what opens this meeting up.
+  if (m && m.status === 'gate_blocked') return '';
+
   if ((ev.titleMatches || []).length) return '🔎 Possible physician matches — click to open';
 
   const titleNames = (ev.titlePeople || []).map((p) => p.name).filter(Boolean);
   if (titleNames.length) return `🔎 ${listNames(titleNames)} — click for external lookup`;
 
-  const lookupAttendees = (ev.attendees || []).filter(
-    (a) => a.email && !a.isOrganizer && a.type !== 'resource'
-  );
-  if (lookupAttendees.length > 1) {
-    return `🔎 External lookup on ${lookupAttendees.length} attendees — click to open`;
-  }
-  if (lookupAttendees.length) return '🔎 External lookup — click to open';
-
+  // An attendee address used to be reason enough to open a lookup. It is not:
+  // an address is not a name, and every identity built from one was a guess.
   return '＋ Physician lookup — click to open';
 }
 
@@ -78,11 +131,16 @@ function lookupHint(ev) {
  * identical closed cards.
  */
 function hasIntel(ev) {
-  return (
+  const m = ev.match;
+  return Boolean(
     matchedPhysiciansOf(ev).length > 0 ||
-    (ev.titleMatches || []).length > 0 ||
-    (ev.titlePeople || []).length > 0 ||
-    (ev.attendees || []).some((a) => a.email && !a.isOrganizer && a.type !== 'resource')
+      (m &&
+        (m.status === 'matched' ||
+          m.status === 'choose' ||
+          m.status === 'partial_name' ||
+          m.status === 'needs_external')) ||
+      (ev.titleMatches || []).length > 0 ||
+      (ev.titlePeople || []).length > 0
   );
 }
 
@@ -116,6 +174,47 @@ function renderHeaderDate(dateStr, timeZone) {
 
 const physBlockTpl = document.getElementById('physician-block-template');
 const physSearchTpl = document.getElementById('physician-search-template');
+
+/**
+ * Wrap a brief in a fold, closed.
+ *
+ * A brief is long — physician details, contact intelligence, procedure
+ * intelligence, account, extras — and a rep opening their day wants to see
+ * WHICH meetings have intelligence before they read any of it. Closed by
+ * default, the panel stays scannable; one click gives the whole thing exactly
+ * as it was.
+ *
+ * The summary carries the one line worth reading closed: what kind of brief it
+ * is, and how sure we are when that is a question.
+ */
+function briefFold(html, { label = 'Pre-meeting brief', meta = null } = {}) {
+  const fold = document.createElement('details');
+  fold.className = 'brief-fold';
+
+  const summary = document.createElement('summary');
+  summary.className = 'brief-fold__summary';
+  summary.textContent = `🩺 ${label}`;
+
+  if (meta) {
+    const note = document.createElement('span');
+    note.className = 'brief-fold__hint';
+    note.textContent = meta;
+    summary.appendChild(note);
+  }
+  // "click to open" is only true while it is closed, so it lives in its own
+  // element and CSS drops it once the fold is open.
+  const cta = document.createElement('span');
+  cta.className = 'brief-fold__cta';
+  cta.textContent = 'click to open';
+  summary.appendChild(cta);
+
+  const body = document.createElement('div');
+  body.className = 'brief-fold__body';
+  body.innerHTML = html || '<p class="muted">No brief data.</p>';
+
+  fold.append(summary, body);
+  return fold;
+}
 
 /** "2026-06-05" style label for a note (meeting date, else when written). */
 function noteDateLabel(note) {
@@ -174,7 +273,8 @@ async function loadBriefInto(box, npi) {
       return;
     }
     const data = await res.json();
-    box.innerHTML = `<h3>Pre-meeting brief</h3>${data.html || '<p class="muted">No brief data.</p>'}`;
+    box.innerHTML = '';
+    box.appendChild(briefFold(data.html));
   } catch {
     box.innerHTML = '<p class="muted">Brief unavailable.</p>';
   }
@@ -364,7 +464,7 @@ async function submitMomFor(evt, block, physician, event) {
 }
 
 /** Email the organizer this physician's details + full meeting-note history. */
-async function sendBriefingFor(block, physician, event) {
+async function sendBriefingFor(block, physician, event, { source = null } = {}) {
   const btn = block.querySelector('.briefing__send');
   const status = block.querySelector('.briefing__status');
 
@@ -383,6 +483,9 @@ async function sendBriefingFor(block, physician, event) {
           eventTitle: event?.title || null,
           // Readable "2026-06-05 15:00" instead of the raw ISO string.
           eventStart: (event?.start || '').slice(0, 16).replace('T', ' ') || null,
+          // For a physician the master does not have, the server re-assembles
+          // the brief from this source rather than trusting the browser's copy.
+          source: source || undefined,
         }),
       }
     );
@@ -473,12 +576,37 @@ function wireScheduleForm(form, physician) {
 
 // ── One physician block ───────────────────────────────────────────────────────
 
-function buildPhysicianBlock(physician, event, { scheduleOpen = false } = {}) {
+/**
+ * One self-contained physician block — for a physician in the master, and for
+ * one who is not.
+ *
+ * An outside physician gets the same block on purpose: notes are keyed by NPI
+ * and they have one, and "email me this briefing" is exactly as useful for a
+ * registry profile as for a BIS row. Only three things differ, and each for a
+ * reason:
+ *   · the brief is already rendered (assembled from the public sources), so it
+ *     is injected rather than fetched;
+ *   · there is no inbox intelligence to show — the Email Sheet is keyed to BIS
+ *     physicians;
+ *   · "Schedule a call" needs an address to invite, and NPPES has no email
+ *     field at all, so it is hidden rather than left there to fail.
+ *
+ * @param {object} physician        BIS row, or an outside candidate/record
+ * @param {object} event
+ * @param {object} [opts]
+ * @param {boolean} [opts.scheduleOpen]
+ * @param {string}  [opts.briefHtml] pre-rendered brief (outside physicians)
+ * @param {boolean} [opts.outside]   skip inbox intel; hide scheduling with no email
+ * @param {string}  [opts.source]    which public source the brief came from
+ */
+function buildPhysicianBlock(physician, event, { scheduleOpen = false, briefHtml = null, outside = false, source = null } = {}) {
   const block = physBlockTpl.content.firstElementChild.cloneNode(true);
   block.dataset.npi = physician.npi;
+  if (outside) block.dataset.outside = 'true';
 
   block.querySelector('.physician-block__name').textContent = physician.name || `NPI ${physician.npi}`;
-  block.querySelector('.physician-block__specialty').textContent = physician.specialty || '';
+  block.querySelector('.physician-block__specialty').textContent =
+    physician.specialty || physician.primaryTaxonomy || '';
 
   const photo = block.querySelector('.physician-block__photo');
   if (physician.photoUrl) {
@@ -486,18 +614,42 @@ function buildPhysicianBlock(physician, event, { scheduleOpen = false } = {}) {
     photo.hidden = false;
   }
 
-  // All three data sections load asynchronously and independently.
-  loadBriefInto(block.querySelector('.physician-block__brief'), physician.npi);
-  loadIntelInto(block, physician);
+  const briefBox = block.querySelector('.physician-block__brief');
+  if (briefHtml) {
+    briefBox.innerHTML = '';
+    briefBox.appendChild(
+      briefFold(briefHtml, {
+        meta: Number.isFinite(physician.confidence) ? `${physician.confidence}% match` : null,
+      })
+    );
+  } else {
+    loadBriefInto(briefBox, physician.npi);
+  }
+
+  if (!outside) loadIntelInto(block, physician);
   loadNotesInto(block, physician, event);
 
   // Actions.
   block.querySelector('.mom-form').addEventListener('submit', (e) => submitMomFor(e, block, physician, event));
-  block.querySelector('.briefing__send').addEventListener('click', () => sendBriefingFor(block, physician, event));
+  block
+    .querySelector('.briefing__send')
+    .addEventListener('click', () => sendBriefingFor(block, physician, event, { source }));
 
   const sched = block.querySelector('.physician-block__schedule');
-  if (scheduleOpen) sched.open = true;
-  wireScheduleForm(block.querySelector('.schedule-form'), physician);
+  if (outside && !physician.email) {
+    // Nothing to invite: say so instead of offering a form that cannot work.
+    sched.hidden = true;
+    const why = document.createElement('p');
+    why.className = 'muted';
+    why.style.fontSize = '12px';
+    why.textContent =
+      'Scheduling needs an email address, and the public registries do not publish one — ' +
+      'add it to the meeting as an attendee to invite them.';
+    sched.after(why);
+  } else {
+    if (scheduleOpen) sched.open = true;
+    wireScheduleForm(block.querySelector('.schedule-form'), physician);
+  }
 
   return block;
 }
@@ -540,7 +692,7 @@ function renderPhysicianResults(list, results, onPick) {
  * The enrichment agent answers a full name from the public registries in a few
  * seconds. It sits behind a button rather than running on the search itself
  * because this fires on every keystroke — NPPES should not be queried for "j",
- * "jo", "jon". The attendee cards auto-run the same lookup, which is fine
+ * "jo", "jon". The title-name cards auto-run the same lookup, which is fine
  * there: they run once, over a bounded set of people.
  */
 function renderNoBisMatch(list, query, onPick) {
@@ -637,30 +789,25 @@ function meetingContextOf(ev) {
 }
 
 /**
- * Run the enrichment agent for one meeting SUBJECT and render the result.
+ * Run the enrichment agent for one person the MEETING named, and render it.
  *
- * A subject is whoever we can name: an attendee (identified by email — the
- * reliable case) or a person named in the title with no attendee at all, which
- * is how reps actually book "meeting with dr Geoffrey Aaron". The agent takes
- * either: `name` skips the paid identity tier entirely, because the one thing
- * that tier buys is a name.
+ * The subject is always a name — "meeting with dr Geoffrey Aaron" is how reps
+ * actually book, and the name is what the registries can be asked about. An
+ * attendee's email address is deliberately NOT a subject: an address is not a
+ * name, and everything derived from one was a guess dressed as an identity.
  *
- * Two passes on purpose. The free tiers (BIS + NPPES + CMS) answer in 1-5s, so
- * they run automatically and the rep sees something immediately. The paid web
- * tier takes ~40s, so it stays behind a button rather than stalling the card.
+ * Free tiers only (BIS + NPPES + CMS, 1-5s). The paid web tier exists to turn
+ * an address into a name, which is the one thing that must not happen on its
+ * own — so it is not offered here.
  */
-async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) {
-  const deep = useWeb === 'always';
-  box.innerHTML = `<p class="muted">${
-    deep ? 'Searching the web for this person…' : 'Checking public registries…'
-  }</p>`;
+async function enrichAttendeeInto(box, person, ev) {
+  box.innerHTML = '<p class="muted">Checking public registries…</p>';
 
   const params = new URLSearchParams({
+    name: person.name,
     context: meetingContextOf(ev),
-    useWeb,
+    useWeb: 'never',
   });
-  if (attendee.email) params.set('email', attendee.email);
-  else if (attendee.name) params.set('name', attendee.name);
 
   let data;
   try {
@@ -685,41 +832,23 @@ async function enrichAttendeeInto(box, attendee, ev, { useWeb = 'never' } = {}) 
     retry.textContent = '↻ Retry lookup';
     retry.addEventListener('click', () => {
       retry.disabled = true;
-      enrichAttendeeInto(box, attendee, ev, { useWeb });
+      enrichAttendeeInto(box, person, ev);
     });
     box.appendChild(retry);
-    return;
-  }
-
-  // Offer the paid lookup only when the free tiers actually fell short.
-  const needsWeb =
-    !deep && Boolean(attendee.email) && ['unresolved', 'facility_only', 'ambiguous'].includes(data.status);
-  if (needsWeb) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn btn--ghost enrich__deep';
-    btn.textContent = '🔎 Identify with web search';
-    btn.addEventListener('click', () => {
-      btn.disabled = true;
-      enrichAttendeeInto(box, attendee, ev, { useWeb: 'always' });
-    });
-    box.appendChild(btn);
   }
 }
 
 /**
- * Enrichment cards for every attendee who is not the organizer.
+ * Enrichment cards for the people the MEETING names.
  *
- * The organizer — the person who scheduled the meeting — is never enriched, so
- * they are filtered out here as well as on the server.
+ * Only names — the ones the server read out of the title/description, with the
+ * organizer already filtered out. Attendee addresses are not enriched: the
+ * lookup they used to drive had to invent a name first, and inventing one from
+ * `email2@gmail.com` is how a clinical social worker came to be briefed as the
+ * physician for "Meeting with Best friend".
  */
 function buildEnrichment(detail, ev) {
-  const attendees = (ev.attendees || []).filter((a) => a.email && !a.isOrganizer && a.type !== 'resource');
-  // No attendee to go on (the common case for a meeting typed straight into
-  // Outlook) — fall back to the people NAMED in the title, resolved server-side.
-  const targets = attendees.length
-    ? attendees
-    : (ev.titlePeople || []).map((p) => ({ name: p.name, email: null, fromTitle: true }));
+  const targets = (ev.titlePeople || []).map((p) => ({ name: p.name }));
   if (!targets.length) return;
 
   const wrap = document.createElement('div');
@@ -727,24 +856,16 @@ function buildEnrichment(detail, ev) {
 
   const head = document.createElement('h3');
   head.className = 'enrich__title';
-  head.textContent = attendees.length
-    ? targets.length > 1
-      ? 'Attendees — external lookup'
-      : 'External lookup'
-    : 'From the meeting title — external lookup';
+  head.textContent = 'From the meeting title — external lookup';
   wrap.appendChild(head);
 
-  for (const attendee of targets) {
+  for (const person of targets) {
     const card = document.createElement('section');
     card.className = 'enrich__card';
 
     const who = document.createElement('p');
     who.className = 'enrich__who';
-    who.textContent = attendee.email
-      ? attendee.name
-        ? `${attendee.name} · ${attendee.email}`
-        : attendee.email
-      : `${attendee.name} · named in the meeting title`;
+    who.textContent = `${person.name} · named in the meeting title`;
     card.appendChild(who);
 
     const body = document.createElement('div');
@@ -752,17 +873,18 @@ function buildEnrichment(detail, ev) {
     card.appendChild(body);
 
     wrap.appendChild(card);
-    enrichAttendeeInto(body, attendee, ev);
+    enrichAttendeeInto(body, person, ev);
   }
 
   detail.appendChild(wrap);
 }
 
 /** No email match → auto-enrichment, title-based suggestions, and a search box. */
-function buildNoMatch(detail, ev) {
+function buildNoMatch(detail, ev, { intro: introText } = {}) {
   const intro = document.createElement('p');
   intro.className = 'muted event__detail-intro';
-  intro.textContent = 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
+  intro.textContent =
+    introText || 'Nobody on this meeting matched the BIS directory. Pick who the meeting is with:';
   detail.appendChild(intro);
 
   // Look the attendees up outside BIS straight away — the rep should not have
@@ -797,6 +919,55 @@ function buildNoMatch(detail, ev) {
   }
 
   // Free-text search — start blank, let the rep type who they're looking for.
+  appendSearchBox(detail, pick);
+
+  detail.appendChild(pickedWrap);
+}
+
+/**
+ * Remember (or forget) which physician this meeting is with.
+ *
+ * The brief is rendered optimistically before this resolves — the rep asked to
+ * see the person, and a slow write should not hold that up — so the caller
+ * reports what happened instead of pretending it saved.
+ *
+ * @param {object} ev
+ * @param {string|null} npi  null clears the choice
+ */
+async function saveMeetingChoice(ev, npi, source) {
+  const res = await fetch('/api/meetings/choose', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    // `source` is required for an NPI the master does not have: the server
+    // re-fetches the details from that source rather than trusting the browser.
+    body: JSON.stringify({ eventId: ev.id, npi, source: source || undefined }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.message || 'The choice could not be saved.');
+  return data;
+}
+
+/**
+ * Re-run the ladder for one meeting and rebuild its panel.
+ *
+ * Reads the CURRENT event back through /api/meetings/match, so this doubles as
+ * the honest way to reflect a meeting the rep has just edited — or a choice
+ * they just cleared.
+ */
+async function refreshMatch(ev, detail) {
+  try {
+    const res = await fetch(`/api/meetings/match?eventId=${encodeURIComponent(ev.id)}`, {
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) ev.match = await res.json();
+  } catch {
+    /* keep the panel we have rather than blanking it */
+  }
+  buildDetail(detail, ev);
+}
+
+/** A free-text physician search, wired to `onPick`. Used by more than one path. */
+function appendSearchBox(detail, onPick) {
   const searchWrap = physSearchTpl.content.firstElementChild.cloneNode(true);
   const input = searchWrap.querySelector('.physician-inline__search');
   const results = searchWrap.querySelector('.physician-results');
@@ -804,21 +975,554 @@ function buildNoMatch(detail, ev) {
   input.addEventListener('input', (e) => {
     clearTimeout(deb);
     const q = e.target.value;
-    deb = setTimeout(() => searchPhysicians(q, results, pick), 250);
+    deb = setTimeout(() => searchPhysicians(q, results, onPick), 250);
   });
   detail.appendChild(searchWrap);
+}
 
+/**
+ * Several physicians in the master share the name the meeting gives.
+ *
+ * This is a question, not an answer: the rep is the only one who knows which
+ * "Abdul Khan" they are seeing, so nothing is briefed until they pick. The
+ * cards lead with facility and city because that — not the name — is what
+ * tells same-named physicians apart, and the true total is stated even though
+ * only the first few are listed: "3 of 12" is honest, "3" is not.
+ */
+function buildChoose(detail, ev) {
+  const m = ev.match || {};
+
+  // Half a name reaches this path too ("Dr Khan" → 62 physicians in the master).
+  appendNameTag(detail, m.nameIncomplete, (m.groups || [])[0]?.total);
+
+  const pickedWrap = document.createElement('div');
+  pickedWrap.className = 'event__detail-picked';
+
+  async function pick(p) {
+    pickedWrap.innerHTML = '';
+
+    // The answer to the shortlist is worth keeping: without it the next page
+    // load asks again, and the reminder email never learns who was picked.
+    const status = document.createElement('p');
+    status.className = 'muted event__detail-intro';
+    status.textContent = `Remembering ${p.name || p.npi} for this meeting…`;
+    pickedWrap.appendChild(status);
+    pickedWrap.appendChild(buildPhysicianBlock(p, ev));
+    pickedWrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+    try {
+      const saved = await saveMeetingChoice(ev, p.npi);
+      status.textContent =
+        `✔ ${p.name || p.npi} is now the physician for this meeting — the reminder brief ` +
+        'will use them too.' +
+        // Be specific about WHERE it was kept: until the setup SQL is run the
+        // store falls back to a local file, which is fine for testing but is
+        // not shared with anything else.
+        (saved.storedIn === 'sqlite'
+          ? ' (Kept on this server for now — run supabase/outside-physician-setup.sql to keep it in Supabase.)'
+          : '');
+    } catch (err) {
+      status.textContent = `⚠️ ${err.message} The brief below is still correct; the choice was not saved.`;
+    }
+  }
+
+  for (const g of m.groups || []) {
+    if (!(g.candidates || []).length) continue;
+
+    const head = document.createElement('p');
+    head.className = 'muted event__detail-intro';
+    // One line, in the rep's own words: say the name, say how many records it
+    // brought back, and ask which one the pre-meeting notes are for.
+    if (g.total > g.candidates.length) {
+      head.textContent =
+        `Due to the name “${g.name}” I have ${g.total} matching records ` +
+        `(closest ${g.candidates.length} shown) — choose the one you want the ` +
+        'pre-meeting notes for.';
+    } else if (g.total > 1) {
+      head.textContent =
+        `Due to the name “${g.name}” I have ${g.total} matching records — choose the ` +
+        'one you want the pre-meeting notes for.';
+    } else {
+      head.textContent = `“${g.name}” — one match in the BIS directory:`;
+    }
+    detail.appendChild(head);
+
+    const ul = document.createElement('ul');
+    ul.className = 'physician-results';
+    // City/state ride along as the match hint — the renderer already shows it.
+    renderPhysicianResults(
+      ul,
+      g.candidates.map((p) => ({
+        ...p,
+        matchHint: [p.facility && p.facility.city, p.facility && p.facility.state]
+          .filter(Boolean)
+          .join(', ') || null,
+      })),
+      pick
+    );
+    detail.appendChild(ul);
+  }
+
+  if ((m.unresolvedNames || []).length) {
+    const note = document.createElement('p');
+    note.className = 'muted event__detail-intro';
+    note.textContent = `${m.unresolvedNames.join(', ')} — not in the BIS directory by that name.`;
+    detail.appendChild(note);
+  }
+
+  // Nothing above is binding: the rep can always search for someone else.
+  appendSearchBox(detail, pick);
   detail.appendChild(pickedWrap);
 }
 
+/**
+ * The meeting gave half a name — say which half is missing.
+ *
+ * This is the one problem in the whole ladder that the REP can fix instantly,
+ * and only they can: no registry will turn "Khan" into a person. So the ask is
+ * specific, and it says how many people the half-name matches, because that is
+ * what makes it obvious why the app is asking.
+ */
+function appendNameTag(detail, incomplete, total) {
+  if (!incomplete || !incomplete.name) return;
+  const p = document.createElement('p');
+  p.className = 'muted event__detail-intro';
+  const which =
+    incomplete.missing === 'first'
+      ? 'the first name is missing'
+      : incomplete.missing === 'last'
+        ? 'the last name is missing'
+        : 'the full name is not written out';
+  const many = total > 1 ? ` “${incomplete.name}” alone matches ${total} physicians.` : '';
+  p.textContent =
+    `✍️ Please write the physician's full name on the meeting — ${which}.${many} ` +
+    'With the full name this can be matched exactly.';
+  detail.appendChild(p);
+}
+
+/**
+ * One candidate → the row a rep chooses from.
+ *
+ * The same three things the registry's own results table leads with, because
+ * they are what a person actually picks by: the FULL NAME, the primary taxonomy
+ * (five people share a surname; "Obstetrics & Gynecology" vs "Hospitalist" is
+ * what separates them) and the practice address. The NPI, the source and the
+ * confidence follow — useful, but not how anybody recognises a doctor.
+ */
+function candidateRow(c, threshold, onPick) {
+  const li = document.createElement('li');
+  li.className = 'physician-result';
+
+  const name = document.createElement('strong');
+  const pct = Number.isFinite(c.confidence) ? ` — ${c.confidence}%` : '';
+  name.textContent = `${c.inBis ? '🩺 ' : ''}${c.name || `NPI ${c.npi}`}${pct}`;
+
+  const what = document.createElement('span');
+  what.className = 'physician-result__what';
+  what.textContent = c.primaryTaxonomy || c.specialty || 'Specialty not stated in the registry';
+
+  // The registry's address line already reads "801 7TH AVE, FORT WORTH, TX,
+  // 76104"; the city/state fields are the same values parsed out, so they are a
+  // fallback rather than an addition.
+  const where = document.createElement('span');
+  where.className = 'muted';
+  where.textContent = [
+    c.facilityAddress || [c.city, c.state, c.zip].filter(Boolean).join(', '),
+    c.phone || null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  const meta = document.createElement('span');
+  meta.className = 'muted';
+  meta.textContent = [
+    c.npi ? `NPI ${c.npi}` : null,
+    c.inBis ? 'in your BIS directory' : c.externalSource,
+    Number.isFinite(c.confidence) && c.confidence < threshold ? 'below the confidence bar' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+
+  li.append(name, what);
+  if (where.textContent) li.appendChild(where);
+  li.appendChild(meta);
+  if (!c.npi) li.classList.add('physician-result--noemail');
+  li.addEventListener('click', () => onPick(c));
+  return li;
+}
+
+/**
+ * Nobody on this meeting is in the BIS directory — ask the public sources.
+ *
+ * This is the only path in the panel that leaves the building, so it runs when
+ * the rep OPENS the meeting, never on page load for a whole day of them.
+ *
+ * Three things it must keep straight:
+ *  · a source that could not be reached is not a source that found nobody — the
+ *    first gets a retry, the second gets "not in the registry";
+ *  · a candidate whose NPI turns out to be in BIS is the best possible outcome
+ *    and is labelled as such, not quietly mixed in;
+ *  · nothing is briefed until the rep picks, because a name can belong to
+ *    several real physicians.
+ */
+async function buildOutside(detail, ev) {
+  const head = document.createElement('p');
+  head.className = 'muted event__detail-intro';
+  head.textContent =
+    'Nobody on this meeting is in the BIS directory — checking the public registries…';
+  detail.appendChild(head);
+
+  const list = document.createElement('div');
+  detail.appendChild(list);
+
+  const picked = document.createElement('div');
+  picked.className = 'event__detail-picked';
+
+  async function load() {
+    list.innerHTML = '';
+    try {
+      const res = await fetch(`/api/meetings/outside?eventId=${encodeURIComponent(ev.id)}`, {
+        headers: { Accept: 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.message || 'The registry lookup failed.');
+
+      // The registry answered, and the answer is that this person is not a
+      // physician. That IS the finding — it is stated, with what they are and
+      // the page that proves it, instead of an empty panel or a brief nobody
+      // should read.
+      if (data.notDoctor) {
+        head.textContent = 'Not in the BIS directory, and the public registries say this is not a physician:';
+        const box = document.createElement('div');
+        box.className = 'physician-analytics';
+        box.innerHTML = data.notDoctor.html || '';
+        list.appendChild(box);
+      }
+
+      const rawGroups = data.groups || [];
+      const groups = rawGroups.filter((g) => (g.candidates || []).length);
+      const failed = data.failures || [];
+      const threshold = data.threshold || 70;
+      // Everyone the registries returned, including the ones held back — the
+      // count the rep needs to hear, and the count the name tag quotes.
+      const held = rawGroups.reduce((n, g) => n + (g.dropped || 0), 0);
+      const returned = rawGroups.reduce((n, g) => n + (g.total || 0) + (g.dropped || 0), 0);
+      appendNameTag(list, data.nameIncomplete, returned);
+      const names = (data.names || []).length
+        ? data.names
+        : (data.groups || []).map((g) => g.name).filter(Boolean);
+      const who = names.length ? `“${names.join('”, “')}”` : 'that name';
+
+      if (data.notDoctor) {
+        // heading already set above
+      } else if (groups.length) {
+        // Name the source(s) that actually ANSWERED, not every source there is.
+        // They are asked in order — CMS billing data, then NPPES — and CMS
+        // ends the search only on an exact match, so a shortlist may come from
+        // one or from both. Listing a source that was never asked is
+        // misleading in front of a rep reading its rows.
+        const ids = Array.isArray(data.answeredBy)
+          ? data.answeredBy
+          : [data.answeredBy].filter(Boolean);
+        const answered =
+          listNames(
+            ids.map((id) => (data.sources || []).find((x) => x.id === id)?.name).filter(Boolean)
+          ) || (data.sources || []).map((x) => x.name).join(', ');
+        head.textContent = data.brief
+          ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
+            'anything less certain is listed as an option.'
+          : `Not in the BIS directory. ${answered} answered — pick who this meeting is with:`;
+      } else if (failed.length) {
+        // The claim "nobody by that name" would be about the PERSON, on evidence
+        // that is only about the network. Say what actually happened.
+        head.textContent =
+          `Not in the BIS directory, and the public registries could not be reached — ` +
+          `so nothing is known yet about ${who}.`;
+      } else if (held) {
+        // They were FOUND — they just did not match this meeting closely enough.
+        // "the registries have nobody by that name" would be plainly false, and
+        // would send the rep looking for a different spelling.
+        head.textContent =
+          `Not in the BIS directory. The registries returned ${held} ${
+            held > 1 ? 'people' : 'person'
+          } named ${who}, but nothing in this meeting says which one — so none is shown. Add the ` +
+          'first name, the taxonomy (what kind of doctor), the city or the practice address.';
+      } else {
+        head.textContent = `Not in the BIS directory, and the public registries have nobody by ${who}.`;
+      }
+
+      for (const g of groups) {
+        const line = document.createElement('p');
+        line.className = 'muted event__detail-intro';
+        line.textContent =
+          g.total > 1
+            ? `Due to the name “${g.name}” I have ${g.total} matching records — choose the one ` +
+              'you want the pre-meeting notes for.'
+            : `“${g.name}” — one match in the public registries:`;
+        list.appendChild(line);
+
+        // Above the bar: shown. Below it: an option the rep opens on purpose —
+        // a 55% guess must not sit on screen looking like an answer.
+        const strong = g.candidates.filter((c) => (c.confidence ?? 100) >= threshold);
+        const weak = g.candidates.filter((c) => (c.confidence ?? 100) < threshold);
+
+        if (strong.length) {
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of strong) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          list.appendChild(ul);
+        }
+
+        if ((g.refused || []).length) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          const roles = g.refused.map((r) => r.taxonomy).filter(Boolean);
+          note.textContent =
+            `${g.refused.length} further match${g.refused.length > 1 ? 'es are' : ' is'} not a ` +
+            `physician${roles.length ? ` (${roles.join(', ')})` : ''} and ${
+              g.refused.length > 1 ? 'were' : 'was'
+            } not offered.`;
+          list.appendChild(note);
+        }
+
+        if (g.dropped > 0) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          note.textContent =
+            `${g.dropped} further match${g.dropped > 1 ? 'es are' : ' is'} further from what this ` +
+            'meeting says and ' +
+            `${g.dropped > 1 ? 'are' : 'is'} not shown — add the first name, the taxonomy, the ` +
+            'city or the practice address to the meeting to narrow it down.';
+          list.appendChild(note);
+        }
+
+        // Under the bar, and there is nothing better: this IS the shortlist, so
+        // it is shown, not folded away. Hiding it behind a summary is how the
+        // rep ended up with a page that named a medical student and offered no
+        // way to reach the three physicians the registry had returned.
+        if (weak.length && !strong.length) {
+          const note = document.createElement('p');
+          note.className = 'muted event__detail-intro';
+          note.textContent =
+            `Nothing in this meeting says which ${g.name} it is, so none of these is over ` +
+            `${threshold}% — pick the one you are meeting and their notes open below.`;
+          list.appendChild(note);
+
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of weak) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          list.appendChild(ul);
+        } else if (weak.length) {
+          // A stronger match is already on screen; these stay one click away so
+          // a 55% guess cannot be mistaken for the answer.
+          const box = document.createElement('details');
+          const sum = document.createElement('summary');
+          sum.textContent = `Other possible matches (${weak.length}) — under ${threshold}% confidence`;
+          box.appendChild(sum);
+          const ul = document.createElement('ul');
+          ul.className = 'physician-results';
+          for (const c of weak) ul.appendChild(candidateRow(c, threshold, (x) => pickOutside(x, ev, picked)));
+          box.appendChild(ul);
+          list.appendChild(box);
+        }
+      }
+
+      // One candidate cleared the bar and stood clear of the rest: its notes are
+      // already assembled, so show them without making the rep click.
+      if (data.brief) {
+        const best =
+          (groups.flatMap((g) => g.candidates).find((c) => c.npi === (groups.find((g) => g.primaryNpi) || {}).primaryNpi)) ||
+          groups[0]?.candidates[0] ||
+          {};
+        list.appendChild(
+          buildPhysicianBlock(best, ev, {
+            briefHtml: data.brief,
+            outside: !best.inBis,
+            source: best.externalSource,
+          })
+        );
+      }
+
+      // Say which source went missing, and offer the retry — silence here reads
+      // as "this person does not exist".
+      for (const f of data.failures || []) {
+        const warn = document.createElement('p');
+        warn.className = 'muted event__detail-intro';
+        warn.textContent = `📡 ${f.error} — this is not a finding about this person. `;
+        const retry = document.createElement('button');
+        retry.type = 'button';
+        retry.className = 'btn btn--ghost';
+        retry.textContent = '↻ Retry';
+        retry.addEventListener('click', () => {
+          retry.disabled = true;
+          load();
+        });
+        warn.appendChild(retry);
+        list.appendChild(warn);
+      }
+    } catch (err) {
+      head.textContent = `⚠️ ${err.message}`;
+    }
+  }
+
+  await load();
+
+  // The rep can always look someone up by hand instead.
+  appendSearchBox(detail, (p) => {
+    picked.innerHTML = '';
+    picked.appendChild(buildPhysicianBlock(p, ev));
+  });
+  detail.appendChild(picked);
+}
+
+/**
+ * The rep picked someone the master does not have.
+ *
+ * The choice is saved (so the next tick and the reminder follow it), and the
+ * notes come back with the save — same sections as a BIS brief, with "Data not
+ * available" wherever the registry had nothing, and the registry's extras
+ * tagged as extra.
+ */
+async function pickOutside(candidate, ev, picked) {
+  picked.innerHTML = '';
+
+  const status = document.createElement('p');
+  status.className = 'muted event__detail-intro';
+  status.textContent = `Remembering ${candidate.name || candidate.npi} for this meeting…`;
+  picked.appendChild(status);
+  picked.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+  let saved;
+  try {
+    saved = await saveMeetingChoice(ev, candidate.npi, candidate.externalSource);
+  } catch (err) {
+    status.textContent = `⚠️ ${err.message}`;
+    return;
+  }
+
+  // The rep's click is honoured either way; what changes is whether a brief
+  // exists to show them.
+  if (saved.notDoctor) {
+    status.textContent =
+      `Recorded ${saved.physician?.name || candidate.name} as this meeting's contact — ` +
+      'but no pre-meeting brief is produced for them.';
+    const box = document.createElement('section');
+    box.className = 'physician-block';
+    const body = document.createElement('div');
+    body.className = 'physician-analytics';
+    body.innerHTML = saved.html || '';
+    box.appendChild(body);
+    picked.appendChild(box);
+    return;
+  }
+
+  status.textContent =
+    `✔ ${saved.physician?.name || candidate.name} is now the physician for this meeting.` +
+    (saved.storedIn === 'sqlite'
+      ? ' (Kept on this server for now — run supabase/outside-physician-setup.sql to keep it in Supabase.)'
+      : '');
+
+  // In the master after all → the standard block, with everything it carries.
+  if (saved.inBis) {
+    picked.appendChild(buildPhysicianBlock(candidate, ev));
+    return;
+  }
+
+  // The same block a BIS physician gets — notes, "email me this briefing" and
+  // all — with the brief that was just assembled injected into it.
+  picked.appendChild(
+    buildPhysicianBlock(
+      { ...candidate, ...(saved.physician || {}) },
+      ev,
+      { briefHtml: saved.html, outside: true, source: candidate.externalSource }
+    )
+  );
+}
+
+/**
+ * What the expanded meeting shows, in the ladder's own order: an exact email
+ * match, then a name the master resolved to exactly one physician, then a
+ * shortlist to pick from, then the gate's "this is a normal meeting", then the
+ * old no-match path (external lookup + search).
+ */
 function buildDetail(detail, ev) {
   detail.innerHTML = '';
+
   const matched = matchedPhysiciansOf(ev);
   if (matched.length) {
     for (const p of matched) detail.appendChild(buildPhysicianBlock(p, ev));
-  } else {
-    buildNoMatch(detail, ev);
+    return;
   }
+
+  const m = ev.match;
+
+  if (m && m.status === 'matched' && (m.physicians || []).length) {
+    // Say HOW this person was identified. A name match is weaker evidence than
+    // an email match, and a choice the rep made is stronger than both — they
+    // are entitled to know which one they are looking at before acting on it.
+    const via = document.createElement('p');
+    via.className = 'muted event__detail-intro';
+
+    if (m.via === 'rep-choice') {
+      const who = m.physicians[0];
+      via.textContent = `✔ You picked ${who.name || who.npi} for this meeting. `;
+
+      // The choice has to be undoable, or a mis-click is permanent: clearing it
+      // puts the meeting back on the ladder and re-renders whatever it says.
+      const change = document.createElement('button');
+      change.type = 'button';
+      change.className = 'btn btn--ghost';
+      change.textContent = 'Change';
+      change.addEventListener('click', async () => {
+        change.disabled = true;
+        change.textContent = 'Clearing…';
+        try {
+          await saveMeetingChoice(ev, null);
+          await refreshMatch(ev, detail);
+        } catch (err) {
+          via.textContent = `⚠️ ${err.message} `;
+          change.disabled = false;
+          change.textContent = 'Change';
+        }
+      });
+      via.appendChild(change);
+    } else {
+      const names = m.names || [];
+      const named = names.map((n) => `“${n.name}” (${n.source})`).join(', ');
+      via.textContent =
+        `Matched by name: ${named} — ` +
+        (names.length > 1
+          ? 'each resolves to exactly one physician in the BIS directory. '
+          : 'exactly one physician in the BIS directory. ') +
+        'No attendee email on this meeting is in the directory.';
+    }
+    detail.appendChild(via);
+
+    for (const p of m.physicians) detail.appendChild(buildPhysicianBlock(p, ev));
+    return;
+  }
+
+  if (m && m.status === 'choose') {
+    buildChoose(detail, ev);
+    return;
+  }
+
+  // Gate open, name read, and the master has nobody — the public registries are
+  // the next rung, and they are asked here rather than on page load.
+  if (m && (m.status === 'needs_external' || m.status === 'partial_name')) {
+    buildOutside(detail, ev);
+    return;
+  }
+
+  // A normal meeting: nothing is shown, because nothing was looked up. The
+  // card does not even open (see lookupHint) — this is the belt to that
+  // braces, so a stale render cannot put intelligence on a meeting the gate
+  // refused. "Dr" in the title, or the physician as an attendee, is what asks
+  // the question. (`no_name` is NOT here: that gate passed, and a title match
+  // the master found is still the answer to show.)
+  if (m && m.status === 'gate_blocked') return;
+
+  buildNoMatch(detail, ev);
 }
 
 // ── Event list ───────────────────────────────────────────────────────────────
@@ -909,7 +1613,16 @@ function renderEvents(events) {
       join.hidden = false;
     }
 
-    node.querySelector('.event__toggle').textContent = lookupHint(ev);
+    // Nothing behind this card — a normal meeting the gate refused, or one the
+    // meeting names nobody on. It stays a plain calendar row: no hint, no
+    // pointer, and clicking it opens nothing.
+    const hint = lookupHint(ev);
+    const toggle = node.querySelector('.event__toggle');
+    if (hint) toggle.textContent = hint;
+    else {
+      toggle.hidden = true;
+      li.classList.add('event--plain');
+    }
 
     // Wire the whole card as an accordion. Built lazily on first open so the
     // day view stays fast even with many meetings.
@@ -936,15 +1649,17 @@ function renderEvents(events) {
       }
     }
 
-    li.addEventListener('click', (e) => {
-      // Ignore clicks on real controls and anything inside the open detail
-      // region — only "empty" header clicks toggle the card.
-      if (e.target.closest('a, button, input, textarea, select, .event__detail')) return;
-      if (li.classList.contains('event--open')) card.collapse();
-      else expand();
-    });
+    if (hint) {
+      li.addEventListener('click', (e) => {
+        // Ignore clicks on real controls and anything inside the open detail
+        // region — only "empty" header clicks toggle the card.
+        if (e.target.closest('a, button, input, textarea, select, .event__detail')) return;
+        if (li.classList.contains('event--open')) card.collapse();
+        else expand();
+      });
+      cards.push(card);
+    }
 
-    cards.push(card);
     list.appendChild(node);
   }
 
@@ -1033,8 +1748,8 @@ async function init() {
   document.getElementById('accountName').textContent = me.user?.name || '';
   document.getElementById('accountEmail').textContent = me.user?.email || '';
   account.hidden = false;
-  document.getElementById('emailSheetBtn').hidden = false;
-  document.getElementById('leadsBtn').hidden = false;
+  document.getElementById('emailSheetBtn').hidden = !TOPBAR_TOOLS.emailSheet;
+  document.getElementById('leadsBtn').hidden = !TOPBAR_TOOLS.leads;
 
   // Reveal the date filter, defaulted to today.
   document.getElementById('dateFilter').hidden = false;

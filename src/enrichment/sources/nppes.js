@@ -122,13 +122,15 @@ function rejectedByApi(body, label) {
 /**
  * Search individual providers (NPI-1).
  *
- * NPPES requires at least one meaningful criterion; a bare `state` is rejected,
- * so callers must supply a last name (which is exactly what the email
- * local-part heuristics in rematch.js produce).
+ * NPPES needs at least one NAME — a bare `state` is rejected — but EITHER half
+ * will do: `first_name=KATIE&state=CA` returns results (verified 2026-09-01),
+ * which is what makes a meeting that only says "Dr Katie" searchable at all.
+ * A last name is still much better: it is the field the registry indexes, and a
+ * first name alone returns strangers who merely share it.
  *
  * @param {object} q
- * @param {string} q.lastName    required
- * @param {string} [q.firstName] may be a single initial — NPPES matches prefixes
+ * @param {string} [q.lastName]  either this or firstName is required
+ * @param {string} [q.firstName] may be a single initial — see below
  * @param {string} [q.state]     2-letter code
  * @param {string} [q.city]
  * @param {number} [q.limit=20]
@@ -136,19 +138,20 @@ function rejectedByApi(body, label) {
  */
 async function searchIndividuals(q = {}) {
   const lastName = (q.lastName || '').trim();
-  if (lastName.length < 2) return [];
+  const firstName = (q.firstName || '').trim();
 
   // NPPES rejects a one-character wildcard ("Wildcards require at least two
   // leading characters", verified 2026-08-18), and a bare initial is not a
   // valid exact first name either. So an initial is NOT sent to the API — the
   // caller keeps it as a hint and ranks the returned surname matches on it.
-  const firstName = (q.firstName || '').trim();
+  const sendLastName = lastName.length >= 2 ? lastName : null;
   const sendFirstName = firstName.length >= 2 ? firstName : null;
+  if (!sendLastName && !sendFirstName) return [];
 
   const url = buildUrl(API, {
     version: VERSION,
     enumeration_type: 'NPI-1',
-    last_name: lastName,
+    last_name: sendLastName,
     first_name: sendFirstName,
     state: q.state || null,
     city: q.city || null,
@@ -158,15 +161,17 @@ async function searchIndividuals(q = {}) {
   const res = await getJson(url, { label: 'nppes', retryIfEmpty: isEmptyResult });
   if (!res.ok || !res.body || rejectedByApi(res.body, 'nppes')) return [];
 
-  // NPPES surname search is fuzzy — a `last_name=Shaheen` query genuinely
-  // returns people called Williams and Decker (verified 2026-08-18), presumably
-  // via other-name and authorized-official fields. Left in, those become
-  // confident-looking wrong answers, so the surname is enforced here.
-  const wanted = lastName.toLowerCase();
+  // NPPES name search is fuzzy — a `last_name=Shaheen` query genuinely returns
+  // people called Williams and Decker (verified 2026-08-18), presumably via
+  // other-name and authorized-official fields. Left in, those become
+  // confident-looking wrong answers, so whichever half we searched on is
+  // enforced here.
+  const field = sendLastName ? 'lastName' : 'firstName';
+  const wanted = (sendLastName || sendFirstName).toLowerCase();
   return (res.body.results || [])
     .map(normalizeIndividual)
     .filter((r) => {
-      const got = (r.lastName || '').toLowerCase();
+      const got = (r[field] || '').toLowerCase();
       if (!got) return false;
       // Tolerate hyphenated / married-name variants in either direction.
       return got === wanted || got.startsWith(wanted) || wanted.startsWith(got);

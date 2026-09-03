@@ -15,6 +15,13 @@ const dynamics = require('../dynamics');
 const leadMatch = require('../lead-match');
 const enrichment = require('../enrichment');
 const meetingContext = require('../enrichment/context');
+const meetingMatch = require('../meeting-match');
+const outsideStore = require('../outside-physician-store');
+const outsideSources = require('../outside-sources');
+const outsideScore = require('../outside-sources/score');
+const outsideTaxonomy = require('../outside-sources/taxonomy');
+const outsideProfile = require('../outside-sources/profile');
+const resolveOutside = require('../outside-sources/resolve');
 const verify = require('../enrichment/verify');
 
 const router = express.Router();
@@ -38,6 +45,41 @@ function ownerId(req) {
 }
 
 // ── Email-intelligence platform: CRM activities + ingested emails ───────────
+
+/**
+ * Who a /physicians/:npi route is about — the master's row, or an outside NPI.
+ *
+ * Notes and briefs used to 404 for anyone the master does not hold, which meant
+ * the rep could look a physician up in the registries, read their volumes, and
+ * then not be able to write a single note about them. Notes are keyed by NPI and
+ * an outside physician has one, so the only real question is whether the id is
+ * genuine: the NPI CHECK DIGIT answers that (see meetingMatch.isValidNpi), which
+ * keeps the store from filling up with typos and phone numbers.
+ *
+ * The name comes from whatever the rep already confirmed for a meeting
+ * (outside_physician_app_meeting), so an emailed brief says "Nicholas Shaheen"
+ * rather than "NPI 1467521757".
+ *
+ * @returns {Promise<{npi: string, physician: object|null, name: string, inBis: boolean}|null>}
+ */
+async function physicianOrOutside(req, npiParam) {
+  const npi = String(npiParam || '').trim();
+  const physician = physicians.getByNpi(npi);
+  if (physician) {
+    return { npi: physician.npi, physician, name: physician.name || `NPI ${physician.npi}`, inBis: true };
+  }
+  if (!meetingMatch.isValidNpi(npi)) return null;
+
+  let name = `NPI ${npi}`;
+  try {
+    const recent = await outsideStore.listRecent(ownerId(req), 200);
+    const seen = recent.find((r) => r.npi === npi && r.name);
+    if (seen) name = seen.name;
+  } catch {
+    /* the name is a nicety; the NPI is the identity */
+  }
+  return { npi, physician: null, name, inBis: false };
+}
 
 /**
  * GET /api/activities — the signed-in salesperson's synced CRM activities
@@ -136,6 +178,25 @@ async function dayHandler(req, res, next) {
     // the UI can show the physician's full profile inline — plus the
     // organizer's latest meeting note for that physician (the "last call" hint).
     const organizer = organizerEmail(req);
+
+    // What has already been DECIDED for these meetings — the latest record per
+    // meeting, one query for the whole day. A physician the rep confirmed
+    // outranks every automatic guess below, and is why a shortlist is asked
+    // once rather than on every page load.
+    let decided = new Map();
+    if (outsideStore.enabled) {
+      try {
+        decided = await outsideStore.latestForEvents(
+          ownerId(req),
+          data.events.map((e) => e.id)
+        );
+      } catch (err) {
+        // No decision history is a worse day view, not a broken one — and a
+        // missing table is a setup step, not an error worth 500-ing over.
+        console.warn('[api] meeting decisions unavailable:', err.message);
+      }
+    }
+
     data.events = await Promise.all(
       data.events.map(async (ev) => {
         // Only ATTENDEES are matched against the directory — never the person
@@ -159,7 +220,38 @@ async function dayHandler(req, res, next) {
         // chips compete with the confirmed physician (and save the AI call).
         const attendeeNpis = new Set(attendees.map((a) => a.physician?.npi).filter(Boolean));
         if (attendeeNpis.size) {
-          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null };
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match: null };
+        }
+
+        // No email match — run the rep's ladder (src/meeting-match.js) BEFORE
+        // any title analysis, because it decides whether a name path is even
+        // allowed: the title must say "Dr"/"Doctor", and then the name has to
+        // be in the master. Its answer is what the UI renders.
+        // Only a decision the REP made pins the meeting; an automatic record is
+        // just history, and must not stop the ladder re-deriving (and improving)
+        // its own answer.
+        const decision = decided.get(String(ev.id)) || null;
+        const match = meetingMatch.matchMeeting(ev, {
+          selfEmail: organizer,
+          chosenNpi: decision?.decidedBy === 'user' ? decision.npi : null,
+        });
+
+        // Resolved by name, or narrowed to a shortlist the rep picks from:
+        // either way the person is IN the master, so title chips and external
+        // lookups would only compete with the answer we already have.
+        if (match.status === 'matched' || match.status === 'choose') {
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match };
+        }
+
+        // The gate said no: the title never calls anyone a doctor. Person
+        // chips from the title are exactly what the gate withholds, so they
+        // are not computed at all (nor is the analysis that produces them).
+        // Nothing else is looked up either — an attendee's address used to be
+        // treated as its own path around the gate, and it is not one: an
+        // address is not a name, so anything built from it was a guess. The
+        // panel renders nothing for this meeting at all.
+        if (match.status === 'gate_blocked') {
+          return { ...ev, attendees, titleMatches: [], titlePeople: [], entityAnalysis: null, match };
         }
 
         // No email match — fall back to entity analysis over the WHOLE event
@@ -190,7 +282,7 @@ async function dayHandler(req, res, next) {
             return !matchedNames.some((n) => tokens.every((t) => n.includes(t)));
           });
 
-        return { ...ev, attendees, titleMatches, titlePeople, entityAnalysis };
+        return { ...ev, attendees, titleMatches, titlePeople, entityAnalysis, match };
       })
     );
 
@@ -301,9 +393,13 @@ router.get('/physicians/:npi/brief', requireAuth, async (req, res, next) => {
  */
 router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
-    res.json({ npi: physician.npi, notes: await callNotes.getNotes(physician.npi, organizerEmail(req)) });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
+    res.json({
+      npi: who.npi,
+      inBis: who.inBis,
+      notes: await callNotes.getNotes(who.npi, organizerEmail(req)),
+    });
   } catch (err) {
     next(err);
   }
@@ -316,8 +412,8 @@ router.get('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  */
 router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
 
     const { notes, eventId, meetingDate } = req.body || {};
     if (typeof notes !== 'string' || notes.trim() === '') {
@@ -328,7 +424,7 @@ router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
     }
 
     const note = await callNotes.addNote({
-      npi: physician.npi,
+      npi: who.npi,
       organizerEmail: organizerEmail(req),
       eventId: typeof eventId === 'string' ? eventId : null,
       meetingDate: meetingDate || null,
@@ -349,8 +445,8 @@ router.post('/physicians/:npi/notes', requireAuth, async (req, res, next) => {
  */
 router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next) => {
   try {
-    const physician = physicians.getByNpi(req.params.npi);
-    if (!physician) return res.status(404).json({ error: 'physician_not_found' });
+    const who = await physicianOrOutside(req, req.params.npi);
+    if (!who) return res.status(404).json({ error: 'physician_not_found' });
 
     const to = organizerEmail(req);
     if (!to) return res.status(400).json({ error: 'bad_request', message: 'No organizer email on session.' });
@@ -358,21 +454,58 @@ router.post('/physicians/:npi/send-briefing', requireAuth, async (req, res, next
     const token = await auth.getAccessToken(req);
     if (!token) return res.status(401).json({ error: 'unauthenticated' });
 
-    const { eventTitle, eventStart } = req.body || {};
+    const { eventTitle, eventStart, source } = req.body || {};
+    const event = {
+      title: typeof eventTitle === 'string' ? eventTitle : undefined,
+      start: typeof eventStart === 'string' ? eventStart : undefined,
+    };
 
+    // Not in the master → the brief is assembled from the public sources at
+    // send time rather than trusted from the browser, and it is the SAME render
+    // the panel showed, so the email and the screen cannot disagree.
+    if (!who.inBis) {
+      const profile = await outsideProfile(who.npi, typeof source === 'string' ? source : undefined);
+      if (!profile) {
+        return res.status(502).json({
+          error: 'source_unreachable',
+          message: 'No public source could describe this NPI just now, so nothing was emailed.',
+        });
+      }
+      const sentTo = await graph.sendOutsideBriefing(token, {
+        toEmail: to,
+        name: profile.record.name || who.name,
+        html: graph.outsideBriefHtml({
+          record: profile.record,
+          extra: profile.extra,
+          cms: profile.cms,
+          agreement: profile.agreement,
+          sourceName: profile.sourceName,
+          sourceUrl: profile.sourceUrl,
+        }),
+        notes: await callNotes.getNotes(who.npi, to),
+        event,
+      });
+      await crm.audit({
+        actor: 'user',
+        action: 'brief.emailed',
+        entityType: 'outside_physician',
+        entityId: who.npi,
+        details: { to: sentTo, inBis: false, source: source || 'nppes', event: event.title || null },
+      });
+      return res.json({ sent: true, to: sentTo, inBis: false });
+    }
+
+    const physician = who.physician;
     await graph.sendPhysicianBriefing(token, {
       toEmail: to,
       physician,
       notes: await callNotes.getNotes(physician.npi, to),
       analytics: await analytics.getLabelledAnalytics(physician.npi),
       contact: await contactsStore.getContact(physician.npi),
-      event: {
-        title: typeof eventTitle === 'string' ? eventTitle : undefined,
-        start: typeof eventStart === 'string' ? eventStart : undefined,
-      },
+      event,
     });
 
-    res.json({ sent: true, to });
+    res.json({ sent: true, to, inBis: true });
   } catch (err) {
     next(err);
   }
@@ -492,16 +625,315 @@ router.get('/email-intel', requireAuth, async (req, res, next) => {
 });
 
 /**
+ * GET /api/meetings/match?eventId=… — who is this meeting with?
+ *
+ * The cheap ladder only (src/meeting-match.js): attendee email in the master →
+ * the "Dr"/"Doctor" gate on the title → that name in the master. Nothing paid
+ * and nothing external runs here, so the UI can call it for any meeting.
+ *
+ * `status` tells the caller what to render:
+ *   matched         → `physicians` — show the brief(s)
+ *   choose          → `groups[].candidates` — the rep picks (≤ 5 each)
+ *   needs_external  → nobody in BIS; the registries are the next step
+ *   gate_blocked    → normal meeting; no lookup was run (title has no "Dr")
+ *   no_name         → gate passed but no readable full name
+ *
+ * The event is re-read from Graph rather than taken from the request, so a
+ * meeting the rep just edited is judged on its CURRENT title and attendees.
+ */
+router.get('/meetings/match', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.query.eventId === 'string' ? req.query.eventId.trim() : '';
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      // A deleted/moved event is a client mistake, not a server fault.
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    const result = meetingMatch.matchMeeting(event, { selfEmail: organizerEmail(req) });
+    res.json({
+      eventId,
+      title: event.title,
+      start: event.start,
+      timeZone: event.timeZone,
+      ...result,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * GET /api/meetings/outside?eventId=… — who this meeting could be with, from the
+ * public sources, when the BIS master has nobody.
+ *
+ * Deliberately NOT part of the day view: this leaves the building (NPPES today,
+ * whatever is registered tomorrow), so it runs when a rep opens the meeting, not
+ * for twelve meetings on page load.
+ *
+ * The NAME is not taken from the request. It is re-derived server-side from the
+ * current event through the same ladder — the "Dr"/"Doctor" gate, the organizer
+ * exclusion, the conservative title reader — because a client-supplied name
+ * would walk straight past all three.
+ *
+ * A candidate whose NPI turns out to be in bis_physicians is flagged `inBis`:
+ * the physician WAS in the master all along, under a name or address the meeting
+ * never carried, and that is the best outcome this endpoint can report.
+ */
+router.get('/meetings/outside', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.query.eventId === 'string' ? req.query.eventId.trim() : '';
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      // Read the event back rather than trusting a snapshot: a meeting the rep
+      // has just edited is only current in Graph.
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    const answer = await resolveOutside(event, { selfEmail: organizerEmail(req) });
+
+    // `primary`, `profile` and `match` are how a CALLER acts on the answer (the
+    // ingest tick injects the brief with them); the browser only renders it.
+    const { primary, profile, match, ...payload } = answer;
+    res.json({ ...payload, eventId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * POST /api/meetings/choose — remember which physician this meeting is with.
+ * Body: { eventId, npi }   ·   npi: null clears the choice
+ *
+ * The shortlist asks a question only the rep can answer; this is where the
+ * answer is kept — as a new row in app_meeting_physician, stamped with the rep
+ * and the moment, so the history survives a correction. app_activities is then
+ * pointed at the same physician through the column it already has, so the
+ * reminder brief and reply→note linking follow the choice with no change of
+ * their own.
+ *
+ * Until supabase/outside-physician-setup.sql is run, the store keeps the row in
+ * a local SQLite file instead and `storedIn` says so, so the whole flow can be
+ * tested before the table exists.
+ */
+router.post('/meetings/choose', requireAuth, async (req, res, next) => {
+  try {
+    const eventId = typeof req.body?.eventId === 'string' ? req.body.eventId.trim() : '';
+    const rawNpi = req.body?.npi;
+    if (!eventId) {
+      return res.status(400).json({ error: 'bad_request', message: 'eventId is required.' });
+    }
+    const clearing = rawNpi === null || rawNpi === undefined || rawNpi === '';
+    const npi = clearing ? null : String(rawNpi).trim();
+    if (!clearing && !/^\d{10}$/.test(npi)) {
+      return res.status(400).json({ error: 'bad_request', message: 'npi must be 10 digits, or null to clear.' });
+    }
+    if (!crm.enabled) {
+      return res.status(503).json({
+        error: 'unavailable',
+        message: 'Supabase is not configured, so the choice cannot be remembered.',
+      });
+    }
+
+    // In the master? Then the brief is the standard one.
+    const physician = npi ? physicians.getByNpi(npi) : null;
+
+    // Not in the master — the NPI must then belong to a registered source, and
+    // it is re-fetched FROM that source rather than taken from the request: the
+    // browser is not allowed to decide what a physician's details are.
+    const sourceId = typeof req.body?.source === 'string' ? req.body.source.trim() : '';
+    let outside = null;
+    let profile = null;
+    if (npi && !physician) {
+      const src = sourceId ? outsideSources.byId(sourceId) : null;
+      if (!src) {
+        return res.status(400).json({
+          error: 'bad_request',
+          message: `NPI ${npi} is not in the BIS directory. Pass \`source\` (one of: ` +
+            `${outsideSources.list().map((x) => x.id).join(', ')}) to record an outside physician.`,
+        });
+      }
+      try {
+        // Identity from the source the rep picked from, plus CMS by the same
+        // NPI — the same assembly the outside endpoint uses, so the notes the
+        // rep confirmed are the notes they were shown.
+        profile = await outsideProfile(npi, src.id);
+      } catch (err) {
+        return res.status(502).json({
+          error: 'source_unreachable',
+          message: `${src.name} could not be reached, so this choice was not recorded. Try again.`,
+          detail: err.message,
+        });
+      }
+      if (!profile) {
+        return res.status(400).json({
+          error: 'bad_request',
+          message: `${src.name} has no provider with NPI ${npi}.`,
+        });
+      }
+      outside = { ...profile.record, extra: profile.extra };
+    }
+
+    const token = await auth.getAccessToken(req);
+    let event;
+    try {
+      event = await graph.getEventById(token, eventId);
+    } catch (err) {
+      if (err.statusCode === 404 || err.code === 'ErrorItemNotFound') {
+        return res.status(404).json({ error: 'not_found', message: 'That meeting no longer exists.' });
+      }
+      throw err;
+    }
+
+    // Append a new row rather than editing one: the correction history ("A on
+    // Monday, B on Tuesday") is the point, and the latest row is what counts.
+    // The store keeps this in SQLite until the Supabase table exists, so the
+    // flow is testable before anybody runs the setup SQL.
+    // The mirror fields, from whichever side has them. `extra` is left out on
+    // purpose: it is shown in the notes, not stored (a separate decision).
+    const mirror = physician
+      ? outsideStore.mirrorFromPhysician(physician)
+      : outside
+        ? { ...outside, extra: undefined, inBis: false }
+        : {};
+    delete mirror.extra;
+
+    const who = physician?.name || outside?.name || npi;
+
+    // Is this somebody a brief is produced for? Decided BEFORE the row is
+    // written, because the STATUS is what the reminder engine and the
+    // meeting-body injection read: recording a non-doctor as "briefed" would
+    // have them mail a brief for a social worker half an hour later.
+    const notDoctor = Boolean(outside) && profile?.providerKind?.kind === 'not_doctor';
+
+    const record = await outsideStore.record({
+      ownerUserId: ownerId(req),
+      ownerEmail: organizerEmail(req),
+      event,
+      ...mirror,
+      npi,
+      source: 'user',
+      decidedBy: 'user',
+      confidence: 100,
+      status: !npi ? 'needs_confirm' : notDoctor ? 'not_doctor' : 'briefed',
+      reason: !npi
+        ? `Choice cleared by ${organizerEmail(req) || 'the rep'}; the meeting is back on the ladder.`
+        : notDoctor
+          ? `${who} confirmed by ${organizerEmail(req) || 'the rep'}, but ${profile.providerKind.reason} No brief is produced.`
+          : `${who} confirmed by ${organizerEmail(req) || 'the rep'}` +
+            (outside ? ` (from ${outsideSources.byId(sourceId)?.name || sourceId}; not in BIS).` : '.'),
+    });
+
+    // Keep the meeting row pointing at the same physician, using the column it
+    // already has, so the reminder brief and reply→note linking follow along.
+    try {
+      if (crm.enabled) await crm.setActivityPhysician(ownerId(req), event, npi);
+    } catch (err) {
+      console.warn('[api] activity physician update failed:', err.message);
+    }
+
+    await crm.audit({
+      actor: 'user',
+      action: npi ? 'meeting.physician_chosen' : 'meeting.physician_choice_cleared',
+      entityType: 'outside_physician',
+      entityId: record?.id ? String(record.id) : null,
+      details: { eventId, npi, title: event.title, by: organizerEmail(req) },
+    });
+
+    // A rep can still pick somebody the registry says is not a doctor (the panel
+    // lists them by name). Their click is honoured and recorded — but a brief is
+    // not invented for them; they get the same statement of what they are.
+    if (notDoctor) {
+      return res.json({
+        saved: true,
+        eventId,
+        cleared: false,
+        storedIn: outsideStore.backendName(),
+        inBis: false,
+        notDoctor: true,
+        physician: { npi: who.npi, name: profile.record.name, specialty: profile.providerKind.label },
+        html: graph.notDoctorHtml({
+          name: profile.record.name,
+          npi: who.npi,
+          kind: profile.providerKind,
+          sourceName: profile.sourceName,
+          sourceUrl: profile.sourceUrl,
+        }),
+      });
+    }
+
+    // An outside physician has no /api/physicians/:npi/brief to fetch, so the
+    // notes come back with the save — same sections as the BIS brief, with
+    // "Data not available" wherever the source had nothing.
+    const html = outside
+      ? graph.outsideBriefHtml({
+          record,
+          extra: outside.extra || {},
+          // The CPT lines are rendered, never stored — see the store's comment.
+          cms: profile?.cms || null,
+          agreement: profile?.agreement || null,
+          // The rep confirmed this person by hand; nothing is being estimated.
+          confidence: 100,
+          matchReasons: ['confirmed by you'],
+          sourceName: profile?.sourceName || outsideSources.byId(sourceId)?.name || sourceId,
+          sourceUrl:
+            profile?.sourceUrl || outside.externalSourceUrl || outsideSources.byId(sourceId)?.url || null,
+        })
+      : null;
+
+    res.json({
+      saved: true,
+      eventId,
+      cleared: !npi,
+      // 'sqlite' means the Supabase table has not been created yet — the choice
+      // is kept locally so it can be tested, and the UI says so.
+      storedIn: outsideStore.backendName(),
+      inBis: Boolean(physician),
+      physician: physician
+        ? { npi: physician.npi, name: physician.name, specialty: physician.specialty || null }
+        : outside
+          ? { npi: outside.npi, name: outside.name, specialty: outside.specialty || null }
+          : null,
+      html,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
  * GET /api/enrich?email=&name=&firstName=&lastName=&state=&city=&npi=&facility=
  *
  * Identify someone who is NOT in the BIS directory and build a
  * provenance-tagged profile for them — every field carrying the source it came
  * from (see docs/external-enrichment-agent.md).
  *
- * Free tiers (BIS + NPPES + CMS) always run. The paid web-identity tier runs
- * only when there is something to buy — no name supplied and a personal-looking
- * mailbox; pass `useWeb=never` to force it off or `useWeb=always` to force it
- * on. `context` passes the meeting title/description for disambiguation.
+ * Free tiers (BIS + NPPES + CMS) always run, and they need a NAME — supplied
+ * here by the rep or read off the meeting. A name is never derived from the
+ * address: `?email=` alone resolves the master, the domain and nothing else.
+ * The paid web-identity tier is the only thing that can turn an address into a
+ * person, so it runs ONLY on an explicit `useWeb=always`. `context` passes the
+ * meeting title/description for disambiguation.
  *
  * `status` tells the caller what happened:
  *   in_bis            → already in bis_physicians, use the normal brief
@@ -698,3 +1130,6 @@ router.get('/leads/match', requireAuth, async (req, res, next) => {
 });
 
 module.exports = router;
+// Exported for tests: the rule that decides whether a /physicians/:npi route may
+// act on an NPI the master does not hold.
+module.exports.physicianOrOutside = physicianOrOutside;
