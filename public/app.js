@@ -727,7 +727,10 @@ function renderNoBisMatch(list, query, onPick) {
  * one thing we already have here, so it would buy nothing.
  */
 async function enrichNameInto(box, name, onPick) {
-  box.innerHTML = '<p class="muted">Checking public registries\u2026</p>';
+  box.innerHTML = '';
+  const wait = document.createElement('p');
+  wait.className = 'muted';
+  box.appendChild(setWorking(wait, 'Checking public registries'));
 
   const params = new URLSearchParams({ name, useWeb: 'never' });
   let data;
@@ -801,7 +804,10 @@ function meetingContextOf(ev) {
  * own — so it is not offered here.
  */
 async function enrichAttendeeInto(box, person, ev) {
-  box.innerHTML = '<p class="muted">Checking public registries…</p>';
+  box.innerHTML = '';
+  const wait = document.createElement('p');
+  wait.className = 'muted';
+  box.appendChild(setWorking(wait, 'Checking public registries'));
 
   const params = new URLSearchParams({
     name: person.name,
@@ -919,7 +925,10 @@ function buildNoMatch(detail, ev, { intro: introText } = {}) {
   }
 
   // Free-text search — start blank, let the rep type who they're looking for.
-  appendSearchBox(detail, pick);
+  // The one exception is a meeting whose TITLE already matched physicians: the
+  // chips above are an answer, so the box folds behind its link like everywhere
+  // else that has one.
+  appendSearchBox(detail, pick, { collapsed: Boolean(ev.titleMatches && ev.titleMatches.length) });
 
   detail.appendChild(pickedWrap);
 }
@@ -966,8 +975,54 @@ async function refreshMatch(ev, detail) {
   buildDetail(detail, ev);
 }
 
-/** A free-text physician search, wired to `onPick`. Used by more than one path. */
-function appendSearchBox(detail, onPick) {
+/**
+ * Three dots that actually move, for a line the rep is waiting on.
+ *
+ * A registry lookup takes one to five seconds, and "Checking public
+ * registries…" with a static ellipsis looks identical to a line that has
+ * already finished — so the rep sits waiting for something that appears to
+ * have stopped. Each dot gets its own colour and delay in styles.css.
+ *
+ * aria-hidden because it says nothing a screen reader needs: the sentence
+ * before it already says what is happening.
+ */
+function loadingDots() {
+  const wrap = document.createElement('span');
+  wrap.className = 'dots';
+  wrap.setAttribute('aria-hidden', 'true');
+  for (let i = 0; i < 3; i += 1) {
+    const dot = document.createElement('span');
+    dot.className = 'dots__d';
+    dot.textContent = '.';
+    wrap.appendChild(dot);
+  }
+  return wrap;
+}
+
+/**
+ * "We are working on it" in one element: the sentence, then the moving dots.
+ *
+ * `text` must NOT end in an ellipsis — the dots are the ellipsis, and two of
+ * them in a row is how the wait ends up reading as "…...".
+ */
+function setWorking(el, text) {
+  el.textContent = text;
+  el.appendChild(loadingDots());
+  return el;
+}
+
+/**
+ * A free-text physician search, wired to `onPick`. Used by more than one path.
+ *
+ * `collapsed` is the difference between the two situations this box lives in.
+ * When the ladder found NOTHING, typing a name is the only way forward and the
+ * box belongs on screen. When it found something — a shortlist, a best match,
+ * even a definite "this is not a physician" — the box was still sitting there
+ * under the answer, on every meeting, asking the rep to search for a physician
+ * the page had just named. So there it is folded behind one link: the escape
+ * hatch is kept, the permanent empty input is not.
+ */
+function appendSearchBox(detail, onPick, { collapsed = false } = {}) {
   const searchWrap = physSearchTpl.content.firstElementChild.cloneNode(true);
   const input = searchWrap.querySelector('.physician-inline__search');
   const results = searchWrap.querySelector('.physician-results');
@@ -977,7 +1032,21 @@ function appendSearchBox(detail, onPick) {
     const q = e.target.value;
     deb = setTimeout(() => searchPhysicians(q, results, onPick), 250);
   });
-  detail.appendChild(searchWrap);
+
+  if (!collapsed) {
+    detail.appendChild(searchWrap);
+    return;
+  }
+
+  const reveal = document.createElement('button');
+  reveal.type = 'button';
+  reveal.className = 'btn btn--ghost physician-inline__search-reveal';
+  reveal.textContent = '🔎 Look up a different physician';
+  reveal.addEventListener('click', () => {
+    reveal.replaceWith(searchWrap);
+    input.focus();
+  });
+  detail.appendChild(reveal);
 }
 
 /**
@@ -1070,8 +1139,11 @@ function buildChoose(detail, ev) {
     detail.appendChild(note);
   }
 
-  // Nothing above is binding: the rep can always search for someone else.
-  appendSearchBox(detail, pick);
+  // Nothing above is binding: the rep can always search for someone else — but
+  // matches ARE on screen here, so that stays one click away rather than a
+  // permanent empty input under the answer.
+  const matched = (m.groups || []).some((g) => (g.candidates || []).length);
+  appendSearchBox(detail, pick, { collapsed: matched });
   detail.appendChild(pickedWrap);
 }
 
@@ -1168,8 +1240,7 @@ function candidateRow(c, threshold, onPick) {
 async function buildOutside(detail, ev) {
   const head = document.createElement('p');
   head.className = 'muted event__detail-intro';
-  head.textContent =
-    'Nobody on this meeting is in the BIS directory — checking the public registries…';
+  setWorking(head, 'Nobody on this meeting is in the BIS directory — checking the public registries');
   detail.appendChild(head);
 
   const list = document.createElement('div');
@@ -1177,6 +1248,11 @@ async function buildOutside(detail, ev) {
 
   const picked = document.createElement('div');
   picked.className = 'event__detail-picked';
+
+  // Did the registries end up naming anybody? A shortlist, a best match, or a
+  // definite "not a physician" all count — the search box is only the way
+  // forward when none of that happened (an outage, or nobody by that name).
+  let answered = false;
 
   async function load() {
     list.innerHTML = '';
@@ -1201,6 +1277,7 @@ async function buildOutside(detail, ev) {
 
       const rawGroups = data.groups || [];
       const groups = rawGroups.filter((g) => (g.candidates || []).length);
+      answered = Boolean(data.notDoctor) || groups.length > 0;
       const failed = data.failures || [];
       const threshold = data.threshold || 70;
       // Everyone the registries returned, including the ones held back — the
@@ -1367,11 +1444,16 @@ async function buildOutside(detail, ev) {
 
   await load();
 
-  // The rep can always look someone up by hand instead.
-  appendSearchBox(detail, (p) => {
-    picked.innerHTML = '';
-    picked.appendChild(buildPhysicianBlock(p, ev));
-  });
+  // The rep can always look someone up by hand instead — on screen when the
+  // registries named nobody, folded away when they did.
+  appendSearchBox(
+    detail,
+    (p) => {
+      picked.innerHTML = '';
+      picked.appendChild(buildPhysicianBlock(p, ev));
+    },
+    { collapsed: answered }
+  );
   detail.appendChild(picked);
 }
 

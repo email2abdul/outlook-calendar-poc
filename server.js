@@ -98,13 +98,29 @@ if (require.main === module) {
     console.log(`  Environment: ${config.nodeEnv}`);
     console.log(`  Sign in:     http://localhost:${config.port}/auth/login\n`);
 
-    // Pre-meeting reminder engine — needs a long-lived process, so it runs
-    // here (not on serverless; there it would be a cron-triggered endpoint).
-    require('./src/reminders').start();
+    const startEngines = () => {
+      // Pre-meeting reminder engine — needs a long-lived process, so it runs
+      // here (not on serverless; there it would be a cron-triggered endpoint).
+      require('./src/reminders').start();
 
-    // Email-intelligence ingestion — syncs calendar→CRM activities and pulls
-    // Outlook reply emails (webhook on deploy, poll on localhost).
-    require('./src/email-ingest').start();
+      // Email-intelligence ingestion — syncs calendar→CRM activities and pulls
+      // Outlook reply emails (webhook on deploy, poll on localhost).
+      require('./src/email-ingest').start();
+    };
+
+    // On a network that blocks the public registries, they are reached through a
+    // local SOCKS tunnel (OUTSIDE_HTTP_PROXY). Make sure it is actually up
+    // BEFORE the engines start looking physicians up — a tunnel that died while
+    // the laptop slept used to turn every CMS lookup into a failure until
+    // somebody re-ran the ssh command by hand. On the deployed server, where no
+    // local proxy is configured, this resolves instantly and does nothing.
+    require('./src/enrichment/tunnel')
+      .ensure()
+      .then((t) => {
+        if (t.line) console.log(`  ${t.line}\n`);
+      })
+      .catch(() => {}) // ensure() does not throw; a boot must not depend on that
+      .finally(startEngines);
   });
 }
 
