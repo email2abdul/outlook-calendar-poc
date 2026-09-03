@@ -11,6 +11,7 @@ const authRoutes = require('./src/routes/auth.routes');
 const apiRoutes = require('./src/routes/api.routes');
 const embedRoutes = require('./src/routes/embed.routes');
 const addinRoutes = require('./src/routes/addin.routes');
+const relayRoutes = require('./src/routes/relay.routes');
 
 const app = express();
 
@@ -75,6 +76,10 @@ app.use('/embed', embedRoutes);
 // Outlook Add-in task pane (framed by Outlook; sets its own CSP). Static assets
 // under public/addin/ (taskpane.js, icons) are served by express.static below.
 app.use('/addin', addinRoutes);
+// Public registry relay (token-gated, no session) — a developer on a network
+// that blocks CMS/NPPES asks THIS host to fetch instead. Off unless RELAY_TOKEN
+// is set; see src/enrichment/relay.js.
+app.use('/relay', relayRoutes);
 
 // ── Static frontend
 app.use(express.static(path.join(__dirname, 'public')));
@@ -114,13 +119,23 @@ if (require.main === module) {
     // the laptop slept used to turn every CMS lookup into a failure until
     // somebody re-ran the ssh command by hand. On the deployed server, where no
     // local proxy is configured, this resolves instantly and does nothing.
-    require('./src/enrichment/tunnel')
-      .ensure()
-      .then((t) => {
-        if (t.line) console.log(`  ${t.line}\n`);
-      })
-      .catch(() => {}) // ensure() does not throw; a boot must not depend on that
-      .finally(startEngines);
+    //
+    // A machine given a relay (OUTSIDE_HTTP_RELAY) needs no tunnel at all: its
+    // requests leave from the relay host, so starting an ssh tunnel here would
+    // be work nothing uses.
+    const enrichmentRelay = require('./src/enrichment/relay');
+    if (enrichmentRelay.enabled()) {
+      console.log(`  [enrichment] ${enrichmentRelay.describe()} — no local tunnel needed\n`);
+      startEngines();
+    } else {
+      require('./src/enrichment/tunnel')
+        .ensure()
+        .then((t) => {
+          if (t.line) console.log(`  ${t.line}\n`);
+        })
+        .catch(() => {}) // ensure() does not throw; a boot must not depend on that
+        .finally(startEngines);
+    }
   });
 }
 
