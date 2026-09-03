@@ -8,21 +8,28 @@ const http = require('node:http');
 /**
  * Reach the public sources through a proxy — for the network that blocks them.
  *
- * This exists because of a measured fact rather than a preference. On the
- * developer's own Wi-Fi (2026-09-02):
+ * This exists because of a measured fact rather than a preference. The CDN in
+ * front of data.cms.gov refuses this developer's address outright — same URL,
+ * two places, 2026-09-03:
  *
- *   https://data.cms.gov/data.json                  → 200, 3 MB
- *   https://data.cms.gov/data-api/v1/dataset/…/data → HTTP/2 stream
- *                                                     INTERNAL_ERROR, instantly
+ *   from an Indian ISP (Jio, 47.31.80.104)   → 403 Access Denied (Akamai)
+ *   from the deployment box (US, Ashburn)    → 200
+ *   from the laptop THROUGH that box         → 200
  *
- * Same host, same Akamai edge, only the `/data-api/*` path — and `--http1.1`
- * hangs for 30s instead. Both edges, every dataset, the sibling `/data-viewer`
- * and `/data/stats` paths too, so it is a middlebox on the path and no DNS
- * change touches it. (`npiregistry.cms.hhs.gov` is a different problem on the
- * same network: the router's resolver SERVFAILs it while 1.1.1.1 answers.)
+ * Every path on the host, IPv4 and IPv6 alike, browser User-Agent or not: it
+ * is an IP/geo decision by the edge, not DNS, not the router, and not
+ * something a request header can talk its way past. (An earlier note here
+ * called it a middlebox on the path, on the strength of `/data.json` answering
+ * while `/data-api/*` had its HTTP/2 stream killed. That was wrong: the edge
+ * was denying both, one of them less politely.)
  *
- * An `ssh -D 1080 <host>` tunnel through the deployment box fixes both, and
- * that is what this module lets Node use:
+ * `npiregistry.cms.hhs.gov` is a DIFFERENT problem on the same network and
+ * needs no proxy at all: the router's resolver SERVFAILs the name, and with
+ * 1.1.1.1 (or any public resolver) the registry answers from India perfectly
+ * well — verified by bypassing the resolver and getting a 200.
+ *
+ * So the only thing that must travel out of the country is CMS, and an
+ * `ssh -D 1080 <host>` tunnel through the deployment box does it:
  *
  *   OUTSIDE_HTTP_PROXY=socks5://127.0.0.1:1080
  *
