@@ -80,9 +80,18 @@ const OTHER_GROUPINGS = {
 const NOT_DOCTOR_WORDS =
   /\b(?:assistant|aide|technician|technologist|coordinator|manager|navigator|social worker|counsel|therapist|therapy|nurse|nursing|midwife|doula|lactation|paramedic|emt|pharmac|dietit|nutrition|chiropract|optometr|optician|audiolog|acupunctur|massage|athletic trainer|psycholog|behavior|hygienist|denturist|case management|billing|clerk|transport|driver|agency|laboratory|supplier|student|resident|attendant|personal care)\w*/i;
 
-/** Words that name a doctor, once the negatives above are out of the way. */
+/**
+ * Words that name a doctor, once the negatives above are out of the way.
+ *
+ * The CMS billing dataset states a provider TYPE in its own vocabulary rather
+ * than a NUCC taxonomy, and it does not use the registry's words: "Family
+ * Practice" (not Family Medicine), "Podiatry" (not Podiatrist), "Pulmonary
+ * Disease" (not Pulmonology). Those are here for exactly that reason — a
+ * physician CMS names in its own words must not come out `unknown` (which
+ * still shows the brief, but says the app could not place them).
+ */
 const DOCTOR_WORDS =
-  /\b(?:physician|surgeon|surgery|surgical|hospitalist|dentist|podiatrist|anesthesiolog|cardiolog|dermatolog|endocrinolog|gastroenterolog|geriatric medicine|hematolog|internal medicine|nephrolog|neurolog|obstetric|oncolog|ophthalmolog|orthopaed|orthoped|otolaryngolog|patholog|pediatric|psychiatr|pulmonolog|radiolog|rheumatolog|urolog|family medicine|general practice|emergency medicine|preventive medicine|colon (?:&|and) rectal)\w*/i;
+  /\b(?:physician|surgeon|surgery|surgical|hospitalist|dentist|podiatr|anesthesiolog|cardiolog|dermatolog|endocrinolog|gastroenterolog|geriatric medicine|hematolog|internal medicine|nephrolog|neurolog|obstetric|oncolog|ophthalmolog|orthopaed|orthoped|otolaryngolog|patholog|pediatric|psychiatr|pulmonolog|pulmonary|radiolog|rheumatolog|urolog|family medicine|family practice|general practice|emergency medicine|preventive medicine|physical medicine|infectious disease|critical care|allerg|colon (?:&|and) rectal)\w*/i;
 
 /** The first two digits of a NUCC taxonomy code, or null. */
 function groupingOf(code) {

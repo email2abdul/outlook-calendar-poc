@@ -19,15 +19,38 @@
  * that genuinely has no record both surface as an empty result. So every
  * transport-level failure is also reported to ./health, which `enrich()` reads
  * back to label such a result a lookup failure rather than an absence.
+ *
+ * Two optional layers sit in front of the network, both off unless configured,
+ * and both there for the same reason — these registries are unreachable from
+ * some networks (./proxy.js has the measurements):
+ *
+ *   ./cassettes.js  a recorded answer is replayed from disk instead of asking
+ *   ./proxy.js      the request is tunnelled (ssh -D) instead of sent direct
  */
 
 const health = require('./health');
+const proxy = require('./proxy');
+const cassettes = require('./cassettes');
 
 const DEFAULT_TIMEOUT_MS = 20000;
 const DEFAULT_RETRIES = 2; // total attempts = retries + 1
 const USER_AGENT = 'outlook-calendar-poc/1.0 (BIS enrichment; +https://agentpoc.insightmonk.com)';
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Say once, on the first source request, that the sources are NOT going
+ * straight out — a replayed answer or a tunnelled one looks identical in a
+ * brief, and nobody should have to guess why a registry answered in 0ms or
+ * why it answered at all on a network that blocks it.
+ */
+let announced = false;
+function announceMode() {
+  if (announced) return;
+  announced = true;
+  const notes = [cassettes.describe(), proxy.describe()].filter(Boolean);
+  if (notes.length) console.log(`[enrichment] sources: ${notes.join(' · ')}`);
+}
 
 /**
  * Build a URL with query params. Values that are null/undefined/'' are skipped
@@ -42,6 +65,16 @@ function buildUrl(base, params = {}) {
     url.searchParams.set(key, String(value));
   }
   return url.toString();
+}
+
+/**
+ * One GET, however it has to travel: through the proxy when one is configured,
+ * otherwise on the global fetch. Returns only what getJson needs from either.
+ */
+async function send(url, { headers, timeoutMs, signal }) {
+  if (proxy.enabled()) return proxy.request(url, { headers, timeoutMs, signal });
+  const res = await fetch(url, { signal, headers });
+  return { ok: res.ok, status: res.status, text: await res.text() };
 }
 
 /**
@@ -68,6 +101,23 @@ async function getJson(url, opts = {}) {
     label = 'http',
   } = opts;
 
+  announceMode();
+
+  // ── Replay, before anything is sent ──────────────────────────────────────
+  const recorded = cassettes.enabled() ? cassettes.read(url, label) : null;
+  if (recorded) {
+    return { ok: true, status: recorded.status, body: recorded.body, error: null, kind: null, cached: true };
+  }
+  if (cassettes.offline()) {
+    // Loud on purpose: a missing recording is a gap in the recording, and
+    // silently going to a network that OUTSIDE_HTTP_OFFLINE says not to use
+    // would make an offline run mean nothing.
+    const error = `no recording for this URL (OUTSIDE_HTTP_OFFLINE=1) — re-record with OUTSIDE_HTTP_RECORD=1`;
+    console.warn(`[enrichment:${label}] ${error}\n  ${url}`);
+    health.record({ label, url, kind: 'offline', error });
+    return { ok: false, status: 0, body: null, error, kind: 'offline' };
+  }
+
   let emptyRetryUsed = false;
   let attempt = 0;
   let lastError = null;
@@ -78,11 +128,12 @@ async function getJson(url, opts = {}) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const res = await fetch(url, {
+      const res = await send(url, {
         signal: controller.signal,
+        timeoutMs,
         headers: { Accept: 'application/json', 'User-Agent': USER_AGENT },
       });
-      const text = await res.text();
+      const text = res.text;
 
       let body = null;
       try {
@@ -101,6 +152,8 @@ async function getJson(url, opts = {}) {
           return { ok: false, status: res.status, body, error: lastError, kind: lastKind };
         }
       } else if (body !== null) {
+        // Keep the answer for the next offline run, before any early return.
+        if (cassettes.recording()) cassettes.write(url, label, { status: res.status, body });
         if (retryIfEmpty && !emptyRetryUsed && retryIfEmpty(body)) {
           // Successful-but-empty: give the upstream one more chance before
           // treating "no results" as the truth.
@@ -141,4 +194,4 @@ async function getJson(url, opts = {}) {
   return { ok: false, status: 0, body: null, error: lastError, kind: lastKind };
 }
 
-module.exports = { getJson, buildUrl };
+module.exports = { getJson, buildUrl, send };

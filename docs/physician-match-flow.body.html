@@ -264,7 +264,7 @@
       <tr><td class="num">2</td><td>The physician the <strong>rep already confirmed</strong> for this meeting</td><td>free, 0 ms</td><td><span class="pill pill--pass">resolved</span></td></tr>
       <tr><td class="num">3</td><td>The gate: does the meeting say <strong>“Dr” / “Doctor”</strong>?</td><td>free, 0 ms</td><td>opens rung 4, or stops here</td></tr>
       <tr><td class="num">4</td><td>That <strong>name in the master</strong> (21,274 physicians, in memory)</td><td>free, 0 ms</td><td>one hit, a shortlist, or half a name</td></tr>
-      <tr><td class="num">5</td><td><strong>Public registries</strong> — NPPES by name, then CMS by NPI</td><td>network</td><td>scored candidates, best first</td></tr>
+      <tr><td class="num">5</td><td><strong>Public registries</strong> — CMS billing data by name first, then NPPES; CMS again by NPI for volumes</td><td>network</td><td>scored candidates, best first</td></tr>
     </tbody>
   </table>
   </div>

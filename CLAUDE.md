@@ -77,6 +77,13 @@ thinking). Used in: `ai-extractor.js` (reply→MOM), `intel-extractor.js` (email
   Inbox is the deferred Mail.ReadWrite create-in-inbox approach)
 - `REMINDER_POLL_SECONDS` (60) / `REMINDER_LEAD_MINUTES` (90)
 - `EMAIL_INTEL_DAYS` (10; bump to 30 later)
+- `OUTSIDE_HTTP_PROXY` / `OUTSIDE_HTTP_CACHE_DIR` + `OUTSIDE_HTTP_RECORD` / `OUTSIDE_HTTP_OFFLINE` —
+  dev-only escape hatches for a network that blocks the registries (`src/enrichment/proxy.js`,
+  `src/enrichment/cassettes.js`). Tunnel: `ssh -f -N -D 1080 ubuntu@<host>` +
+  `OUTSIDE_HTTP_PROXY=socks5://127.0.0.1:1080`. Record once, then run offline forever:
+  `OUTSIDE_HTTP_CACHE_DIR=data/cassettes OUTSIDE_HTTP_RECORD=1 … npm run demo:page`, then swap
+  `OUTSIDE_HTTP_RECORD` for `OUTSIDE_HTTP_OFFLINE=1`. Only 2xx JSON is recorded, an offline miss is an
+  outage (never "nobody found"), and recordings are gitignored. All off unless set.
 
 ## Email Intelligence Sheet (feature/old-email-read)
 
@@ -101,6 +108,11 @@ cards) + CSV export (`GET /api/email-intel`).
   web-identity tier only on an explicit `useWeb=always`. (`email2@gmail.com` → "e"+"mail" → NPPES
   surname MAIL → a clinical social worker briefed as the physician for "Meeting with Best friend".)
   A name comes from the rep, the meeting text, or an attendee's display name — nothing else.
+- **Outside BIS, a name is asked of CMS first, NPPES second** (`src/outside-sources/index.js` SOURCES
+  order; the first source that answers wins). A hit in CMS
+  `medicare-physician-other-practitioners-by-provider-and-service` means the physician actually bills
+  Medicare. CMS name-query rules, measured: filter on `Rndrng_Prvdr_Last_Org_Name`, first name as
+  `keyword` — **two `filter[…]` params hang the API** — rows grouped by NPI (327 rows = 46 people).
 - **The "Dr"/"Doctor" gate governs everything**, panel and background tick alike: `gate_blocked`
   means nothing is looked up, nothing is emailed or injected, and the meeting's card shows nothing
   at all (`.event--plain`, no toggle, no detail). An attendee address is not a path around it.

@@ -62,8 +62,15 @@ function classifyError(err) {
   return { kind: 'error', code, message };
 }
 
-/** Kinds that mean "no answer was obtained", as opposed to "the answer was no". */
-const BLIND_KINDS = new Set(['dns', 'network', 'timeout', 'tls', 'upstream']);
+/**
+ * Kinds that mean "no answer was obtained", as opposed to "the answer was no".
+ *
+ * `offline` is one of them: a replay run with no recording for a URL
+ * (OUTSIDE_HTTP_OFFLINE=1, see ./cassettes.js) asked nothing at all, and
+ * reading that as "this physician is not in the registry" is the exact
+ * mistake this ledger exists to prevent.
+ */
+const BLIND_KINDS = new Set(['dns', 'network', 'timeout', 'tls', 'upstream', 'offline']);
 
 /** Run `fn` with a fresh ledger. Returns whatever `fn` resolves to. */
 function run(fn) {
@@ -134,6 +141,8 @@ function describe(outage, sourceName) {
   const name = sourceName || outage.label;
   const where = outage.host ? ` for ${outage.host}` : '';
   switch (outage.kind) {
+    case 'offline':
+      return `${name} was not asked — no recorded answer for this request (OUTSIDE_HTTP_OFFLINE=1)`;
     case 'dns':
       return `${name} was unreachable — DNS lookup failed${where} (${outage.error})`;
     case 'timeout':

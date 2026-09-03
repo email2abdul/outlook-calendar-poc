@@ -1216,11 +1216,22 @@ async function buildOutside(detail, ev) {
       if (data.notDoctor) {
         // heading already set above
       } else if (groups.length) {
+        // Name the source(s) that actually ANSWERED, not every source there is.
+        // They are asked in order — CMS billing data, then NPPES — and CMS
+        // ends the search only on an exact match, so a shortlist may come from
+        // one or from both. Listing a source that was never asked is
+        // misleading in front of a rep reading its rows.
+        const ids = Array.isArray(data.answeredBy)
+          ? data.answeredBy
+          : [data.answeredBy].filter(Boolean);
+        const answered =
+          listNames(
+            ids.map((id) => (data.sources || []).find((x) => x.id === id)?.name).filter(Boolean)
+          ) || (data.sources || []).map((x) => x.name).join(', ');
         head.textContent = data.brief
           ? `Not in the BIS directory. Best match shown below at ${data.confidence}% confidence — ` +
             'anything less certain is listed as an option.'
-          : `Not in the BIS directory. ${(data.sources || []).map((x) => x.name).join(', ')} ` +
-            'answered — pick who this meeting is with:';
+          : `Not in the BIS directory. ${answered} answered — pick who this meeting is with:`;
       } else if (failed.length) {
         // The claim "nobody by that name" would be about the PERSON, on evidence
         // that is only about the network. Say what actually happened.

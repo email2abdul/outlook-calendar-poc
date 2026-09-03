@@ -151,7 +151,95 @@ test('a malformed NPI is not looked up at all', async () => {
   assert.strictEqual(await cms.getByNpi(null), null);
 });
 
-test('CMS is registered but never name-searched', async () => {
-  assert.strictEqual(cms.nameSearchable, false);
-  assert.deepStrictEqual(await cms.searchByName({ lastName: 'Enkeshafi' }), []);
+// ── Name search: the first rung of the ladder now ───────────────────────────
+
+/**
+ * A row as the name query asks for it (the provider columns only), plus the
+ * entity code that separates a person from a hospital.
+ */
+const nameRow = (over = {}) => ({
+  Rndrng_NPI: '1265847438',
+  Rndrng_Prvdr_First_Name: 'John',
+  Rndrng_Prvdr_MI: '',
+  Rndrng_Prvdr_Last_Org_Name: 'Abernathy',
+  Rndrng_Prvdr_Crdntls: 'DO',
+  Rndrng_Prvdr_Ent_Cd: 'I',
+  Rndrng_Prvdr_Type: 'Internal Medicine',
+  Rndrng_Prvdr_St1: '6000 49th St N',
+  Rndrng_Prvdr_St2: '',
+  Rndrng_Prvdr_City: 'St Petersburg',
+  Rndrng_Prvdr_State_Abrvtn: 'FL',
+  Rndrng_Prvdr_Zip5: '33709',
+  ...over,
+});
+
+test('a surname is filtered on, and a first name goes as a KEYWORD', async () => {
+  // Two filter[…] params hang this API (measured 2026-09-02), so the first
+  // name must never become a second filter. This is that rule, pinned.
+  responses.clear();
+  calls.length = 0;
+  responses.set('data.json', CATALOG);
+  responses.set('aaaaaaaa', [nameRow()]);
+
+  const found = await cms.searchByName({ firstName: 'John', lastName: 'Abernathy' });
+
+  const url = new URL(calls.find((c) => c.url.includes('aaaaaaaa')).url);
+  assert.strictEqual(url.searchParams.get('filter[Rndrng_Prvdr_Last_Org_Name]'), 'Abernathy');
+  assert.strictEqual(url.searchParams.get('keyword'), 'John');
+  assert.strictEqual(url.searchParams.get('filter[Rndrng_Prvdr_First_Name]'), null, 'never a second filter');
+  assert.ok(url.searchParams.get('column').includes('Rndrng_NPI'), 'provider columns only');
+
+  assert.strictEqual(found.length, 1);
+  assert.strictEqual(found[0].npi, '1265847438');
+  assert.strictEqual(found[0].name, 'John Abernathy');
+  assert.strictEqual(found[0].primaryTaxonomy, 'Internal Medicine');
+  assert.strictEqual(found[0].facilityAddress, '6000 49th St N, St Petersburg, FL, 33709');
+  assert.strictEqual(found[0].externalSource, 'cms-service');
+  assert.strictEqual(found[0].providerKind.kind, 'doctor', 'CMS states its own words, and they are read');
+});
+
+test('one row per code becomes one candidate per PERSON', async () => {
+  responses.clear();
+  responses.set('data.json', CATALOG);
+  responses.set('aaaaaaaa', [
+    nameRow({ HCPCS_Cd: '99213' }),
+    nameRow({ HCPCS_Cd: '99214' }), // same person, another code
+    nameRow({ Rndrng_NPI: '1013169481', Rndrng_Prvdr_First_Name: 'Kathleen', Rndrng_Prvdr_Type: 'Psychiatry', Rndrng_Prvdr_City: 'Yarmouth', Rndrng_Prvdr_State_Abrvtn: 'ME' }),
+    nameRow({ Rndrng_NPI: '1999999999', Rndrng_Prvdr_Ent_Cd: 'O', Rndrng_Prvdr_First_Name: '', Rndrng_Prvdr_Last_Org_Name: 'ABERNATHY CLINIC LLC' }),
+  ]);
+
+  const found = await cms.searchByName({ lastName: 'Abernathy', limit: 5 });
+
+  assert.deepStrictEqual(found.map((c) => c.npi), ['1265847438', '1013169481'], 'deduped, and no organisation');
+  assert.deepStrictEqual(found.map((c) => c.city), ['St Petersburg', 'Yarmouth']);
+});
+
+test('a first name that matches nobody costs ranking, not the answer', async () => {
+  responses.clear();
+  responses.set('data.json', CATALOG);
+  responses.set('aaaaaaaa', [nameRow({ Rndrng_Prvdr_First_Name: 'Robert' })]);
+
+  const found = await cms.searchByName({ firstName: 'John', lastName: 'Abernathy' });
+
+  assert.strictEqual(found.length, 1, 'the Abernathy the dataset does hold is still offered');
+  assert.strictEqual(found[0].firstName, 'Robert');
+});
+
+test('a first name alone has nothing to filter on, so nothing is asked', async () => {
+  responses.clear();
+  calls.length = 0;
+  responses.set('data.json', CATALOG);
+
+  assert.deepStrictEqual(await cms.searchByName({ firstName: 'John' }), []);
+  assert.deepStrictEqual(calls, [], 'not even the catalogue is fetched');
+});
+
+test('a dataset that could not be read throws, and never reads as "nobody"', async () => {
+  responses.clear();
+  responses.set('data.json', CATALOG);
+  // No dataset response registered → the stub reports a network miss.
+  await assert.rejects(
+    () => cms.searchByName({ lastName: 'Abernathy' }),
+    (err) => err.unreachable === true && /could not be read|unreachable|timed out/i.test(err.message)
+  );
 });

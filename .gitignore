@@ -10,3 +10,5 @@ node_modules/
 # not committed (large binaries; the extracted config/product-context.json is).
 brochures/
 data/demo/
+# Recorded registry answers (offline replay) — record locally, never commit
+data/cassettes/
