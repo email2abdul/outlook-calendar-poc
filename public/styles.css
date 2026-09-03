@@ -223,6 +223,69 @@ body {
   }
 }
 
+/* ── "Still working" dots ──────────────────────────────────────
+   A registry lookup takes one to five seconds, and a line that ends in a
+   static "…" looks exactly like a line that has finished. These three dots
+   move, so the wait reads as a wait. Each one has its own colour and its own
+   delay — blue, amber, green, left to right — which is what makes it read as
+   progress rather than as decoration. */
+.dots {
+  display: inline-flex;
+  gap: 2px;
+  margin-left: 3px;
+  /* A period at body size is too small for its colour to read, so the dots are
+     drawn a little larger and heavier than the sentence they follow. */
+  font-size: 1.25em;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.dots__d {
+  animation: dot-pulse 1.2s ease-in-out infinite;
+}
+
+.dots__d:nth-child(1) {
+  color: var(--primary);
+}
+
+.dots__d:nth-child(2) {
+  color: #d97706;
+  animation-delay: 0.2s;
+}
+
+.dots__d:nth-child(3) {
+  color: #059669;
+  animation-delay: 0.4s;
+}
+
+@keyframes dot-pulse {
+  0%,
+  80%,
+  100% {
+    /* Never fully faded: three dots that vanish read as a rendering glitch. */
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-2px);
+  }
+}
+
+/* Motion is the point, but not at the cost of somebody who has asked for
+   none: the dots stay, in their colours, and simply stop moving. */
+@media (prefers-reduced-motion: reduce) {
+  .dots__d {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* The search box, folded away until asked for (see appendSearchBox). */
+.physician-inline__search-reveal {
+  margin-top: 8px;
+}
+
 /* ── Event list ────────────────────────────────────────────── */
 .events {
   list-style: none;
