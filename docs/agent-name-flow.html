@@ -1,0 +1,373 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How the Agent Finds the Physician</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Serif:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ink: #12242c; --ink-2: #3c5560; --muted: #64808a;
+    --paper: #f4f7f7; --surface: #ffffff; --line: #d5e0e2; --line-soft: #e7eeef;
+    --accent: #0a6273; --accent-soft: #e6f1f3; --code-bg: #eef3f4;
+    --pass: #14663a; --stop: #9b1c39; --offer: #8a5a00;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 400 15px/1.6 "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 54rem; margin: 0 auto; padding: 2.4rem 1.5rem 3rem; }
+  h1 { font: 600 30px/1.2 "IBM Plex Serif", Georgia, serif; margin: 0 0 .4rem; letter-spacing: -0.01em; }
+  .sub { color: var(--ink-2); max-width: 34rem; margin: 0 0 .5rem; }
+  .meta { color: var(--muted); font: 400 12.5px/1.5 "IBM Plex Mono", ui-monospace, monospace; margin: 0 0 2rem; }
+  h2 { font: 600 19px/1.3 "IBM Plex Serif", Georgia, serif; margin: 2.4rem 0 .8rem; }
+  p { max-width: 34rem; }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .88em; }
+  code { background: var(--code-bg); padding: .1em .34em; border-radius: 3px; }
+
+  /* ── the panels ── */
+  .panel { margin: 0 0 1.6rem; padding: 1rem 1.1rem 1.2rem; background: var(--surface);
+           border: 1px solid var(--line); border-radius: 12px; break-inside: avoid; page-break-inside: avoid; }
+  figcaption { margin: 0 0 .7rem; }
+  .pt { display: block; font: 600 16px/1.3 "IBM Plex Sans", sans-serif; color: var(--accent); }
+  .pk { display: block; font-size: 13px; color: var(--muted); margin-top: 2px; }
+  svg { display: block; overflow: visible; }
+  svg .t { font: 600 12.2px "IBM Plex Sans", sans-serif; }
+  svg .tech { font: 400 10.4px "IBM Plex Mono", monospace; fill: #6d8892; }
+  svg .num { font: 600 10.5px "IBM Plex Mono", monospace; fill: #fff; }
+  svg .lbl { font: 600 10.5px "IBM Plex Sans", sans-serif; fill: #4a6a75; }
+  svg .hand { font: 500 11.5px "IBM Plex Sans", sans-serif; fill: #64808a; }
+  svg .edge { stroke: #5d7b85; stroke-width: 1.4; fill: none; }
+
+  /* ── reference tables ── */
+  table { width: 100%; border-collapse: collapse; margin: .6rem 0 1.4rem; font-size: 13.4px; break-inside: avoid; }
+  th, td { text-align: left; padding: .42rem .6rem; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+  th { font: 600 11.5px/1.3 "IBM Plex Sans", sans-serif; text-transform: uppercase; letter-spacing: .05em;
+       color: var(--muted); border-bottom: 1px solid var(--line); }
+  td.mono, th.mono { font-family: "IBM Plex Mono", monospace; font-size: 12.2px; }
+  td.num { text-align: right; white-space: nowrap; font-family: "IBM Plex Mono", monospace; }
+  pre { background: var(--code-bg); border: 1px solid var(--line-soft); border-radius: 8px;
+        padding: .8rem .9rem; overflow-x: auto; font-size: 12.2px; line-height: 1.55; break-inside: avoid; }
+  .note { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: .7rem .9rem;
+          border-radius: 0 8px 8px 0; margin: 1rem 0; max-width: 34rem; font-size: 13.6px; }
+  footer { margin-top: 2.4rem; padding-top: 1rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: 12.5px; }
+
+  @page { size: A4; margin: 13mm 12mm; }
+  @media print {
+    body { background: #fff; }
+    .wrap { max-width: none; padding: 0; }
+    .panel { border-color: #c9d7da; box-shadow: none; }
+    h2 { break-after: avoid; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>How the agent finds the physician</h1>
+<p class="sub">The whole path from a meeting in the calendar to a pre-meeting brief — in plain
+English, with the name used in the code in brackets. Every step below is a real step in
+<span class="mono">src/meeting-match.js</span>, <span class="mono">src/outside-sources/*</span> and
+<span class="mono">src/enrichment/*</span>.</p>
+<p class="meta">Outlook Calendar Intelligence · pre-meeting sales intelligence · 3 September 2026</p>
+
+<figure class="panel">
+  <figcaption><span class="pt">1 · What we already know</span><span class="pk">The cheapest answers first: our own data, and the rep’s own decision</span></figcaption>
+  <svg viewBox="0 0 700 795" width="100%" role="img" aria-label="1 · What we already know">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#5d7b85"/>
+      </marker>
+    </defs>
+    <rect x="40" y="14" width="330" height="57" rx="9" fill="#e6f1f3" stroke="#0a6273" stroke-width="1.4"/>
+<text x="205.0" y="39.0" text-anchor="middle" class="t" fill="#12242c">A meeting in the calendar</text>
+<text x="205.0" y="57.0" text-anchor="middle" class="tech">(Outlook event, read with Microsoft Graph)</text>
+<rect x="40" y="96" width="330" height="57" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="113" r="11" fill="#93b3bb"/><text x="57" y="117.5" text-anchor="middle" class="num">1</text>
+<text x="205.0" y="121.0" text-anchor="middle" class="t" fill="#12242c">Read what the meeting says</text>
+<text x="205.0" y="139.0" text-anchor="middle" class="tech">(title + description + attendees)</text>
+<rect x="40" y="178" width="330" height="57" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="195" r="11" fill="#93b3bb"/><text x="57" y="199.5" text-anchor="middle" class="num">2</text>
+<text x="205.0" y="203.0" text-anchor="middle" class="t" fill="#12242c">Take our own brief back out of the text</text>
+<text x="205.0" y="221.0" text-anchor="middle" class="tech">(graph.stripInjectedBrief)</text>
+<rect x="40" y="260" width="330" height="57" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="277" r="11" fill="#c08a1e"/><text x="57" y="281.5" text-anchor="middle" class="num">3</text>
+<text x="205.0" y="285.0" text-anchor="middle" class="t" fill="#5c4106">Is an NPI number written on it?</text>
+<text x="205.0" y="303.0" text-anchor="middle" class="tech">(rung 0 — npiFromEvent)</text>
+<rect x="40" y="342" width="330" height="57" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="359" r="11" fill="#c08a1e"/><text x="57" y="363.5" text-anchor="middle" class="num">4</text>
+<text x="205.0" y="367.0" text-anchor="middle" class="t" fill="#5c4106">Is an attendee's email in our database?</text>
+<text x="205.0" y="385.0" text-anchor="middle" class="tech">(rung 1 — bis_physicians, 21k rows)</text>
+<rect x="40" y="424" width="330" height="57" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="441" r="11" fill="#c08a1e"/><text x="57" y="445.5" text-anchor="middle" class="num">5</text>
+<text x="205.0" y="449.0" text-anchor="middle" class="t" fill="#5c4106">Did the rep already choose someone?</text>
+<text x="205.0" y="467.0" text-anchor="middle" class="tech">(rung 2 — app_activities.chosen_npi)</text>
+<rect x="40" y="506" width="330" height="57" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="523" r="11" fill="#c08a1e"/><text x="57" y="527.5" text-anchor="middle" class="num">6</text>
+<text x="205.0" y="531.0" text-anchor="middle" class="t" fill="#5c4106">Does it say "Dr" or "Doctor"?</text>
+<text x="205.0" y="549.0" text-anchor="middle" class="tech">(rung 3 — the gate)</text>
+<rect x="40" y="588" width="330" height="57" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="605" r="11" fill="#93b3bb"/><text x="57" y="609.5" text-anchor="middle" class="num">7</text>
+<text x="205.0" y="613.0" text-anchor="middle" class="t" fill="#12242c">Read the name, the place, the specialty</text>
+<text x="205.0" y="631.0" text-anchor="middle" class="tech">(namesToLookUp + hintsFromEvent)</text>
+<rect x="40" y="670" width="330" height="57" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="687" r="11" fill="#c08a1e"/><text x="57" y="691.5" text-anchor="middle" class="num">8</text>
+<text x="205.0" y="695.0" text-anchor="middle" class="t" fill="#5c4106">Is that name in our own directory?</text>
+<text x="205.0" y="713.0" text-anchor="middle" class="tech">(rung 4 — name tokens in bis_physicians)</text>
+<path d="M 205.0 71 L 205.0 92" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 153 L 205.0 174" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 235 L 205.0 256" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 317 L 205.0 338" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 399 L 205.0 420" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 481 L 205.0 502" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 563 L 205.0 584" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 645 L 205.0 666" class="edge" marker-end="url(#ah)"/>
+<rect x="430" y="263" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="288.0" text-anchor="middle" class="t" fill="#0f4d2c">Use that NPI. No name to</text>
+<text x="546.0" y="305.0" text-anchor="middle" class="t" fill="#0f4d2c">guess, nothing to choose</text>
+<text x="546.0" y="323.0" text-anchor="middle" class="tech">(skips the whole ladder)</text>
+<rect x="430" y="345" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="370.0" text-anchor="middle" class="t" fill="#0f4d2c">That is the person —</text>
+<text x="546.0" y="387.0" text-anchor="middle" class="t" fill="#0f4d2c">no outside call at all</text>
+<text x="546.0" y="405.0" text-anchor="middle" class="tech">(status: matched)</text>
+<rect x="430" y="427" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="452.0" text-anchor="middle" class="t" fill="#0f4d2c">The rep’s answer wins</text>
+<text x="546.0" y="469.0" text-anchor="middle" class="t" fill="#0f4d2c">over anything we find</text>
+<text x="546.0" y="487.0" text-anchor="middle" class="tech">(via: rep-choice)</text>
+<rect x="430" y="509" width="232" height="91" rx="9" fill="#fdeef1" stroke="#b5455f" stroke-width="1.4"/>
+<text x="546.0" y="534.0" text-anchor="middle" class="t" fill="#7d1027">STOP. A normal meeting.</text>
+<text x="546.0" y="551.0" text-anchor="middle" class="t" fill="#7d1027">Nothing looked up, nothing</text>
+<text x="546.0" y="568.0" text-anchor="middle" class="t" fill="#7d1027">shown, nothing emailed</text>
+<text x="546.0" y="586.0" text-anchor="middle" class="tech">(status: gate_blocked)</text>
+<rect x="430" y="664" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="689.0" text-anchor="middle" class="t" fill="#0f4d2c">1 match → that is who it is</text>
+<text x="546.0" y="706.0" text-anchor="middle" class="t" fill="#0f4d2c">2–5 → the rep picks from a list</text>
+<text x="546.0" y="724.0" text-anchor="middle" class="tech">(matched / choose)</text>
+<path d="M 370 288.5 L 426 300.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="283.5" text-anchor="start" class="lbl">yes</text>
+<path d="M 370 370.5 L 426 382.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="365.5" text-anchor="start" class="lbl">yes</text>
+<path d="M 370 452.5 L 426 464.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="447.5" text-anchor="start" class="lbl">yes</text>
+<path d="M 370 534.5 L 426 554.5" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="529.5" text-anchor="start" class="lbl">no</text>
+<path d="M 370 698.5 L 426 701.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="693.5" text-anchor="start" class="lbl">found</text>
+<text x="197.0" y="336" text-anchor="end" class="lbl">no</text>
+<text x="197.0" y="418" text-anchor="end" class="lbl">no</text>
+<text x="197.0" y="500" text-anchor="end" class="lbl">no</text>
+<text x="197.0" y="582" text-anchor="end" class="lbl">yes</text>
+<path d="M 205.0 727 L 205.0 761" class="edge" marker-end="url(#ah)"/>
+<text x="205.0" y="781" text-anchor="middle" class="hand">nobody by that name → go outside (panel 2)</text>
+  </svg>
+</figure>
+<figure class="panel">
+  <figcaption><span class="pt">2 · Outside our database — the two public websites</span><span class="pk">Billing data first, the registry second; both are plain JSON APIs, no scraping</span></figcaption>
+  <svg viewBox="0 0 700 928" width="100%" role="img" aria-label="2 · Outside our database — the two public websites">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#5d7b85"/>
+      </marker>
+    </defs>
+    <rect x="40" y="14" width="330" height="74" rx="9" fill="#eef3f4" stroke="#4a7f8c" stroke-width="1.4"/>
+<circle cx="57" cy="31" r="11" fill="#4a7f8c"/><text x="57" y="35.5" text-anchor="middle" class="num">9</text>
+<text x="205.0" y="39.0" text-anchor="middle" class="t" fill="#12242c">SOURCE 1 — CMS Medicare billing data</text>
+<text x="205.0" y="56.0" text-anchor="middle" class="t" fill="#12242c">Ask the surname</text>
+<text x="205.0" y="74.0" text-anchor="middle" class="tech">(data.cms.gov · by-provider-and-service)</text>
+<rect x="40" y="113" width="330" height="74" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="130" r="11" fill="#93b3bb"/><text x="57" y="134.5" text-anchor="middle" class="num">10</text>
+<text x="205.0" y="138.0" text-anchor="middle" class="t" fill="#12242c">One row per billing code → group by NPI</text>
+<text x="205.0" y="155.0" text-anchor="middle" class="t" fill="#12242c">327 rows for "Abernathy" = 46 people</text>
+<text x="205.0" y="173.0" text-anchor="middle" class="tech">(providersFrom() drops organisations)</text>
+<rect x="40" y="212" width="330" height="74" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="229" r="11" fill="#c08a1e"/><text x="57" y="233.5" text-anchor="middle" class="num">11</text>
+<text x="205.0" y="237.0" text-anchor="middle" class="t" fill="#5c4106">Did it match the FULL name exactly?</text>
+<text x="205.0" y="254.0" text-anchor="middle" class="t" fill="#5c4106">(first name AND last name)</text>
+<text x="205.0" y="272.0" text-anchor="middle" class="tech">(sources.isExactMatch)</text>
+<rect x="40" y="311" width="330" height="74" rx="9" fill="#eef3f4" stroke="#4a7f8c" stroke-width="1.4"/>
+<circle cx="57" cy="328" r="11" fill="#4a7f8c"/><text x="57" y="332.5" text-anchor="middle" class="num">12</text>
+<text x="205.0" y="336.0" text-anchor="middle" class="t" fill="#12242c">SOURCE 2 — NPPES NPI Registry</text>
+<text x="205.0" y="353.0" text-anchor="middle" class="t" fill="#12242c">Ask the same name</text>
+<text x="205.0" y="371.0" text-anchor="middle" class="tech">(npiregistry.cms.hhs.gov/api · version 2.1)</text>
+<rect x="40" y="410" width="330" height="91" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="427" r="11" fill="#93b3bb"/><text x="57" y="431.5" text-anchor="middle" class="num">13</text>
+<text x="205.0" y="435.0" text-anchor="middle" class="t" fill="#12242c">Merge the two lists — one row per person.</text>
+<text x="205.0" y="452.0" text-anchor="middle" class="t" fill="#12242c">Whoever found them keeps the record;</text>
+<text x="205.0" y="469.0" text-anchor="middle" class="t" fill="#12242c">the registry’s NUCC code is always taken</text>
+<text x="205.0" y="487.0" text-anchor="middle" class="tech">(mergeCandidate — dedupe by NPI)</text>
+<rect x="40" y="526" width="330" height="74" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="543" r="11" fill="#93b3bb"/><text x="57" y="547.5" text-anchor="middle" class="num">14</text>
+<text x="205.0" y="551.0" text-anchor="middle" class="t" fill="#12242c">Check every NPI against our own</text>
+<text x="205.0" y="568.0" text-anchor="middle" class="t" fill="#12242c">database once more</text>
+<text x="205.0" y="586.0" text-anchor="middle" class="tech">(recovered_in_bis — marked as already ours)</text>
+<rect x="40" y="625" width="330" height="74" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="642" r="11" fill="#93b3bb"/><text x="57" y="646.5" text-anchor="middle" class="num">15</text>
+<text x="205.0" y="650.0" text-anchor="middle" class="t" fill="#12242c">Score each person against what the</text>
+<text x="205.0" y="667.0" text-anchor="middle" class="t" fill="#12242c">meeting actually said</text>
+<text x="205.0" y="685.0" text-anchor="middle" class="tech">(score.js — see the table below)</text>
+<rect x="40" y="724" width="330" height="74" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="741" r="11" fill="#c08a1e"/><text x="57" y="745.5" text-anchor="middle" class="num">16</text>
+<text x="205.0" y="749.0" text-anchor="middle" class="t" fill="#5c4106">Best one at 70% or more, and 10 points</text>
+<text x="205.0" y="766.0" text-anchor="middle" class="t" fill="#5c4106">clear of the next?</text>
+<text x="205.0" y="784.0" text-anchor="middle" class="tech">(CONFIDENCE_SHOW · AMBIGUOUS_MARGIN)</text>
+<path d="M 205.0 88 L 205.0 109" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 187 L 205.0 208" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 286 L 205.0 307" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 385 L 205.0 406" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 501 L 205.0 522" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 600 L 205.0 621" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 699 L 205.0 720" class="edge" marker-end="url(#ah)"/>
+<rect x="430" y="12" width="232" height="108" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<text x="546.0" y="37.0" text-anchor="middle" class="t" fill="#12242c">2 calls: catalogue for the</text>
+<text x="546.0" y="54.0" text-anchor="middle" class="t" fill="#12242c">year’s dataset id, then the</text>
+<text x="546.0" y="71.0" text-anchor="middle" class="t" fill="#12242c">surname filter + first name</text>
+<text x="546.0" y="88.0" text-anchor="middle" class="t" fill="#12242c">as a keyword</text>
+<text x="546.0" y="106.0" text-anchor="middle" class="tech">(never two filters — it hangs)</text>
+<rect x="430" y="214" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="239.0" text-anchor="middle" class="t" fill="#0f4d2c">Stop here. NPPES is not</text>
+<text x="546.0" y="256.0" text-anchor="middle" class="t" fill="#0f4d2c">asked at all</text>
+<text x="546.0" y="274.0" text-anchor="middle" class="tech">(the person is already named)</text>
+<rect x="430" y="309" width="232" height="91" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<text x="546.0" y="334.0" text-anchor="middle" class="t" fill="#12242c">Billing data holds Medicare</text>
+<text x="546.0" y="351.0" text-anchor="middle" class="t" fill="#12242c">billers only, so the registry</text>
+<text x="546.0" y="368.0" text-anchor="middle" class="t" fill="#12242c">can know people it does not</text>
+<text x="546.0" y="386.0" text-anchor="middle" class="tech">(why the fallback exists)</text>
+<rect x="430" y="726" width="232" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="546.0" y="751.0" text-anchor="middle" class="t" fill="#0f4d2c">That one is the answer —</text>
+<text x="546.0" y="768.0" text-anchor="middle" class="t" fill="#0f4d2c">the brief is built for them</text>
+<text x="546.0" y="786.0" text-anchor="middle" class="tech">(primary)</text>
+<path d="M 370 51.0 L 426 66.0" class="edge" marker-end="url(#ah)"/>
+<path d="M 370 249.0 L 426 251.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="244.0" text-anchor="start" class="lbl">yes</text>
+<path d="M 370 348.0 L 426 354.5" class="edge" marker-end="url(#ah)" stroke-dasharray="4 3"/>
+<path d="M 370 761.0 L 426 763.0" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="756.0" text-anchor="start" class="lbl">yes</text>
+<text x="197.0" y="305" text-anchor="end" class="lbl">no</text>
+<text x="197.0" y="817" text-anchor="end" class="lbl">no</text>
+<rect x="40" y="832" width="330" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="205.0" y="857.0" text-anchor="middle" class="t" fill="#0f4d2c">Everyone is shown as an option,</text>
+<text x="205.0" y="874.0" text-anchor="middle" class="t" fill="#0f4d2c">with name · specialty · address</text>
+<text x="205.0" y="892.0" text-anchor="middle" class="tech">(the rep picks whose brief to read)</text>
+<path d="M 205.0 798 L 205.0 828" class="edge" marker-end="url(#ah)"/>
+<rect x="430" y="822" width="232" height="91" rx="9" fill="#fdeef1" stroke="#b5455f" stroke-width="1.4"/>
+<text x="546.0" y="847.0" text-anchor="middle" class="t" fill="#7d1027">A website that cannot be</text>
+<text x="546.0" y="864.0" text-anchor="middle" class="t" fill="#7d1027">reached is "not asked" —</text>
+<text x="546.0" y="881.0" text-anchor="middle" class="t" fill="#7d1027">never "nobody found"</text>
+<text x="546.0" y="899.0" text-anchor="middle" class="tech">(health ledger + Retry)</text>
+  </svg>
+</figure>
+<figure class="panel">
+  <figcaption><span class="pt">3 · Is it a doctor? → the brief → where it goes</span><span class="pk">A brief is produced for physicians, dentists and podiatrists; everybody else is named, not briefed</span></figcaption>
+  <svg viewBox="0 0 700 589" width="100%" role="img" aria-label="3 · Is it a doctor? → the brief → where it goes">
+    <defs>
+      <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#5d7b85"/>
+      </marker>
+    </defs>
+    <rect x="40" y="14" width="330" height="74" rx="9" fill="#fdf4e3" stroke="#c08a1e" stroke-width="1.4" stroke-dasharray="5 3"/>
+<circle cx="57" cy="31" r="11" fill="#c08a1e"/><text x="57" y="35.5" text-anchor="middle" class="num">17</text>
+<text x="205.0" y="39.0" text-anchor="middle" class="t" fill="#5c4106">Is this person a doctor?</text>
+<text x="205.0" y="56.0" text-anchor="middle" class="t" fill="#5c4106">Decided on the code, not the words</text>
+<text x="205.0" y="74.0" text-anchor="middle" class="tech">(NUCC grouping 20 / 21, dentist 1223…)</text>
+<rect x="40" y="113" width="330" height="91" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="130" r="11" fill="#93b3bb"/><text x="57" y="134.5" text-anchor="middle" class="num">18</text>
+<text x="205.0" y="138.0" text-anchor="middle" class="t" fill="#12242c">Build the brief once, from both websites</text>
+<text x="205.0" y="155.0" text-anchor="middle" class="t" fill="#12242c">identity from the registry, gaps and</text>
+<text x="205.0" y="172.0" text-anchor="middle" class="t" fill="#12242c">billing volumes from CMS</text>
+<text x="205.0" y="190.0" text-anchor="middle" class="tech">(profile.js + outsideBriefHtml)</text>
+<rect x="40" y="229" width="330" height="74" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="246" r="11" fill="#93b3bb"/><text x="57" y="250.5" text-anchor="middle" class="num">19</text>
+<text x="205.0" y="254.0" text-anchor="middle" class="t" fill="#12242c">Do the two websites agree on the</text>
+<text x="205.0" y="271.0" text-anchor="middle" class="t" fill="#12242c">surname and the place?</text>
+<text x="205.0" y="289.0" text-anchor="middle" class="tech">(agreement.confirmed → +10% and a line saying so)</text>
+<rect x="40" y="328" width="330" height="57" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<circle cx="57" cy="345" r="11" fill="#93b3bb"/><text x="57" y="349.5" text-anchor="middle" class="num">20</text>
+<text x="205.0" y="353.0" text-anchor="middle" class="t" fill="#12242c">Send the very same answer to three places</text>
+<text x="205.0" y="371.0" text-anchor="middle" class="tech">(one resolve, so they cannot disagree)</text>
+<path d="M 205.0 88 L 205.0 109" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 204 L 205.0 225" class="edge" marker-end="url(#ah)"/>
+<path d="M 205.0 303 L 205.0 324" class="edge" marker-end="url(#ah)"/>
+<rect x="430" y="6" width="232" height="91" rx="9" fill="#fdeef1" stroke="#b5455f" stroke-width="1.4"/>
+<text x="546.0" y="31.0" text-anchor="middle" class="t" fill="#7d1027">No brief. Say plainly what</text>
+<text x="546.0" y="48.0" text-anchor="middle" class="t" fill="#7d1027">the registry calls them</text>
+<text x="546.0" y="65.0" text-anchor="middle" class="t" fill="#7d1027">(nurse, student, pharmacist)</text>
+<text x="546.0" y="83.0" text-anchor="middle" class="tech">(status: not_doctor)</text>
+<path d="M 370 51.0 L 426 51.5" class="edge" marker-end="url(#ah)"/>
+<text x="379" y="46.0" text-anchor="start" class="lbl">no</text>
+<rect x="430" y="119" width="232" height="74" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<text x="546.0" y="144.0" text-anchor="middle" class="t" fill="#12242c">Cannot place them either way?</text>
+<text x="546.0" y="161.0" text-anchor="middle" class="t" fill="#12242c">The brief is still shown</text>
+<text x="546.0" y="179.0" text-anchor="middle" class="tech">(kind: unknown never suppresses)</text>
+<path d="M 370 158.5 L 426 156.0" class="edge" marker-end="url(#ah)" stroke-dasharray="4 3"/>
+<text x="197.0" y="107" text-anchor="end" class="lbl">yes</text>
+<rect x="40.0" y="425" width="194.66666666666666" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="137.33333333333331" y="450.0" text-anchor="middle" class="t" fill="#0f4d2c">In the app</text>
+<text x="137.33333333333331" y="467.0" text-anchor="middle" class="t" fill="#0f4d2c">panel</text>
+<text x="137.33333333333331" y="485.0" text-anchor="middle" class="tech">(the meeting card opens)</text>
+<path d="M 205.0 385 L 137.33333333333331 421" class="edge" marker-end="url(#ah)"/>
+<rect x="252.66666666666666" y="425" width="194.66666666666666" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="350.0" y="450.0" text-anchor="middle" class="t" fill="#0f4d2c">On the meeting</text>
+<text x="350.0" y="467.0" text-anchor="middle" class="t" fill="#0f4d2c">itself</text>
+<text x="350.0" y="485.0" text-anchor="middle" class="tech">(brief written into the body)</text>
+<path d="M 205.0 385 L 350.0 421" class="edge" marker-end="url(#ah)"/>
+<rect x="465.3333333333333" y="425" width="194.66666666666666" height="74" rx="9" fill="#eaf6ef" stroke="#2f8a58" stroke-width="1.4"/>
+<text x="562.6666666666666" y="450.0" text-anchor="middle" class="t" fill="#0f4d2c">By email before</text>
+<text x="562.6666666666666" y="467.0" text-anchor="middle" class="t" fill="#0f4d2c">the meeting</text>
+<text x="562.6666666666666" y="485.0" text-anchor="middle" class="tech">(reminder engine)</text>
+<path d="M 205.0 385 L 562.6666666666666 421" class="edge" marker-end="url(#ah)"/>
+<rect x="40" y="513" width="620" height="54" rx="9" fill="#ffffff" stroke="#93b3bb" stroke-width="1.4"/>
+<text x="350.0" y="528.0" text-anchor="middle" class="t" fill="#12242c">Remember the decision, and do it once per meeting</text>
+<text x="350.0" y="545.0" text-anchor="middle" class="t" fill="#12242c">— and once more if the rep edits the title</text>
+<text x="350.0" y="563.0" text-anchor="middle" class="tech">(recordDecision + dedupe key on the meeting text)</text>
+<path d="M 350.0 483 L 350.0 509" class="edge" marker-end="url(#ah)"/>
+  </svg>
+</figure>
+
+<h2>Where the data actually comes from</h2>
+<p>Both websites are read through their own public JSON APIs. Nothing is scraped, and no key is
+needed. What a person sees on the website is what the API returns.</p>
+
+<h3 style="font:600 14px/1.3 'IBM Plex Sans';margin:1.4rem 0 .3rem">1 · NPPES NPI Registry — turns a name into an NPI</h3>
+<pre>GET https://npiregistry.cms.hhs.gov/api/
+      ?version=2.1
+      &amp;enumeration_type=NPI-1        <span style="color:#64808a"># a person; NPI-2 would be a hospital</span>
+      &amp;last_name=ABERNATHY&amp;first_name=JOHN
+      &amp;state=FL&amp;limit=20</pre>
+<table><thead><tr><th class="">What we take from it</th><th class="">Why it matters</th></tr></thead><tbody><tr><td class="">NPI, name, credential</td><td class="">the NPI is this app’s primary key everywhere</td></tr><tr><td class="">Primary taxonomy <span class="mono">+ its NUCC code</span></td><td class="">the code decides whether a brief is produced at all</td></tr><tr><td class="">Practice address, city, state, ZIP, phone</td><td class="">what a rep needs to recognise the right person</td></tr><tr><td class="">Licence number and state, NPI date, status</td><td class="">shown as <em>extra</em> — our own database has no column for these</td></tr><tr><td class=""><strong>No email, ever</strong></td><td class="">the registry has no email field, so an email is never guessed from it</td></tr></tbody></table>
+<div class="note"><strong>Three real quirks, handled in the code.</strong>
+A one-letter wildcard is rejected, so a single initial is never sent — it is kept as a ranking hint.
+A bad query comes back as <code>HTTP 200</code> with an <code>Errors</code> array, not as an error.
+And the same query can return 0 results once and 1 a moment later, so one extra attempt is made
+(<span class="mono">retryIfEmpty</span>).</div>
+<h3 style="font:600 14px/1.3 'IBM Plex Sans';margin:1.6rem 0 .3rem">2 · CMS Medicare Physician &amp; Other Practitioners — by provider and service</h3>
+<pre><span style="color:#64808a"># step 1 — which dataset is this data year? (ids change when CMS republishes)</span>
+GET https://data.cms.gov/data.json          →  2024 → 92396110-2aed-4d63-a6a2-5d6207d46a29
+
+<span style="color:#64808a"># step 2 — ask the surname (and the first name as a keyword)</span>
+GET https://data.cms.gov/data-api/v1/dataset/&lt;uuid&gt;/data
+      ?filter[Rndrng_Prvdr_Last_Org_Name]=Abernathy
+      &amp;keyword=John
+      &amp;column=Rndrng_NPI,Rndrng_Prvdr_First_Name,Rndrng_Prvdr_Type,…
+      &amp;size=500
+
+<span style="color:#64808a"># step 3 — later, for the chosen person: their billing lines, year by year</span>
+GET …/data?filter[Rndrng_NPI]=1265847438&amp;size=500</pre>
+<table><thead><tr><th class="">Measured behaviour</th><th class="">Consequence in the code</th></tr></thead><tbody><tr><td class="">Surname filter: 327 rows in ~0.5 s</td><td class="">one row per <em>billing code</em>, so rows are grouped by NPI — 327 rows = 46 people</td></tr><tr><td class="">Surname filter + <span class="mono">keyword</span>: precise and fast</td><td class="">the first name is a keyword, never a second filter</td></tr><tr><td class=""><strong>Two <span class="mono">filter[…]</span> params: the request hangs</strong></td><td class="">never send two — this is a hard rule</td></tr><tr><td class=""><span class="mono">Rndrng_Prvdr_Ent_Cd</span> = I / O</td><td class="">organisations are dropped — a clinic is not who the rep is meeting</td></tr><tr><td class="">Provider type in CMS’s own words, no NUCC code</td><td class="">"Family Practice", "Podiatry" — read by word, and the registry’s code wins when both exist</td></tr></tbody></table>
+<h2>How a person is scored against the meeting</h2>
+<p>Every candidate starts at 30 for being in a registry at all. Then the meeting’s own words are checked <em>for</em> the candidate’s values — asking "does this meeting mention CHICAGO?" rather than trying to guess a city out of free text.</p>
+<table><thead><tr><th class="">Evidence from the meeting</th><th class="num">Points</th></tr></thead><tbody><tr><td class="">In a registry at all (the starting point)</td><td class="num">+30</td></tr><tr><td class="">Last name matches</td><td class="num">+25</td></tr><tr><td class="">First name matches exactly</td><td class="num">+30</td></tr><tr><td class="">First name partial / initial only</td><td class="num">+15 / +10</td></tr><tr><td class="">First name is a different name</td><td class="num">–25</td></tr><tr><td class="">State matches / city matches</td><td class="num">+15 / +15</td></tr><tr><td class="">The meeting mentions this specialty (taxonomy)</td><td class="num">+20</td></tr><tr><td class="">Specialty matches exactly / differs</td><td class="num">+25 / –15</td></tr><tr><td class="">ZIP, street address or phone matches</td><td class="num">+20 each</td></tr><tr><td class="">Only candidate anybody returned</td><td class="num">+10</td></tr><tr><td class="">Both websites confirm the same identity</td><td class="num">+10</td></tr></tbody></table>
+<div class="note"><strong>Two thresholds, and they are the rep’s own rule.</strong>
+<strong>70%</strong> and at least 10 points clear of the next candidate → the data is put in front of
+the rep as the answer. Anything less → everybody is listed as an option, with name, specialty and
+practice address, and the rep picks. A shortlist is never hidden just because nothing cleared the
+bar: "here are the five people called Ajjarapu" is an answer a rep can act on.</div>
+<h2>The same flow, on three real meetings</h2>
+<table><thead><tr><th class="">The meeting says</th><th class="">Who is asked</th><th class="">What the rep sees</th></tr></thead><tbody><tr><td class=""><span class="mono">Meeting with Dr JOHN ABERNATHY</span></td><td class="">CMS only — it matched the full name, so the registry is not asked</td><td class="">One person: NPI 1265847438, Internal Medicine, St Petersburg FL → the brief opens</td></tr><tr><td class=""><span class="mono">Meeting with Dr Abernathy</span></td><td class="">CMS (46 people) and then the registry — a surname is never an exact match</td><td class="">A list, each row with specialty and address, all at 55% — the rep picks; a nurse practitioner and an optometrist are named but not offered</td></tr><tr><td class=""><span class="mono">Meeting with Dr Avanthi Ajjarapu</span></td><td class="">CMS has nobody (she bills no Medicare) → the registry answers exactly</td><td class="">One person: Obstetrics &amp; Gynecology, Fort Worth TX → the brief opens</td></tr><tr><td class=""><span class="mono">Meeting with Best friend</span></td><td class="">Nobody. The meeting never says "Dr"</td><td class="">Nothing at all — a plain calendar row that does not even open</td></tr></tbody></table>
+<footer>Generated by <span class="mono">scripts/agent-flow-doc.py</span>. The behaviour drawn here is
+covered by the test suite (<span class="mono">npm test</span>, 169 tests) and was verified against the live
+APIs on 2 September 2026. Numbers in circles match the step numbers used in the walk-through.</footer>
+</div>
+</body>
+</html>
